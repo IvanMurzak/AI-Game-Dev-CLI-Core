@@ -4,11 +4,22 @@ Shared TypeScript CLI core for the AI Game Dev engine CLIs (Unity / Unreal / God
 published to npm as **`@baizor/gamedev-cli-core`** via **npm Trusted Publishing (OIDC, tokenless)**.
 
 This package is the single source of truth for CLI logic; the three engine CLIs are thin,
-engine-specific adapters over it. The shared modules — project identity / pin hashing (v1 + v2
-with golden vectors), OAuth 2.1 device-grant login + refresh, the machine credential store, and
-the `setup-mcp` / `install-plugin` logic — land here through the `auth-fixes` design (tasks b2/b3).
-This scaffold currently exposes the package version plus a small semver utility slice so CI builds
-and tests something real.
+engine-specific adapters over it. The shared modules land here through the `auth-fixes` design
+(tasks b2/b3):
+
+- **Landed (b2 — correctness/security core):**
+  - **project identity / pin** — `derivePin`/`derivePort`/`deriveProjectPathHash` (v1) and the
+    `…V2` variants (separator-normalized, the B5 fix), gated byte-for-byte against the SAME golden
+    vectors as the C# LIB (`test/golden-vectors/`, vendored from `MCP-Plugin-dotnet`).
+  - **machine credential store** — `MachineCredentialStore` at `~/.ai-game-dev/credentials.json`,
+    full `MachineCredentials`, DPAPI on Windows / `0600` on POSIX, atomic (crash-safe) writes.
+  - **OAuth 2.1 device-grant login** — `deviceLogin` (RFC 8628, `/oauth/device_authorization` +
+    `/oauth/token`) plus the proactive/reactive refresh loop (`HttpTokenRefresher`,
+    `MachineCredentialProvider`) with token rotation and a clean `login required` on family-revoke.
+- **Pending (b3):** agents-registry / config writers, `setup-mcp`, `install-plugin`, enroll,
+  server-download, project-marker, and the remaining UI/validation utilities.
+
+A small semver utility slice is also exposed.
 
 ## Requirements
 
