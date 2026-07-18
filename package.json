@@ -1,0 +1,30 @@
+{
+  "name": "@baizor/gamedev-cli-core",
+  "version": "0.0.0",
+  "description": "Shared CLI core for the AI Game Dev engine CLIs (Unity/Unreal/Godot). Placeholder bootstrap to claim the package name for npm Trusted Publishing (OIDC); real modules land via CI.",
+  "license": "MIT",
+  "author": "Ivan Murzak",
+  "type": "module",
+  "main": "index.js",
+  "files": [
+    "index.js",
+    "README.md"
+  ],
+  "keywords": [
+    "ai-game-dev",
+    "gamedev",
+    "mcp",
+    "cli"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/IvanMurzak/AI-Game-Dev-CLI-Core.git"
+  },
+  "homepage": "https://github.com/IvanMurzak/AI-Game-Dev-CLI-Core#readme",
+  "bugs": {
+    "url": "https://github.com/IvanMurzak/AI-Game-Dev-CLI-Core/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
