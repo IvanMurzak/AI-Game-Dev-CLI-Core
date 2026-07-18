@@ -1,0 +1,143 @@
+{
+  "description": "Cross-language golden vectors for the AI-agent MCP config writers (JSON + TOML). The C# reference implementations (MCP-Plugin-dotnet/McpPlugin/src/AgentConfig/JsonAiAgentConfig.cs + TomlAiAgentConfig.cs) are the origin; any TS/JS port MUST reproduce every `expected` string byte-for-byte for its deterministic new-file serialization (JsonAiAgentConfig.ExpectedFileContent / TomlAiAgentConfig.ExpectedFileContent). Regenerate/verify via McpPlugin.Tests JsonAiAgentConfigTests + TomlAiAgentConfigTests (the *ExpectedFileContent* + *PropertiesInAlphabeticalOrder* cases).",
+  "algorithm": {
+    "propertyOrdering": "Server-entry keys are emitted in Ordinal sort order (C# OrderBy(k => k, StringComparer.Ordinal)).",
+    "jsonSerialization": "System.Text.Json JsonObject.ToString() with WriteIndented=true: 2-space indent, ': ' key separator, arrays multiline, NO trailing newline.",
+    "tomlSerialization": "Section header '[<bodyPath>.<serverName>]' then one 'key = value' line per Ordinal-ordered property; string arrays/int arrays/bool arrays joined with ',' (no space); a trailing newline after each line. Reference uses Environment.NewLine; these vectors are the LF form (what the CLI and Linux CI emit).",
+    "jsonEscapingCaveat": "System.Text.Json escapes <, >, &, +, ' and non-ASCII as \\uXXXX; JSON.stringify does not. For the ASCII/HTML-safe data the writers emit (forward-slash paths, scheme://host/path URLs, key=value args, base64url tokens) the two serializers are byte-identical. These vectors stay inside that domain."
+  },
+  "json": [
+    {
+      "note": "stdio config (mirrors JsonAiAgentConfigTests.CreateStdioConfig): keys sorted args<command<type.",
+      "serverName": "ai-game-developer",
+      "bodyPath": "mcpServers",
+      "properties": {
+        "type": "stdio",
+        "command": "C:/proj/Library/mcp-server/win-x64/gamedev-mcp-server.exe",
+        "args": ["port=23940", "plugin-timeout=10000", "client-transport=stdio"]
+      },
+      "expected": "{\n  \"mcpServers\": {\n    \"ai-game-developer\": {\n      \"args\": [\n        \"port=23940\",\n        \"plugin-timeout=10000\",\n        \"client-transport=stdio\"\n      ],\n      \"command\": \"C:/proj/Library/mcp-server/win-x64/gamedev-mcp-server.exe\",\n      \"type\": \"stdio\"\n    }\n  }\n}"
+    },
+    {
+      "note": "http config with a pinned routing URL (T4): keys sorted type<url.",
+      "serverName": "ai-game-developer",
+      "bodyPath": "mcpServers",
+      "properties": {
+        "type": "http",
+        "url": "https://ai-game.dev/mcp/p/34ea75f2"
+      },
+      "expected": "{\n  \"mcpServers\": {\n    \"ai-game-developer\": {\n      \"type\": \"http\",\n      \"url\": \"https://ai-game.dev/mcp/p/34ea75f2\"\n    }\n  }\n}"
+    },
+    {
+      "note": "nested body path (projects->myProject->mcpServers): each segment nests one object level.",
+      "serverName": "ai-game-developer",
+      "bodyPath": "projects->myProject->mcpServers",
+      "properties": {
+        "type": "http",
+        "url": "https://ai-game.dev/mcp"
+      },
+      "expected": "{\n  \"projects\": {\n    \"myProject\": {\n      \"mcpServers\": {\n        \"ai-game-developer\": {\n          \"type\": \"http\",\n          \"url\": \"https://ai-game.dev/mcp\"\n        }\n      }\n    }\n  }\n}"
+    },
+    {
+      "note": "alphabetical ordering (JsonAiAgentConfigTests.ExpectedFileContent_PropertiesInAlphabeticalOrder): alpha<middle<zebra.",
+      "serverName": "ai-game-developer",
+      "bodyPath": "mcpServers",
+      "properties": {
+        "zebra": "last",
+        "alpha": "first",
+        "middle": "mid"
+      },
+      "expected": "{\n  \"mcpServers\": {\n    \"ai-game-developer\": {\n      \"alpha\": \"first\",\n      \"middle\": \"mid\",\n      \"zebra\": \"last\"\n    }\n  }\n}"
+    },
+    {
+      "note": "http config with an explicit PAT header (Flow C / --token): keys sorted headers<type<url.",
+      "serverName": "ai-game-developer",
+      "bodyPath": "mcpServers",
+      "properties": {
+        "type": "http",
+        "url": "https://ai-game.dev/mcp",
+        "headers": { "Authorization": "Bearer TESTTOKEN" }
+      },
+      "expected": "{\n  \"mcpServers\": {\n    \"ai-game-developer\": {\n      \"headers\": {\n        \"Authorization\": \"Bearer TESTTOKEN\"\n      },\n      \"type\": \"http\",\n      \"url\": \"https://ai-game.dev/mcp\"\n    }\n  }\n}"
+    },
+    {
+      "note": "Unreal server name (unreal-mcp) — serverName is an adapter parameter, not hard-coded.",
+      "serverName": "unreal-mcp",
+      "bodyPath": "mcpServers",
+      "properties": {
+        "type": "http",
+        "url": "https://ai-game.dev/mcp/p/abcd1234"
+      },
+      "expected": "{\n  \"mcpServers\": {\n    \"unreal-mcp\": {\n      \"type\": \"http\",\n      \"url\": \"https://ai-game.dev/mcp/p/abcd1234\"\n    }\n  }\n}"
+    }
+  ],
+  "toml": [
+    {
+      "note": "stdio config (mirrors TomlAiAgentConfigTests.CreateStdioConfig): keys sorted args<command.",
+      "serverName": "ai-game-developer",
+      "bodyPath": "mcp_servers",
+      "properties": {
+        "command": "C:/proj/gamedev-mcp-server.exe",
+        "args": ["port=23940", "plugin-timeout=10000", "client-transport=stdio"]
+      },
+      "expected": "[mcp_servers.ai-game-developer]\nargs = [\"port=23940\",\"plugin-timeout=10000\",\"client-transport=stdio\"]\ncommand = \"C:/proj/gamedev-mcp-server.exe\"\n"
+    },
+    {
+      "note": "http config.",
+      "serverName": "ai-game-developer",
+      "bodyPath": "mcp_servers",
+      "properties": {
+        "url": "https://ai-game.dev/mcp"
+      },
+      "expected": "[mcp_servers.ai-game-developer]\nurl = \"https://ai-game.dev/mcp\"\n"
+    },
+    {
+      "note": "Codex-like config (bool + int scalars): keys sorted args<command<enabled<tool_timeout_sec.",
+      "serverName": "ai-game-developer",
+      "bodyPath": "mcp_servers",
+      "properties": {
+        "enabled": true,
+        "command": "C:/proj/gamedev-mcp-server.exe",
+        "args": ["port=23940", "plugin-timeout=10000", "client-transport=stdio"],
+        "tool_timeout_sec": 300
+      },
+      "expected": "[mcp_servers.ai-game-developer]\nargs = [\"port=23940\",\"plugin-timeout=10000\",\"client-transport=stdio\"]\ncommand = \"C:/proj/gamedev-mcp-server.exe\"\nenabled = true\ntool_timeout_sec = 300\n"
+    },
+    {
+      "note": "int array (joined with ',' no space).",
+      "serverName": "ai-game-developer",
+      "bodyPath": "mcp_servers",
+      "properties": {
+        "ports": [8080, 8081, 8082]
+      },
+      "expected": "[mcp_servers.ai-game-developer]\nports = [8080,8081,8082]\n"
+    },
+    {
+      "note": "bool array.",
+      "serverName": "ai-game-developer",
+      "bodyPath": "mcp_servers",
+      "properties": {
+        "flags": [true, false, true]
+      },
+      "expected": "[mcp_servers.ai-game-developer]\nflags = [true,false,true]\n"
+    },
+    {
+      "note": "string array + custom body path.",
+      "serverName": "ai-game-developer",
+      "bodyPath": "mcp_servers",
+      "properties": {
+        "names": ["alpha", "beta", "gamma"]
+      },
+      "expected": "[mcp_servers.ai-game-developer]\nnames = [\"alpha\",\"beta\",\"gamma\"]\n"
+    },
+    {
+      "note": "negative int array.",
+      "serverName": "ai-game-developer",
+      "bodyPath": "mcp_servers",
+      "properties": {
+        "offsets": [-10, 0, 10]
+      },
+      "expected": "[mcp_servers.ai-game-developer]\noffsets = [-10,0,10]\n"
+    }
+  ]
+}
