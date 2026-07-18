@@ -1,0 +1,83 @@
+name: Release
+
+# Publishes @baizor/gamedev-cli-core to npm via Trusted Publishing (OIDC).
+#
+# The npm publish step MUST live directly in this workflow file: the npm Trusted
+# Publisher binding is to this exact repo + workflow (`release.yml`). Do NOT
+# factor the publish into a reusable workflow — reusable-workflow bindings are a
+# known npm TP limitation for workflow_dispatch. Provenance is generated
+# automatically under TP (no `--provenance` flag, no NPM_TOKEN).
+#
+# Run it from your machine:
+#   gh workflow run release.yml -f version=X.Y.Z
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish, e.g. 1.2.3 (strict MAJOR.MINOR.PATCH)"
+        required: true
+        type: string
+
+permissions:
+  contents: write   # release metadata / tagging headroom
+  id-token: write   # REQUIRED for npm Trusted Publishing (OIDC)
+
+jobs:
+  publish:
+    name: npm publish (OIDC)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"           # latest 22.x satisfies the >= 22.14.0 floor
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Ensure npm >= 11.5.1
+        run: npm install -g "npm@^11.5.1"   # >= 11.5.1 for OIDC; stays on 11.x (npm 12 broke provenance/sigstore)
+
+      # Below Node 22.14.0 or npm 11.5.1 the OIDC publish silently degrades
+      # (no trusted-publishing / no automatic provenance) — fail fast instead.
+      - name: Enforce Node >= 22.14.0 and npm >= 11.5.1
+        run: |
+          set -euo pipefail
+          NODE_VER="$(node -v | sed 's/^v//')"
+          NPM_VER="$(npm -v)"
+          echo "Node: $NODE_VER"
+          echo "npm:  $NPM_VER"
+          # ver_ge A B  → true when A >= B (B sorts first/equal under version sort)
+          ver_ge() { [ "$2" = "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n1)" ]; }
+          if ! ver_ge "$NODE_VER" "22.14.0"; then
+            echo "::error::Node $NODE_VER < 22.14.0 — OIDC Trusted Publishing degrades silently. Aborting."
+            exit 1
+          fi
+          if ! ver_ge "$NPM_VER" "11.5.1"; then
+            echo "::error::npm $NPM_VER < 11.5.1 — OIDC Trusted Publishing degrades silently. Aborting."
+            exit 1
+          fi
+
+      - name: Validate version input
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "${{ inputs.version }}" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+            echo "::error::version '${{ inputs.version }}' is not strict MAJOR.MINOR.PATCH"
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Set package version
+        run: npm version "${{ inputs.version }}" --no-git-tag-version --allow-same-version
+
+      - name: Build
+        run: npm run build
+
+      # Trusted Publishing (OIDC): no NODE_AUTH_TOKEN, no --provenance flag.
+      # Provenance is attached automatically because id-token: write is granted.
+      - name: Publish to npm
+        run: npm publish

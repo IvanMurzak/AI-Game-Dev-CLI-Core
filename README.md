@@ -3,21 +3,47 @@
 Shared TypeScript CLI core for the AI Game Dev engine CLIs (Unity / Unreal / Godot),
 published to npm as **`@baizor/gamedev-cli-core`** via **npm Trusted Publishing (OIDC, tokenless)**.
 
-> **Status: bootstrap.** This repo currently holds only a placeholder `0.0.0` package used to
-> claim the npm name so Trusted Publishing can be bound to it. The real shared modules —
-> project identity / pin hashing, OAuth 2.1 device-grant login, the machine credential store,
-> and the `setup-mcp` / `install-plugin` logic the three engine CLIs consume — land through the
-> `auth-fixes` design (tasks b1–b4): scaffold + vitest CI, module extraction, then the first
-> real OIDC publish.
+This package is the single source of truth for CLI logic; the three engine CLIs are thin,
+engine-specific adapters over it. The shared modules — project identity / pin hashing (v1 + v2
+with golden vectors), OAuth 2.1 device-grant login + refresh, the machine credential store, and
+the `setup-mcp` / `install-plugin` logic — land here through the `auth-fixes` design (tasks b2/b3).
+This scaffold currently exposes the package version plus a small semver utility slice so CI builds
+and tests something real.
 
-## Bootstrap publish (one-time, owner)
+## Requirements
 
-1. `npm login` as the `baizor` account.
-2. `npm publish` (the scoped package publishes public via `publishConfig.access`).
-3. In the npm web UI → the package's **Settings → Trusted Publishing**, bind the GitHub repo
-   `IvanMurzak/AI-Game-Dev-CLI-Core` and the workflow `release.yml` (added in b1).
+- Node.js **>= 22.14.0**
+- npm **>= 11.5.1** (required for OIDC Trusted Publishing; below this the publish silently degrades)
 
-## Release (after bootstrap)
+## Develop
 
-`gh workflow run release.yml -f version=X.Y.Z` — publishes via OIDC (automatic provenance;
-requires npm ≥ 11.5.1 and Node ≥ 22.14.0 in the job).
+```bash
+npm install       # install dependencies
+npm run build     # tsc -> dist/ (ESM + .d.ts)
+npm test          # vitest run
+npm run typecheck # tsc --noEmit
+```
+
+## Release (npm Trusted Publishing / OIDC)
+
+Releases are cut from the `release.yml` GitHub Actions workflow, which publishes to npm over OIDC
+(no npm token, no `--provenance` flag — provenance is attached automatically). Run it from your
+machine with the GitHub CLI:
+
+```bash
+gh workflow run release.yml -f version=X.Y.Z
+```
+
+The workflow enforces the Node >= 22.14.0 / npm >= 11.5.1 floors, sets the package version from the
+`version` input, builds, and publishes.
+
+### Trusted Publishing binding (owner, one-time)
+
+The npm Trusted Publisher for `@baizor/gamedev-cli-core` is bound to **this exact repo + workflow**
+(`.github/workflows/release.yml`). The publish step lives directly in that workflow file — it is
+**not** factored into a reusable workflow, because reusable-workflow bindings are a known npm TP
+limitation for `workflow_dispatch`.
+
+## License
+
+[MIT](LICENSE) © Ivan Murzak
