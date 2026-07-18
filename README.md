@@ -16,10 +16,29 @@ engine-specific adapters over it. The shared modules land here through the `auth
   - **OAuth 2.1 device-grant login** — `deviceLogin` (RFC 8628, `/oauth/device_authorization` +
     `/oauth/token`) plus the proactive/reactive refresh loop (`HttpTokenRefresher`,
     `MachineCredentialProvider`) with token rotation and a clean `login required` on family-revoke.
-- **Pending (b3):** agents-registry / config writers, `setup-mcp`, `install-plugin`, enroll,
-  server-download, project-marker, and the remaining UI/validation utilities.
+- **Landed (b3 — shared modules + the engine-adapter contract):**
+  - **engine-adapter contract** — `EngineAdapter` (+ `unityAdapter` / `unrealAdapter` / `godotAdapter`),
+    the single typed seam that carries every per-engine difference: `serverName`, project markers,
+    `stdioSupported` + `stdioArgs`, the server install-dir layout, `loginServerTarget`, and the OAuth
+    `clientId`. **No engine specifics live anywhere else in the package.**
+  - **agent-config writers** — `JsonAiAgentConfig` / `TomlAiAgentConfig`, byte-for-byte parity with
+    the C# `com.IvanMurzak.McpPlugin.AgentConfig`, gated by `test/golden-vectors/AgentConfig.GoldenVectors.json`,
+    plus the engine-neutral `agentRegistry`.
+  - **setup-mcp policy** — `setupMcp` / `resolveSetupMcpPlan`: pins the routing URL by default
+    (`/mcp/p/<pin-v2>` http, `project=<pin>` stdio; B4), with a `--no-pin` escape hatch, and writes a
+    static credential **only** on an explicit `--token` opt-in (M7 — the default config is
+    credential-free; the pin is routing-only, not part of the OAuth resource — M8).
+  - **install-plugin policy** — `resolveInstallTarget`: resolves the project path
+    `positional → --path → cwd` (B1) then marker-probes it, failing with a message listing exactly
+    what was checked. Ancestor walk-up is out of scope (M5).
+  - **enroll** — `runEnroll` / `redeemEnrollmentCode`: writes the v2 pin (the B5 fix replaces the
+    Unity CLI's local `\`→`/` workaround) and records the **AS-root** `serverTarget`, never a pinned
+    hub URL (b2 review MED-2).
+  - **server-download** — `downloadServer` with a fail-closed `SHA256SUMS` verify-before-execute gate
+    and a dependency-free in-process `parseZip` unzip.
+  - **project-marker, validation, ui/progress** utilities.
 
-A small semver utility slice is also exposed.
+A small semver utility slice is also exposed. The package has **zero runtime dependencies**.
 
 ## Requirements
 
