@@ -1,15 +1,29 @@
 {
   "name": "@baizor/gamedev-cli-core",
   "version": "0.0.0",
-  "description": "Shared CLI core for the AI Game Dev engine CLIs (Unity/Unreal/Godot). Placeholder bootstrap to claim the package name for npm Trusted Publishing (OIDC); real modules land via CI.",
+  "description": "Shared TypeScript CLI core for the AI Game Dev engine CLIs (Unity/Unreal/Godot): project identity/pin, OAuth device login, machine credential store, and setup-mcp/install-plugin logic. Consumed as thin adapters by the three engine CLIs.",
   "license": "MIT",
   "author": "Ivan Murzak",
   "type": "module",
-  "main": "index.js",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
   "files": [
-    "index.js",
-    "README.md"
+    "dist",
+    "README.md",
+    "LICENSE"
   ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
   "keywords": [
     "ai-game-dev",
     "gamedev",
@@ -24,7 +38,14 @@
   "bugs": {
     "url": "https://github.com/IvanMurzak/AI-Game-Dev-CLI-Core/issues"
   },
+  "engines": {
+    "node": ">=22.14.0"
+  },
   "publishConfig": {
     "access": "public"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
   }
 }
