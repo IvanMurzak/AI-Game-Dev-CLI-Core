@@ -1,0 +1,79 @@
+README.md
+  s_de4b5cd5cec9ce::t_28815dc7ca8712 19-41
+src/agent-config.ts
+  s_de4b5cd5cec9ce::t_04a84e375d28b0 1-950
+src/agents-registry.ts
+  s_de4b5cd5cec9ce::t_38a35a5a1d800d 1-297
+src/engine-adapter.ts
+  s_de4b5cd5cec9ce::t_6c17c52c5a62b4 1-201
+src/enroll.ts
+  s_de4b5cd5cec9ce::t_d5956732eef2ec 1-275
+src/index.ts
+  s_de4b5cd5cec9ce::t_df3893c82c6b5c 2,4-6,8-23,108-210
+src/install-plugin.ts
+  s_de4b5cd5cec9ce::t_af32805ce9ee29 1-127
+src/progress.ts
+  s_de4b5cd5cec9ce::t_aee5994269fee2 1-35
+src/project-marker.ts
+  s_de4b5cd5cec9ce::t_c521c03023497b 1-73
+src/routing.ts
+  s_de4b5cd5cec9ce::t_f80a1d2dc1d93b 1-45
+src/server-checksum.ts
+  s_de4b5cd5cec9ce::t_dd444464bdc808 1-117
+src/server-download.ts
+  s_de4b5cd5cec9ce::t_807daaa7f0e696 1-313
+src/setup-mcp.ts
+  s_de4b5cd5cec9ce::t_3acf5262f45aca 1-294
+src/ui.ts
+  s_de4b5cd5cec9ce::t_331eb6655aaf6c 1-38
+src/unzip.ts
+  s_de4b5cd5cec9ce::t_6e04a8a2b5524e 1-82
+src/validation.ts
+  s_de4b5cd5cec9ce::t_53165c7c172073 1-52
+test/agent-config.test.ts
+  s_de4b5cd5cec9ce::t_52085dffd35204 1-311
+test/agents-registry.test.ts
+  s_de4b5cd5cec9ce::t_6d7a69e4878a2c 1-50
+test/engine-adapter.test.ts
+  s_de4b5cd5cec9ce::t_f765e2283fe3c8 1-114
+test/enroll.test.ts
+  s_de4b5cd5cec9ce::t_91a982f2b24598 1-141
+test/golden-vectors/AgentConfig.GoldenVectors.json
+  s_de4b5cd5cec9ce::t_545708efc1cbdb 1-143
+test/install-plugin.test.ts
+  s_de4b5cd5cec9ce::t_f5a4b8d650a4c9 1-83
+test/mem-fs.ts
+  s_de4b5cd5cec9ce::t_df99344b66f302 1-36
+test/project-marker.test.ts
+  s_de4b5cd5cec9ce::t_d7b7b9f84e4ad0 1-62
+test/routing.test.ts
+  s_de4b5cd5cec9ce::t_0499fd2e6cacbb 1-25
+test/server-checksum.test.ts
+  s_de4b5cd5cec9ce::t_c9cfd09920372f 1-62
+test/server-download.test.ts
+  s_de4b5cd5cec9ce::t_004e18d9abd273 1-132
+test/setup-mcp.test.ts
+  s_de4b5cd5cec9ce::t_802e2cac4fc52c 1-160
+test/ui.test.ts
+  s_de4b5cd5cec9ce::t_ceec53fcacdff5 1-39
+test/unzip.test.ts
+  s_de4b5cd5cec9ce::t_464f32d9ba0724 1-25
+test/zip-builder.ts
+  s_de4b5cd5cec9ce::t_46e20c48deff43 1-68
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "1cd9dbca2187863c54f827540919a75e81ceced0",
+  "prompts": {},
+  "sessions": {
+    "s_de4b5cd5cec9ce": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "s_de4b5cd5cec9ce",
+        "model": "unknown"
+      },
+      "human_author": "Ivan Murzak <Ivan.D.Murzak@gmail.com>"
+    }
+  }
+}
