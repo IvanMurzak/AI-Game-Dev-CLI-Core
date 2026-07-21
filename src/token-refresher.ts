@@ -42,18 +42,28 @@ export function normalizeServerBase(serverTarget: string | undefined | null): st
   return s;
 }
 
-/** Build the RFC 6749 refresh-token grant form (mirrors `UnityTokenRefresher.BuildRefreshForm`). */
+/**
+ * Build the RFC 6749 refresh-token grant form (mirrors `UnityTokenRefresher.BuildRefreshForm`).
+ * The optional RFC 8707 `resource` indicator is added as exactly ONE parameter when provided — the
+ * SAME single resource the original grant was minted for, so refreshed tokens stay single-audience.
+ */
 export function buildRefreshForm(
   refreshToken: string,
   clientId: string,
   scope: string,
+  resource?: string,
 ): URLSearchParams {
-  return new URLSearchParams({
+  const form = new URLSearchParams({
     grant_type: "refresh_token",
     refresh_token: refreshToken,
     client_id: clientId,
     scope,
   });
+  const trimmed = resource?.trim();
+  if (trimmed) {
+    form.set("resource", trimmed);
+  }
+  return form;
 }
 
 /** Turn a parsed token response into a {@link TokenRefreshResult} (mirrors `BuildResult`). */
@@ -85,8 +95,13 @@ export interface HttpTokenRefresherOptions {
   defaultServerBaseUrl: string;
   /** Product client id. */
   clientId: string;
-  /** Scope; defaults to `mcp:plugin`. */
+  /** Scope; defaults to `mcp:plugin` (pass `mcp:agent` for agent-plane credentials). */
   scope?: string;
+  /**
+   * RFC 8707 resource indicator — the SAME single resource the original grant carried. When set,
+   * exactly ONE `resource` parameter is sent on every refresh request. Omitted → legacy wire shape.
+   */
+  resource?: string;
   /** Injectable for tests; defaults to the global `fetch`. */
   fetchImpl?: typeof fetch;
   /** Per-request network timeout (ms). Default 20s. */
@@ -100,6 +115,7 @@ export class HttpTokenRefresher implements TokenRefresher {
   private readonly _defaultBase: string;
   private readonly _clientId: string;
   private readonly _scope: string;
+  private readonly _resource: string | undefined;
   private readonly _fetch: typeof fetch;
   private readonly _timeoutMs: number;
   private readonly _now: () => number;
@@ -111,6 +127,7 @@ export class HttpTokenRefresher implements TokenRefresher {
     }
     this._clientId = options.clientId.trim();
     this._scope = options.scope?.trim() || DEFAULT_PLUGIN_SCOPE;
+    this._resource = options.resource?.trim() || undefined;
     this._fetch = options.fetchImpl ?? fetch;
     this._timeoutMs = options.timeoutMs ?? 20_000;
     this._now = options.now ?? Date.now;
@@ -144,7 +161,7 @@ export class HttpTokenRefresher implements TokenRefresher {
           "Content-Type": "application/x-www-form-urlencoded",
           Accept: "application/json",
         },
-        body: buildRefreshForm(refreshToken, this._clientId, this._scope).toString(),
+        body: buildRefreshForm(refreshToken, this._clientId, this._scope, this._resource).toString(),
         signal: controller.signal,
       });
 
