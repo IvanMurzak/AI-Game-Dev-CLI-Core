@@ -15,6 +15,11 @@ import type { MachineCredentials } from "./machine-credentials.js";
  *   - a `slow_down` error bumps the interval by 5s (§3.5);
  *   - `authorization_pending` keeps polling; `expired_token` / `access_denied` stop cleanly.
  *
+ * MCP conformance (additive): an optional RFC 8707 `resource` indicator is threaded into the
+ * device-authorization request AND every token poll — exactly one `resource` per request, so the AS
+ * mints single-audience tokens — and `scope=mcp:agent` ({@link MCP_AGENT_SCOPE}) is first-class
+ * alongside the default {@link DEFAULT_PLUGIN_SCOPE}.
+ *
  * Nothing here touches the machine credential store — a caller writes the returned credentials only
  * on success, so a network failure or a denied/expired grant never corrupts the store (design 03 F4).
  */
@@ -56,6 +61,9 @@ export const DEVICE_CODE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_c
 /** Default scope selecting the MCP-plugin JWT + refresh-token response. */
 export const DEFAULT_PLUGIN_SCOPE = "mcp:plugin";
 
+/** First-class agent-plane scope: `scope=mcp:agent` selects an agent-plane token response. */
+export const MCP_AGENT_SCOPE = "mcp:agent";
+
 /** RFC 8628 §3.5 default polling interval when the server does not specify one (5 seconds). */
 export const DEFAULT_POLL_INTERVAL_MS = 5000;
 
@@ -96,6 +104,13 @@ export interface HttpDeviceAuthTransportOptions {
   serverBaseUrl: string;
   clientId: string;
   scope?: string;
+  /**
+   * RFC 8707 resource indicator — the MCP resource server the token is minted for (e.g.
+   * `https://ai-game.dev/mcp`). When set, exactly ONE `resource` parameter is sent on the
+   * device-authorization request AND on every token poll, yielding a single-audience token.
+   * Omitted → the legacy wire shape (no `resource`) is preserved.
+   */
+  resource?: string;
   /** Injectable for tests; defaults to the global `fetch`. */
   fetchImpl?: typeof fetch;
   /** Per-request network timeout (ms). Default 30s. */
@@ -113,6 +128,7 @@ export class HttpDeviceAuthTransport implements DeviceAuthTransport {
   private readonly _serverBaseUrl: string;
   private readonly _clientId: string;
   private readonly _scope: string;
+  private readonly _resource: string | undefined;
   private readonly _fetch: typeof fetch;
   private readonly _timeoutMs: number;
 
@@ -126,12 +142,17 @@ export class HttpDeviceAuthTransport implements DeviceAuthTransport {
     this._serverBaseUrl = trimTrailingSlash(options.serverBaseUrl.trim());
     this._clientId = options.clientId.trim();
     this._scope = options.scope?.trim() || DEFAULT_PLUGIN_SCOPE;
+    this._resource = options.resource?.trim() || undefined;
     this._fetch = options.fetchImpl ?? fetch;
     this._timeoutMs = options.timeoutMs ?? 30_000;
   }
 
   async requestDeviceCode(signal?: AbortSignal): Promise<DeviceAuthorizeResponse> {
     const body = new URLSearchParams({ client_id: this._clientId, scope: this._scope });
+    if (this._resource) {
+      // RFC 8707: `set` (not `append`) guarantees exactly ONE resource → a single-audience token.
+      body.set("resource", this._resource);
+    }
     const response = await this.post(deviceAuthorizationUrl(this._serverBaseUrl), body, signal);
     if (!response.ok) {
       const text = await safeText(response);
@@ -146,6 +167,9 @@ export class HttpDeviceAuthTransport implements DeviceAuthTransport {
       device_code: deviceCode,
       client_id: this._clientId,
     });
+    if (this._resource) {
+      body.set("resource", this._resource);
+    }
     // Intentionally NOT ok-checked: pending / slow_down are HTTP 400 with a JSON error body.
     const response = await this.post(tokenUrl(this._serverBaseUrl), body, signal);
     return (await parseTokenResponse(response)) satisfies DeviceTokenResponse;
@@ -182,8 +206,16 @@ export interface DeviceLoginOptions {
   serverBaseUrl: string;
   /** Product client id (`unity-mcp-cli` / `unreal-mcp-cli` / `godot-cli`). Required. */
   clientId: string;
-  /** Scope; defaults to `mcp:plugin`. */
+  /** Scope; defaults to `mcp:plugin`. Pass {@link MCP_AGENT_SCOPE} (`mcp:agent`) for the agent plane. */
   scope?: string;
+  /**
+   * RFC 8707 resource indicator threaded into the default transport: exactly ONE `resource` on the
+   * device-authorization request AND every token poll (single-audience tokens). Omitted → legacy
+   * wire shape. Ignored when a custom `transport` is supplied (the transport owns its wire shape).
+   */
+  resource?: string;
+  /** Injectable `fetch` for the default transport (mock-AS tests). Ignored when `transport` is supplied. */
+  fetchImpl?: typeof fetch;
   /**
    * The server target recorded on the resulting credential (hosted vs local). Defaults to
    * `serverBaseUrl`. Kept distinct so a caller can record the hub URL if it prefers.
@@ -229,6 +261,8 @@ export async function deviceLogin(options: DeviceLoginOptions): Promise<DeviceLo
       serverBaseUrl: options.serverBaseUrl,
       clientId: options.clientId,
       scope,
+      resource: options.resource,
+      fetchImpl: options.fetchImpl,
     });
   const delay = options.delay ?? cancellableDelay;
   const now = options.now ?? Date.now;

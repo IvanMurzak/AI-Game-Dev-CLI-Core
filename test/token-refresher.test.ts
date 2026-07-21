@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  DEFAULT_PLUGIN_SCOPE,
   HttpTokenRefresher,
+  MCP_AGENT_SCOPE,
   buildRefreshForm,
   buildRefreshResult,
   normalizeServerBase,
@@ -32,6 +34,21 @@ describe("buildRefreshForm (UnityTokenRefresher.BuildRefreshForm parity)", () =>
     expect(form.get("client_id")).toBe("unity-mcp-cli");
     expect(form.get("scope")).toBe("mcp:plugin");
   });
+
+  it("omits resource when not provided — the legacy wire shape is preserved", () => {
+    expect(buildRefreshForm("refresh-1", "unity-mcp-cli", "mcp:plugin").has("resource")).toBe(false);
+    expect(buildRefreshForm("refresh-1", "unity-mcp-cli", "mcp:plugin", "   ").has("resource")).toBe(false);
+  });
+
+  it.each([[DEFAULT_PLUGIN_SCOPE], [MCP_AGENT_SCOPE]])(
+    "carries exactly ONE RFC 8707 resource when provided (scope %s)",
+    (scope) => {
+      const form = buildRefreshForm("refresh-1", "unity-mcp-cli", scope, "https://ai-game.dev/mcp");
+      expect(form.getAll("resource")).toEqual(["https://ai-game.dev/mcp"]);
+      expect(form.get("scope")).toBe(scope);
+      expect(form.get("grant_type")).toBe("refresh_token");
+    },
+  );
 });
 
 describe("buildRefreshResult (UnityTokenRefresher.BuildResult parity)", () => {
@@ -138,5 +155,52 @@ describe("HttpTokenRefresher", () => {
     expect(await noBase.refresh("")).toEqual({ ok: false, reason: "no refresh token" });
     expect(await noBase.refresh("r")).toEqual({ ok: false, reason: "no server target" });
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it.each([[DEFAULT_PLUGIN_SCOPE], [MCP_AGENT_SCOPE]])(
+    "sends exactly ONE RFC 8707 resource on the refresh request (scope %s)",
+    async (scope) => {
+      const bodies: string[] = [];
+      const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+        bodies.push(String(init!.body));
+        return new Response(JSON.stringify({ access_token: "new-a" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }) as unknown as typeof fetch;
+
+      const refresher = new HttpTokenRefresher({
+        defaultServerBaseUrl: "https://ai-game.dev",
+        clientId: "unity-mcp-cli",
+        scope,
+        resource: "https://ai-game.dev/mcp",
+        fetchImpl,
+      });
+
+      expect(await refresher.refresh("refresh-1")).toEqual({ ok: true, accessToken: "new-a" });
+      expect(bodies).toHaveLength(1);
+      const form = new URLSearchParams(bodies[0]!);
+      expect(form.getAll("resource")).toEqual(["https://ai-game.dev/mcp"]);
+      expect(form.get("scope")).toBe(scope);
+      expect(form.get("grant_type")).toBe("refresh_token");
+      expect(form.get("refresh_token")).toBe("refresh-1");
+    },
+  );
+
+  it("omits resource on refresh when not configured — the legacy wire shape is preserved", async () => {
+    const bodies: string[] = [];
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      bodies.push(String(init!.body));
+      return new Response(JSON.stringify({ access_token: "new-a" }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const refresher = new HttpTokenRefresher({
+      defaultServerBaseUrl: "https://ai-game.dev",
+      clientId: "unity-mcp-cli",
+      fetchImpl,
+    });
+    await refresher.refresh("refresh-1");
+    const form = new URLSearchParams(bodies[0]!);
+    expect(form.has("resource")).toBe(false);
+    expect(form.get("scope")).toBe(DEFAULT_PLUGIN_SCOPE);
   });
 });
