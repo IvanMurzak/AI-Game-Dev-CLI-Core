@@ -87,6 +87,40 @@ export type {
   HttpDeviceAuthTransportOptions,
 } from "./oauth-device-flow.js";
 
+// ── OAuth 2.1 authorization-code + PKCE + loopback login (RFC 8252) ─────────────────────────────
+export {
+  authCodeLogin,
+  HttpAuthCodeTransport,
+  createLoopbackListener,
+  defaultBrowserOpener,
+  buildAuthorizeUrl,
+  authorizeUrl,
+  generateCodeVerifier,
+  deriveCodeChallenge,
+  generateState,
+  isLoopbackHost,
+  LoopbackTimeoutError,
+  OAUTH_AUTHORIZE_PATH,
+  AUTHORIZATION_CODE_GRANT_TYPE,
+  PKCE_CODE_CHALLENGE_METHOD,
+  DEFAULT_LOOPBACK_HOST,
+  DEFAULT_CALLBACK_PATH,
+  DEFAULT_AUTHCODE_TIMEOUT_MS,
+} from "./oauth-authcode-flow.js";
+export type {
+  AuthCodeLoginOptions,
+  AuthCodeLoginResult,
+  AuthCodeTransport,
+  AuthCodeTokenResponse,
+  ExchangeCodeParams,
+  HttpAuthCodeTransportOptions,
+  LoopbackListener,
+  LoopbackListenerFactory,
+  LoopbackRedirect,
+  BuildAuthorizeUrlParams,
+  RandomBytesFn,
+} from "./oauth-authcode-flow.js";
+
 // ── token refresh (HTTP seam + proactive/reactive loop) ───────────────────────────────────────
 export {
   HttpTokenRefresher,
