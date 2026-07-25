@@ -3,6 +3,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { writeFileAtomicSync } from "./atomic-file.js";
+
 /**
  * TypeScript client of the shared machine credential store — the same on-disk contract the plugin's
  * C# `MachineCredentialStore` (MCP-Plugin-dotnet, `com.IvanMurzak.McpPlugin.AgentConfig`) reads and
@@ -18,10 +20,11 @@ import * as path from "node:path";
  *     interoperable with the C# store's `CryptProtectData`/`CryptUnprotectData` (the description
  *     string and `CRYPTPROTECT_UI_FORBIDDEN` flag do not affect decryptability).
  *
- * **Corruption safety (auth-fixes design 03 F4 / DoD):** writes go to a sibling temp file that is
- * fsync'd and permission-restricted, then atomically `rename`d over the target. A crash, an
- * exception while encrypting, or a full disk therefore never leaves a torn/half-written
- * `credentials.json` — the previous good file (or no file) survives. See {@link write}.
+ * **Corruption safety (auth-fixes design 03 F4 / DoD):** writes go through
+ * {@link ../atomic-file.writeFileAtomicSync} — a sibling temp file that is fsync'd and
+ * permission-restricted, then atomically `rename`d over the target. A crash, an exception while
+ * encrypting, or a full disk therefore never leaves a torn/half-written `credentials.json` — the
+ * previous good file (or no file) survives. See {@link write}.
  */
 
 /** Directory name under the user home (or a project root) that holds the store. */
@@ -131,42 +134,7 @@ export class MachineCredentialStore {
     const json = JSON.stringify(document, undefinedOmittingReplacer, 2);
     const bytes = this._codec.encrypt(Buffer.from(json, "utf-8"));
 
-    this.ensureBaseDirectory();
-
-    const target = this.credentialsPath;
-    const tempPath = path.join(
-      this._baseDirectory,
-      `${CREDENTIALS_FILE_NAME}.${process.pid}.${Date.now().toString(36)}.tmp`,
-    );
-
-    let fd: number | undefined;
-    try {
-      // wx: fail if the temp path somehow already exists (never reuse a stranger's temp).
-      fd = fs.openSync(tempPath, "wx", 0o600);
-      fs.writeSync(fd, bytes);
-      fs.fsyncSync(fd);
-      fs.closeSync(fd);
-      fd = undefined;
-      if (!isWindows) {
-        fs.chmodSync(tempPath, 0o600);
-      }
-      // Atomic replace: readers see either the old file or the new file, never a torn write.
-      fs.renameSync(tempPath, target);
-    } catch (err) {
-      if (fd !== undefined) {
-        try {
-          fs.closeSync(fd);
-        } catch {
-          /* already closing on the error path */
-        }
-      }
-      try {
-        fs.rmSync(tempPath, { force: true });
-      } catch {
-        /* best-effort cleanup; the target is untouched regardless */
-      }
-      throw err;
-    }
+    writeFileAtomicSync(this.credentialsPath, bytes);
   }
 
   /** Read and decrypt the stored credentials, or null when none are present / the file is empty. */
@@ -211,13 +179,6 @@ export class MachineCredentialStore {
   delete(): void {
     if (fs.existsSync(this.credentialsPath)) {
       fs.rmSync(this.credentialsPath);
-    }
-  }
-
-  private ensureBaseDirectory(): void {
-    fs.mkdirSync(this._baseDirectory, { recursive: true });
-    if (!isWindows) {
-      fs.chmodSync(this._baseDirectory, 0o700);
     }
   }
 }

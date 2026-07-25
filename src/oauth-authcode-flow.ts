@@ -5,6 +5,15 @@ import type { AddressInfo, Socket } from "node:net";
 
 import type { MachineCredentials } from "./machine-credentials.js";
 import {
+  ClientRegistrationStore,
+  DEFAULT_DCR_TIMEOUT_MS,
+  OAUTH_AUTHORIZE_PATH,
+  resolveClientRegistration,
+  type AuthorizationServerMetadata,
+  type ClientRegistrationStoreLike,
+  type ResolvedClientRegistration,
+} from "./oauth-dcr.js";
+import {
   DEFAULT_PLUGIN_SCOPE,
   decodeJwtSubject,
   tokenUrl,
@@ -34,15 +43,32 @@ import {
  * Injectable seams (mirroring `deviceLogin`) keep the whole flow testable against a mock AS with no
  * live network and no real browser: the browser `openBrowser` opener (default spawns the OS handler —
  * **no Electron dependency**; the App may inject its own), the loopback `listenerFactory`, the token
- * `transport`, the PKCE/`state` random source, and the clock. When no browser can be opened the flow
- * returns a **clear error (never a hang)** so the caller can fall back to `deviceLogin`.
+ * `transport`, the PKCE/`state` random source, the `registrationStore`, and the clock. When no
+ * browser can be opened the flow returns a **clear error (never a hang)** so the caller can fall back
+ * to `deviceLogin`.
+ *
+ * ## Client identity: dynamic registration by default (RFC 8414 + RFC 7591)
+ *
+ * `/oauth/authorize` resolves `client_id` by an exact lookup in the AS's client registry, whose only
+ * writer is `POST /oauth/register` — so a **static client id is rejected** (`invalid_client`) unless
+ * that exact id was registered out of band. Omit {@link AuthCodeLoginOptions.clientId} (the
+ * recommended default) and this flow discovers the AS, reuses this installation's persisted
+ * registration, or registers once — see {@link ../oauth-dcr}. Supplying `clientId` explicitly opts
+ * OUT of registration and is honoured verbatim, which is what the engine CLIs' `EngineAdapter`
+ * clientId path relies on.
+ *
+ * Because RFC 6749 §4.1.2.1 forbids redirecting an unverified `client_id` back to the `redirect_uri`,
+ * an `invalid_client` never reaches the loopback listener — it is rendered in the user's browser
+ * while the flow waits out its full timeout. So in dynamic mode the flow **probes the authorization
+ * request itself before opening a browser**: a definite 4xx surfaces immediately instead of after a
+ * five-minute "timeout", and an `invalid_client` (the AS garbage-collects unused clients after 30
+ * days, and a client can be revoked) triggers **exactly one** re-registration + retry — never a loop.
  *
  * Additive + backward-compatible: nothing here touches the credential store — a caller writes the
  * returned credentials only on `ok:true`, so a failure at any stage leaves the store untouched.
  */
 
-/** Path (relative to the AS root) of the OAuth 2.1 authorization endpoint. */
-export const OAUTH_AUTHORIZE_PATH = "/oauth/authorize";
+export { OAUTH_AUTHORIZE_PATH };
 
 /** RFC 6749 §4.1.3 grant type redeemed at the token endpoint for an authorization code. */
 export const AUTHORIZATION_CODE_GRANT_TYPE = "authorization_code";
@@ -106,6 +132,11 @@ export interface BuildAuthorizeUrlParams {
   codeChallenge: string;
   /** RFC 8707 resource indicator; when set, exactly ONE `resource` is added to the authorize URL. */
   resource?: string;
+  /**
+   * Absolute authorization endpoint discovered via RFC 8414, overriding `{serverBaseUrl}/oauth/authorize`.
+   * Omitted → this package's hardcoded path (the pre-discovery behaviour).
+   */
+  authorizeEndpoint?: string;
 }
 
 /**
@@ -114,7 +145,7 @@ export interface BuildAuthorizeUrlParams {
  * testable without a listener or a browser.
  */
 export function buildAuthorizeUrl(params: BuildAuthorizeUrlParams): string {
-  const url = new URL(authorizeUrl(params.serverBaseUrl));
+  const url = new URL(params.authorizeEndpoint?.trim() || authorizeUrl(params.serverBaseUrl));
   url.searchParams.set("response_type", "code");
   url.searchParams.set("client_id", params.clientId);
   url.searchParams.set("redirect_uri", params.redirectUri);
@@ -133,6 +164,11 @@ export function buildAuthorizeUrl(params: BuildAuthorizeUrlParams): string {
 export function isLoopbackHost(host: string): boolean {
   const h = host.trim().replace(/^\[|\]$/g, "");
   return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h) || h === "::1";
+}
+
+/** Render a loopback host for use inside a URL authority (an IPv6 literal must be bracketed). */
+function loopbackHostForUrl(host: string): string {
+  return host.includes(":") ? `[${host.replace(/^\[|\]$/g, "")}]` : host;
 }
 
 /** The OAuth parameters carried on a captured loopback redirect. */
@@ -199,7 +235,7 @@ export const createLoopbackListener: LoopbackListenerFactory = async ({ host, pa
     rejectRedirect = reject;
   });
 
-  const hostForUrl = host.includes(":") ? `[${host.replace(/^\[|\]$/g, "")}]` : host;
+  const hostForUrl = loopbackHostForUrl(host);
 
   server.on("request", (req: IncomingMessage, res: ServerResponse) => {
     const requestUrl = new URL(req.url ?? "/", `http://${hostForUrl}`);
@@ -346,6 +382,11 @@ export interface HttpAuthCodeTransportOptions {
    * yielding a single-audience token. Omitted → the legacy wire shape (no `resource`).
    */
   resource?: string;
+  /**
+   * Absolute token endpoint discovered via RFC 8414, overriding `{serverBaseUrl}/oauth/token`.
+   * Omitted → this package's hardcoded path (the pre-discovery behaviour).
+   */
+  tokenEndpoint?: string;
   /** Injectable for tests; defaults to the global `fetch`. */
   fetchImpl?: typeof fetch;
   /** Per-request network timeout (ms). Default 30s. */
@@ -361,6 +402,7 @@ export class HttpAuthCodeTransport implements AuthCodeTransport {
   private readonly _serverBaseUrl: string;
   private readonly _clientId: string;
   private readonly _resource: string | undefined;
+  private readonly _tokenEndpoint: string;
   private readonly _fetch: typeof fetch;
   private readonly _timeoutMs: number;
 
@@ -374,6 +416,7 @@ export class HttpAuthCodeTransport implements AuthCodeTransport {
     this._serverBaseUrl = trimTrailingSlash(options.serverBaseUrl.trim());
     this._clientId = options.clientId.trim();
     this._resource = options.resource?.trim() || undefined;
+    this._tokenEndpoint = options.tokenEndpoint?.trim() || tokenUrl(this._serverBaseUrl);
     this._fetch = options.fetchImpl ?? fetch;
     this._timeoutMs = options.timeoutMs ?? 30_000;
   }
@@ -391,7 +434,7 @@ export class HttpAuthCodeTransport implements AuthCodeTransport {
     }
     // Intentionally NOT ok-checked: an invalid_grant (bad code / PKCE mismatch) is HTTP 400 with a
     // JSON error body the flow inspects.
-    const response = await this.post(tokenUrl(this._serverBaseUrl), body, signal);
+    const response = await this.post(this._tokenEndpoint, body, signal);
     return (await parseTokenResponse(response)) satisfies AuthCodeTokenResponse;
   }
 
@@ -424,8 +467,37 @@ export class HttpAuthCodeTransport implements AuthCodeTransport {
 export interface AuthCodeLoginOptions {
   /** The AS root (e.g. `https://ai-game.dev`) — NOT the `/mcp` hub URL. Used to build the transport. */
   serverBaseUrl: string;
-  /** Product client id (`unity-mcp-cli` / `unreal-mcp-cli` / `godot-cli`). Required. */
-  clientId: string;
+  /**
+   * A **statically registered** client id, which opts OUT of dynamic client registration and is sent
+   * verbatim (the engine CLIs' `EngineAdapter.clientId` path). **Omit it** — the recommended default
+   * for a desktop app — and the flow performs RFC 8414 discovery + RFC 7591 registration instead,
+   * reusing this installation's persisted `client_id`. A hardcoded id the AS never registered is
+   * rejected with `invalid_client`, which is exactly the bug DCR exists to prevent.
+   */
+  clientId?: string;
+  /**
+   * Human-readable product name registered as the client's `client_name` — **the user sees it on the
+   * consent screen**. Defaults to `AI Game Dev`. Only used in dynamic-registration mode.
+   */
+  clientName?: string;
+  /**
+   * Persistence seam for the dynamic registration; defaults to the on-disk
+   * {@link ../oauth-dcr.ClientRegistrationStore} (`~/.ai-game-dev/oauth-clients.json`, keyed by AS
+   * base URL). Only used in dynamic-registration mode.
+   */
+  registrationStore?: ClientRegistrationStoreLike;
+  /**
+   * Pre-fetched RFC 8414 metadata. In dynamic-registration mode it also skips this flow's own
+   * discovery call; in BOTH modes its `authorization_endpoint` / `token_endpoint` override this
+   * package's hardcoded paths, so a caller supplying a static `clientId` can still point the flow at
+   * an already-discovered AS.
+   */
+  metadata?: AuthorizationServerMetadata;
+  /**
+   * Per-request network timeout (ms) for discovery / registration / the authorize probe. Default 30s.
+   * Distinct from {@link timeoutMs}, which bounds the human browser round-trip.
+   */
+  networkTimeoutMs?: number;
   /** Scope; defaults to `mcp:plugin`. Pass `MCP_AGENT_SCOPE` (`mcp:agent`) for the agent plane. */
   scope?: string;
   /**
@@ -494,6 +566,10 @@ export async function authCodeLogin(options: AuthCodeLoginOptions): Promise<Auth
   const listenerFactory = options.listenerFactory ?? createLoopbackListener;
   const now = options.now ?? Date.now;
   const signal = options.signal;
+  const networkTimeoutMs = options.networkTimeoutMs ?? DEFAULT_DCR_TIMEOUT_MS;
+  const staticClientId = options.clientId?.trim();
+  // Dynamic (RFC 7591) mode is the default; an explicit `clientId` opts out and is used verbatim.
+  const dynamic = !staticClientId;
 
   if (!isLoopbackHost(host)) {
     return {
@@ -516,15 +592,81 @@ export async function authCodeLogin(options: AuthCodeLoginOptions): Promise<Auth
     listener = await listenerFactory({ host, path: callbackPath, timeoutMs, signal });
     const redirectUri = listener.redirectUri;
 
-    const url = buildAuthorizeUrl({
-      serverBaseUrl: options.serverBaseUrl,
-      clientId: options.clientId,
-      redirectUri,
-      scope,
-      state,
-      codeChallenge,
-      resource: options.resource,
-    });
+    // RFC 8252 §7.3: register the PORTLESS loopback URI. The AS matches scheme/host/path/query
+    // exactly and lets ONLY the port float, so one registration serves every launch's random port.
+    const registrationRedirectUri = `http://${loopbackHostForUrl(host)}${callbackPath}`;
+    const registrationStore = dynamic
+      ? (options.registrationStore ?? new ClientRegistrationStore())
+      : undefined;
+
+    let metadata: AuthorizationServerMetadata | undefined = options.metadata;
+    let clientId: string;
+
+    const resolveClient = (forceRegister: boolean): Promise<ResolvedClientRegistration> =>
+      resolveClientRegistration({
+        serverBaseUrl: options.serverBaseUrl,
+        redirectUris: [registrationRedirectUri],
+        clientName: options.clientName,
+        scope,
+        metadata,
+        store: registrationStore,
+        fetchImpl: options.fetchImpl,
+        timeoutMs: networkTimeoutMs,
+        signal,
+        forceRegister,
+      });
+
+    if (staticClientId) {
+      clientId = staticClientId;
+    } else {
+      const resolved = await resolveClient(false);
+      clientId = resolved.clientId;
+      metadata = resolved.metadata;
+    }
+
+    const buildUrl = (): string =>
+      buildAuthorizeUrl({
+        serverBaseUrl: options.serverBaseUrl,
+        clientId,
+        redirectUri,
+        scope,
+        state,
+        codeChallenge,
+        resource: options.resource,
+        authorizeEndpoint: metadata?.authorization_endpoint,
+      });
+
+    let url = buildUrl();
+
+    if (dynamic) {
+      // The AS answers an unknown client_id to the BROWSER and never redirects (RFC 6749 §4.1.2.1),
+      // so probing here is the only way to see `invalid_client` at all — otherwise it surfaces as a
+      // five-minute "timeout". Bounded: at most ONE re-registration, then we accept the verdict.
+      let probe = await probeAuthorizeRequest(url, options.fetchImpl, networkTimeoutMs, signal);
+      if (!probe.ok && probe.error === "invalid_client") {
+        const reRegistered = await resolveClient(true);
+        clientId = reRegistered.clientId;
+        metadata = reRegistered.metadata;
+        url = buildUrl();
+        probe = await probeAuthorizeRequest(url, options.fetchImpl, networkTimeoutMs, signal);
+      }
+      if (!probe.ok) {
+        return {
+          ok: false,
+          reason: probe.error === "access_denied" ? "denied" : "error",
+          message: describeAuthorizeRejection(probe),
+        };
+      }
+    }
+
+    // Re-check cancellation before touching the user's desktop. The authorize probe **fails open on
+    // every transport error — the `AbortError` raised by an aborting `signal` included** — so a
+    // sign-in cancelled while the probe was in flight would otherwise still pop a browser window
+    // here, moments before `waitForRedirect` reported the cancellation.
+    if (signal?.aborted) {
+      return { ok: false, reason: "cancelled", message: "Sign-in cancelled." };
+    }
+
     options.onAuthorizeUrl?.(url);
 
     // Open the browser BEFORE awaiting the redirect. A failure here is a clear error, not a hang.
@@ -565,8 +707,9 @@ export async function authCodeLogin(options: AuthCodeLoginOptions): Promise<Auth
       options.transport ??
       new HttpAuthCodeTransport({
         serverBaseUrl: options.serverBaseUrl,
-        clientId: options.clientId,
+        clientId,
         resource: options.resource,
+        tokenEndpoint: metadata?.token_endpoint,
         fetchImpl: options.fetchImpl,
       });
 
@@ -574,6 +717,24 @@ export async function authCodeLogin(options: AuthCodeLoginOptions): Promise<Auth
 
     if (token.access_token) {
       return { ok: true, credentials: buildCredentials(token, serverTarget, now) };
+    }
+
+    if (token.error === "invalid_client" && registrationStore) {
+      // The registration was revoked or garbage-collected between the probe and the exchange. The
+      // authorization code is bound to the now-dead client, so retrying here is pointless — drop the
+      // registration so the NEXT sign-in registers fresh, and say so plainly.
+      try {
+        registrationStore.delete(options.serverBaseUrl);
+      } catch {
+        /* best-effort: a stale entry costs one more invalid_client round, never correctness */
+      }
+      return {
+        ok: false,
+        reason: "error",
+        message:
+          token.error_description ??
+          "This installation's client registration is no longer valid. Please sign in again.",
+      };
     }
 
     return {
@@ -592,6 +753,102 @@ export async function authCodeLogin(options: AuthCodeLoginOptions): Promise<Auth
   } finally {
     listener?.close();
   }
+}
+
+/** The verdict of {@link probeAuthorizeRequest}. */
+interface AuthorizeProbeResult {
+  /** True when the AS accepted the authorization request (any non-4xx/5xx outcome). */
+  ok: boolean;
+  status?: number;
+  /** RFC 6749 §5.2 error code parsed from a rejection body (e.g. `invalid_client`). */
+  error?: string;
+  errorDescription?: string;
+}
+
+/**
+ * Ask the AS whether it will accept this authorization request BEFORE a browser is opened.
+ *
+ * The redirect is followed manually so the probe costs a single request and never fetches the
+ * consent page. A 2xx/3xx means "accepted" — the browser is then pointed at the same authorize URL,
+ * which mints its own short-lived authorization request; the probe's own request record simply
+ * expires unused.
+ *
+ * **Fails open on transport errors**: if the probe itself cannot run (no `fetch`, a proxy that
+ * refuses it, an environment without `redirect: "manual"`), the flow proceeds exactly as it would
+ * have without a probe. A 5xx or a 429 fails open for the same reason — the AS faulting or
+ * throttling says nothing about THIS request. Only a definitive client-side refusal (4xx) stops a
+ * sign-in.
+ */
+async function probeAuthorizeRequest(
+  url: string,
+  fetchImpl: typeof fetch | undefined,
+  timeoutMs: number,
+  outer?: AbortSignal,
+): Promise<AuthorizeProbeResult> {
+  const doFetch = fetchImpl ?? fetch;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const onAbort = () => controller.abort();
+  if (outer) {
+    if (outer.aborted) controller.abort();
+    else outer.addEventListener("abort", onAbort, { once: true });
+  }
+  try {
+    const response = await doFetch(url, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      redirect: "manual",
+      signal: controller.signal,
+    });
+    if (response.status < 400) {
+      return { ok: true, status: response.status };
+    }
+    if (response.status >= 500 || response.status === 429) {
+      // A 5xx or a 429 is the AS faulting or throttling — NOT a verdict on this authorization
+      // request. Treat it like a probe that could not run: fail open and let the browser round-trip
+      // be the judge, rather than refusing a sign-in over a transient blip the user could retry
+      // through. Only a definite client-side refusal (the `invalid_client` this probe exists to
+      // catch) may stop a sign-in.
+      return { ok: true, status: response.status };
+    }
+    const text = await response.text().catch(() => "");
+    let error: string | undefined;
+    let errorDescription: string | undefined;
+    if (text.trim()) {
+      try {
+        const body = JSON.parse(text) as { error?: unknown; error_description?: unknown };
+        if (typeof body.error === "string") error = body.error;
+        if (typeof body.error_description === "string") errorDescription = body.error_description;
+      } catch {
+        /* a non-JSON error page still tells us the request was rejected */
+      }
+    }
+    return { ok: false, status: response.status, error, errorDescription };
+  } catch {
+    // Fail open: a probe we could not run must never block a sign-in that would have worked.
+    return { ok: true };
+  } finally {
+    clearTimeout(timer);
+    if (outer) outer.removeEventListener("abort", onAbort);
+  }
+}
+
+/** Turn a rejected authorize probe into a message that names the real fault, not a timeout. */
+function describeAuthorizeRejection(probe: AuthorizeProbeResult): string {
+  if (probe.error === "invalid_client") {
+    return (
+      "The authorization server rejected this application's client registration " +
+      "(invalid_client), even after re-registering. Sign-in cannot continue." +
+      (probe.errorDescription ? ` Server said: ${probe.errorDescription}` : "")
+    );
+  }
+  if (probe.errorDescription) {
+    return `The authorization server refused the sign-in request: ${probe.errorDescription}`;
+  }
+  if (probe.error) {
+    return `The authorization server refused the sign-in request: ${probe.error}`;
+  }
+  return `The authorization server refused the sign-in request (HTTP ${probe.status ?? "error"}).`;
 }
 
 /** Build the full credential document from a successful token response (parity with `deviceLogin`). */

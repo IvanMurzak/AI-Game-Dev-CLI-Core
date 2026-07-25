@@ -37,6 +37,21 @@ engine-specific adapters over it. The shared modules land here through the `auth
   - **server-download** — `downloadServer` with a fail-closed `SHA256SUMS` verify-before-execute gate
     and a dependency-free in-process `parseZip` unzip.
   - **project-marker, validation, ui/progress** utilities.
+- **Landed (c1/c2 + DCR — desktop browser sign-in):**
+  - **OAuth 2.1 authorization-code login** — `authCodeLogin` (RFC 8252 native app, RFC 7636 PKCE
+    S256, `state` CSRF check, an ephemeral `127.0.0.1` loopback listener, RFC 8707 `resource`),
+    returning the same `MachineCredentials` shape as `deviceLogin`.
+  - **Discovery + dynamic client registration** — `discoverAuthorizationServer` (RFC 8414
+    `/.well-known/oauth-authorization-server`, falling back to the hardcoded paths) and
+    `resolveClientRegistration` / `registerClient` (RFC 7591). `/oauth/authorize` resolves
+    `client_id` by an exact registry lookup whose only writer is `POST /oauth/register` — which mints
+    its OWN id — so a hardcoded client id is always rejected with `invalid_client`. The minted id is
+    persisted per authorization server in `~/.ai-game-dev/oauth-clients.json` (`ClientRegistrationStore`,
+    same atomic owner-only write as the credential store) and reused on every later launch; only the
+    loopback **port** floats, so one registration serves every run. On `invalid_client` the flow
+    re-registers exactly once. **The device grant deliberately keeps its static client id** — the
+    server binds each refresh-token family to the id used at issue time, so moving it would
+    invalidate every existing CLI login.
 
 A small semver utility slice is also exposed. The package has **zero runtime dependencies**.
 
