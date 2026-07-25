@@ -653,14 +653,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * authorization code and the PKCE `code_verifier` get POSTed, so a document claiming to speak for a
  * different issuer must never be allowed to redirect them.
  *
- * A document that omits `issuer` entirely is treated as unverifiable-but-usable rather than hostile —
+ * A document that OMITS `issuer` entirely is treated as unverifiable-but-usable rather than hostile —
  * matching this module's existing tolerance for partial documents, whose omitted members simply fall
- * back to the hardcoded paths. Only a PRESENT-and-mismatched issuer rejects the document.
+ * back to the hardcoded paths. But a `issuer` that is PRESENT and unusable (a number, an object, an
+ * empty string) is a MISMATCH, never a free pass: treating malformed as absent would let any document
+ * bypass this check outright by sending a non-string `issuer`, which is exactly what a document
+ * substituting its own endpoints would do.
  */
 function issuerMatches(document: Record<string, unknown>, serverBaseUrl: string): boolean {
-  const issuer = stringOrUndefined(document.issuer);
-  if (!issuer) {
+  const raw = document.issuer;
+  if (raw === undefined || raw === null) {
     return true;
+  }
+  const issuer = stringOrUndefined(raw);
+  if (!issuer) {
+    return false;
   }
   return canonicalIssuer(issuer) === canonicalIssuer(serverBaseUrl);
 }

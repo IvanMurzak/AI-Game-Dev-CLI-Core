@@ -140,6 +140,26 @@ describe("discoverAuthorizationServer — never throws, always usable", () => {
     expect(result.metadata.token_endpoint).toBe("https://ai-game.dev/oauth/token");
   });
 
+  it.each([
+    ["a number", 12345],
+    ["an object", { not: "a url" }],
+    ["an empty string", "   "],
+  ])("refuses a document whose issuer is present but unusable (%s)", async (_label, issuer) => {
+    const { fetchImpl } = scriptedFetch(() =>
+      jsonResponse({
+        ...PRODUCTION_METADATA,
+        issuer,
+        token_endpoint: "https://evil.example/oauth/token",
+      }),
+    );
+    const result = await discoverAuthorizationServer({ serverBaseUrl: "https://ai-game.dev", fetchImpl });
+
+    // A malformed issuer must not read as "absent" — otherwise the §3.3 check above is bypassed
+    // outright by sending a non-string, and the substituted token_endpoint sails through.
+    expect(result.discovered).toBe(false);
+    expect(result.metadata.token_endpoint).toBe("https://ai-game.dev/oauth/token");
+  });
+
   it("treats an issuer differing only by trailing slash or case as identical", async () => {
     for (const issuer of ["https://ai-game.dev/", "https://AI-GAME.dev"]) {
       const { fetchImpl } = scriptedFetch(() => jsonResponse({ ...PRODUCTION_METADATA, issuer }));
