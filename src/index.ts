@@ -21,6 +21,14 @@
  *     - enroll (writes the v2 pin, records the AS-root serverTarget — MED-2);
  *     - server-download (SHA256SUMS fail-closed gate + dependency-free in-process unzip);
  *     - project-marker, validation, ui/progress utilities.
+ *
+ *   c1/c2 + DCR (desktop browser sign-in):
+ *     - `authCodeLogin` — RFC 8252 authorization-code + PKCE (S256) login over an ephemeral
+ *       `127.0.0.1` loopback listener;
+ *     - RFC 8414 discovery + RFC 7591 **dynamic client registration**, persisted per authorization
+ *       server — `/oauth/authorize` accepts ONLY a server-minted `client_id`, so a hardcoded one can
+ *       never resolve. The device grant keeps its static id on purpose (refresh-token families are
+ *       bound to the id used at issue time).
  */
 
 /** The package version, mirrored from package.json (bumped by release.yml). */
@@ -86,6 +94,46 @@ export type {
   DeviceLoginResult,
   HttpDeviceAuthTransportOptions,
 } from "./oauth-device-flow.js";
+
+// ── OAuth 2.1 discovery (RFC 8414) + dynamic client registration (RFC 7591) ─────────────────────
+export {
+  discoverAuthorizationServer,
+  registerClient,
+  resolveClientRegistration,
+  ClientRegistrationStore,
+  ClientRegistrationError,
+  registrationStoreKey,
+  registrationUrl,
+  authorizationServerMetadataUrl,
+  fallbackAuthorizationServerMetadata,
+  OAUTH_AS_METADATA_PATH,
+  OAUTH_REGISTRATION_PATH,
+  CLIENT_REGISTRATIONS_FILE_NAME,
+  CLIENT_REGISTRATIONS_SCHEMA_VERSION,
+  DEFAULT_CLIENT_NAME,
+  DEFAULT_TOKEN_ENDPOINT_AUTH_METHOD,
+  DEFAULT_REGISTRATION_GRANT_TYPES,
+  DEFAULT_REGISTRATION_RESPONSE_TYPES,
+  DEFAULT_DCR_TIMEOUT_MS,
+} from "./oauth-dcr.js";
+export type {
+  AuthorizationServerMetadata,
+  ClientRegistration,
+  ClientRegistrationStoreLike,
+  DiscoverAuthorizationServerOptions,
+  DiscoveredAuthorizationServer,
+  RegisterClientOptions,
+  ResolveClientRegistrationOptions,
+  ResolvedClientRegistration,
+} from "./oauth-dcr.js";
+
+// ── crash-safe owner-only store primitives ──────────────────────────────────────────────────────
+export {
+  writeFileAtomicSync,
+  ensureOwnerOnlyDirectory,
+  OWNER_ONLY_FILE_MODE,
+  OWNER_ONLY_DIRECTORY_MODE,
+} from "./atomic-file.js";
 
 // ── OAuth 2.1 authorization-code + PKCE + loopback login (RFC 8252) ─────────────────────────────
 export {
