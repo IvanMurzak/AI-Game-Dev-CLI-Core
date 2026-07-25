@@ -487,8 +487,10 @@ export interface AuthCodeLoginOptions {
    */
   registrationStore?: ClientRegistrationStoreLike;
   /**
-   * Pre-fetched RFC 8414 metadata, skipping this flow's own discovery call. Only used in
-   * dynamic-registration mode.
+   * Pre-fetched RFC 8414 metadata. In dynamic-registration mode it also skips this flow's own
+   * discovery call; in BOTH modes its `authorization_endpoint` / `token_endpoint` override this
+   * package's hardcoded paths, so a caller supplying a static `clientId` can still point the flow at
+   * an already-discovered AS.
    */
   metadata?: AuthorizationServerMetadata;
   /**
@@ -655,6 +657,14 @@ export async function authCodeLogin(options: AuthCodeLoginOptions): Promise<Auth
           message: describeAuthorizeRejection(probe),
         };
       }
+    }
+
+    // Re-check cancellation before touching the user's desktop. The authorize probe **fails open on
+    // every transport error — the `AbortError` raised by an aborting `signal` included** — so a
+    // sign-in cancelled while the probe was in flight would otherwise still pop a browser window
+    // here, moments before `waitForRedirect` reported the cancellation.
+    if (signal?.aborted) {
+      return { ok: false, reason: "cancelled", message: "Sign-in cancelled." };
     }
 
     options.onAuthorizeUrl?.(url);

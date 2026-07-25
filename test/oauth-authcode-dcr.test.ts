@@ -375,6 +375,37 @@ describe("authCodeLogin — dynamic client registration (the fix)", () => {
     expect(as.calls.token).toBe(0);
   });
 
+  it("never opens a browser when sign-in is cancelled while the authorize probe is in flight", async () => {
+    const as = createMockAuthorizationServer();
+    const controller = new AbortController();
+    const opener = vi.fn();
+
+    // Cancel exactly while the flow is probing /oauth/authorize. The probe deliberately fails OPEN
+    // on every transport error — the cancellation's own AbortError included — so a flow that did not
+    // re-check cancellation afterwards would push a browser window at a user who just cancelled.
+    const cancellingFetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (new URL(url).pathname === "/oauth/authorize") {
+        controller.abort();
+      }
+      return (as.fetchImpl as (i: unknown, n?: RequestInit) => Promise<Response>)(input, init);
+    }) as unknown as typeof fetch;
+
+    const result = await authCodeLogin(
+      loginOptions({
+        registrationStore: new MemoryRegistrationStore(),
+        fetchImpl: cancellingFetch,
+        openBrowser: opener,
+        signal: controller.signal,
+        timeoutMs: 30_000,
+      }),
+    );
+
+    expect(result).toMatchObject({ ok: false, reason: "cancelled" });
+    expect(opener).not.toHaveBeenCalled();
+    expect(as.calls.token).toBe(0);
+  });
+
   it("surfaces a non-invalid_client authorize refusal immediately instead of timing out", async () => {
     const as = createMockAuthorizationServer();
     const store = new MemoryRegistrationStore();

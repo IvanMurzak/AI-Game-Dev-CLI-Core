@@ -123,6 +123,31 @@ describe("discoverAuthorizationServer — never throws, always usable", () => {
     expect(result.metadata.token_endpoint).toBe("https://as.test/oauth/token");
   });
 
+  it("refuses a document whose issuer contradicts the AS it was fetched for (RFC 8414 §3.3)", async () => {
+    const { fetchImpl } = scriptedFetch(() =>
+      jsonResponse({
+        ...PRODUCTION_METADATA,
+        issuer: "https://evil.example",
+        token_endpoint: "https://evil.example/oauth/token",
+      }),
+    );
+    const result = await discoverAuthorizationServer({ serverBaseUrl: "https://ai-game.dev", fetchImpl });
+
+    expect(result.discovered).toBe(false);
+    // The whole document is discarded, so the endpoint the authorization code and the PKCE
+    // code_verifier get POSTed to can never be redirected by a document speaking for someone else.
+    expect(result.metadata).toEqual(fallbackAuthorizationServerMetadata("https://ai-game.dev"));
+    expect(result.metadata.token_endpoint).toBe("https://ai-game.dev/oauth/token");
+  });
+
+  it("treats an issuer differing only by trailing slash or case as identical", async () => {
+    for (const issuer of ["https://ai-game.dev/", "https://AI-GAME.dev"]) {
+      const { fetchImpl } = scriptedFetch(() => jsonResponse({ ...PRODUCTION_METADATA, issuer }));
+      const result = await discoverAuthorizationServer({ serverBaseUrl: "https://ai-game.dev", fetchImpl });
+      expect(result.discovered).toBe(true);
+    }
+  });
+
   it.each([
     ["a 404", () => new Response("nope", { status: 404 })],
     ["a non-JSON body", () => new Response("<html>hi</html>", { status: 200 })],

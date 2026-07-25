@@ -206,7 +206,8 @@ export interface DiscoveredAuthorizationServer {
 
 /**
  * Fetch the RFC 8414 metadata document for an AS. **Never throws and never rejects**: a 404, a
- * non-JSON body, a network error, or an abort all resolve to the hardcoded
+ * non-JSON body, a network error, an abort, or a document whose `issuer` contradicts the AS it was
+ * fetched for (RFC 8414 §3.3 — see {@link issuerMatches}) all resolve to the hardcoded
  * {@link fallbackAuthorizationServerMetadata} with `discovered: false`, so discovery can only ever
  * improve on the status quo. A partial document is merged OVER the fallback, so a metadata doc that
  * omits (say) `registration_endpoint` still yields a usable one.
@@ -233,6 +234,9 @@ export async function discoverAuthorizationServer(
     }
     const document = (await response.json()) as unknown;
     if (!isRecord(document)) {
+      return { metadata: fallback, discovered: false };
+    }
+    if (!issuerMatches(document, options.serverBaseUrl)) {
       return { metadata: fallback, discovered: false };
     }
     return { metadata: { ...fallback, ...dropEmptyValues(document) }, discovered: true };
@@ -635,6 +639,36 @@ async function readJsonBody(response: Response): Promise<Record<string, unknown>
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * **RFC 8414 §3.3**: the `issuer` a metadata document returns MUST be identical to the issuer whose
+ * well-known URL was used to retrieve it, and if it is not, "the data contained in the response MUST
+ * NOT be used". That matters concretely here: the document's `token_endpoint` is where the
+ * authorization code and the PKCE `code_verifier` get POSTed, so a document claiming to speak for a
+ * different issuer must never be allowed to redirect them.
+ *
+ * A document that omits `issuer` entirely is treated as unverifiable-but-usable rather than hostile —
+ * matching this module's existing tolerance for partial documents, whose omitted members simply fall
+ * back to the hardcoded paths. Only a PRESENT-and-mismatched issuer rejects the document.
+ */
+function issuerMatches(document: Record<string, unknown>, serverBaseUrl: string): boolean {
+  const issuer = stringOrUndefined(document.issuer);
+  if (!issuer) {
+    return true;
+  }
+  return canonicalIssuer(issuer) === canonicalIssuer(serverBaseUrl);
+}
+
+/** Canonical form for an issuer comparison: lowercased scheme + host, trailing slash insignificant. */
+function canonicalIssuer(value: string): string {
+  const trimmed = trimTrailingSlash(value.trim());
+  try {
+    const url = new URL(trimmed);
+    return `${url.protocol}//${url.host}${trimTrailingSlash(url.pathname)}`;
+  } catch {
+    return trimmed.toLowerCase();
+  }
 }
 
 /** Drop null/undefined/empty-string members so a partial document cannot blank a fallback value. */
