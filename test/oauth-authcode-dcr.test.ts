@@ -57,6 +57,12 @@ interface MockAsOptions {
   rejectAllClients?: boolean;
   /** Force the token endpoint to answer with this error instead of minting a token. */
   tokenError?: { error: string; error_description?: string };
+  /**
+   * Break the flow's pre-browser authorize PROBE only — either a transport failure (`"network"`) or
+   * an HTTP status. The browser's own authorize decision is untouched, so these model an AS that is
+   * momentarily unreachable/faulting for the probe while the real sign-in would still succeed.
+   */
+  probeFailure?: "network" | number;
 }
 
 /** A mock authorization server driven entirely through the flow's injectable `fetch` seam. */
@@ -177,7 +183,14 @@ function createMockAuthorizationServer(options: MockAsOptions = {}) {
     const method = (init?.method ?? "GET").toUpperCase();
     if (target.pathname === "/.well-known/oauth-authorization-server") return handleDiscovery();
     if (target.pathname === `${prefix}/oauth/register` && method === "POST") return handleRegister(init);
-    if (target.pathname === `${prefix}/oauth/authorize` && method === "GET") return authorize(target).response;
+    if (target.pathname === `${prefix}/oauth/authorize` && method === "GET") {
+      // Only the probe reaches authorize through `fetch`; the browser calls `authorize()` directly.
+      if (options.probeFailure === "network") throw new Error("fetch failed");
+      if (typeof options.probeFailure === "number") {
+        return new Response("upstream unavailable", { status: options.probeFailure });
+      }
+      return authorize(target).response;
+    }
     if (target.pathname === `${prefix}/oauth/token` && method === "POST") return handleToken(init);
     return new Response("not found", { status: 404 });
   }) as unknown as typeof fetch;
@@ -404,6 +417,27 @@ describe("authCodeLogin — dynamic client registration (the fix)", () => {
     expect(result).toMatchObject({ ok: false, reason: "cancelled" });
     expect(opener).not.toHaveBeenCalled();
     expect(as.calls.token).toBe(0);
+  });
+
+  it.each([
+    ["the probe cannot run at all (transport error)", "network" as const],
+    ["the AS is faulting (503)", 503],
+    ["the AS is throttling (429)", 429],
+  ])("still signs in when %s — the probe fails OPEN", async (_label, probeFailure) => {
+    const as = createMockAuthorizationServer({ probeFailure });
+
+    const result = await authCodeLogin(
+      loginOptions({
+        registrationStore: new MemoryRegistrationStore(),
+        fetchImpl: as.fetchImpl,
+        openBrowser: as.browser(),
+      }),
+    );
+
+    // None of these is a verdict on THIS authorization request, so refusing here would break a
+    // sign-in that completes perfectly well through the browser — which is exactly what happens.
+    expect(result.ok).toBe(true);
+    expect(as.calls.token).toBe(1);
   });
 
   it("surfaces a non-invalid_client authorize refusal immediately instead of timing out", async () => {

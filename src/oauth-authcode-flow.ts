@@ -775,7 +775,9 @@ interface AuthorizeProbeResult {
  *
  * **Fails open on transport errors**: if the probe itself cannot run (no `fetch`, a proxy that
  * refuses it, an environment without `redirect: "manual"`), the flow proceeds exactly as it would
- * have without a probe. Only a definitive HTTP rejection stops a sign-in.
+ * have without a probe. A 5xx or a 429 fails open for the same reason — the AS faulting or
+ * throttling says nothing about THIS request. Only a definitive client-side refusal (4xx) stops a
+ * sign-in.
  */
 async function probeAuthorizeRequest(
   url: string,
@@ -799,6 +801,14 @@ async function probeAuthorizeRequest(
       signal: controller.signal,
     });
     if (response.status < 400) {
+      return { ok: true, status: response.status };
+    }
+    if (response.status >= 500 || response.status === 429) {
+      // A 5xx or a 429 is the AS faulting or throttling — NOT a verdict on this authorization
+      // request. Treat it like a probe that could not run: fail open and let the browser round-trip
+      // be the judge, rather than refusing a sign-in over a transient blip the user could retry
+      // through. Only a definite client-side refusal (the `invalid_client` this probe exists to
+      // catch) may stop a sign-in.
       return { ok: true, status: response.status };
     }
     const text = await response.text().catch(() => "");

@@ -210,7 +210,9 @@ export interface DiscoveredAuthorizationServer {
  * fetched for (RFC 8414 §3.3 — see {@link issuerMatches}) all resolve to the hardcoded
  * {@link fallbackAuthorizationServerMetadata} with `discovered: false`, so discovery can only ever
  * improve on the status quo. A partial document is merged OVER the fallback, so a metadata doc that
- * omits (say) `registration_endpoint` still yields a usable one.
+ * omits (say) `registration_endpoint` still yields a usable one — and an endpoint the document
+ * advertises as something this package cannot dereference (a relative URI, a non-string, a
+ * non-HTTP scheme) is dropped the same way an omitted one is (see {@link dropUnusableEndpoints}).
  */
 export async function discoverAuthorizationServer(
   options: DiscoverAuthorizationServerOptions,
@@ -239,7 +241,10 @@ export async function discoverAuthorizationServer(
     if (!issuerMatches(document, options.serverBaseUrl)) {
       return { metadata: fallback, discovered: false };
     }
-    return { metadata: { ...fallback, ...dropEmptyValues(document) }, discovered: true };
+    return {
+      metadata: { ...fallback, ...dropUnusableEndpoints(dropEmptyValues(document)) },
+      discovered: true,
+    };
   } catch {
     // Discovery is best-effort by design; the fallback paths are what shipped before it existed.
     return { metadata: fallback, discovered: false };
@@ -668,6 +673,51 @@ function canonicalIssuer(value: string): string {
     return `${url.protocol}//${url.host}${trimTrailingSlash(url.pathname)}`;
   } catch {
     return trimmed.toLowerCase();
+  }
+}
+
+/**
+ * The metadata members this package later dereferences as a URL — `new URL(...)` for the authorize
+ * request, or a `fetch` target for registration / the token exchange.
+ */
+const URL_VALUED_METADATA_MEMBERS = [
+  "authorization_endpoint",
+  "token_endpoint",
+  "registration_endpoint",
+  "device_authorization_endpoint",
+] as const;
+
+/**
+ * Drop any URL-valued member the AS advertised as something this package cannot dereference, so the
+ * hardcoded fallback for that member survives instead.
+ *
+ * Without this, a single malformed member takes the WHOLE sign-in down rather than degrading: a
+ * relative `"/oauth/authorize"` or a non-string makes `new URL()` / `.trim()` throw deep inside
+ * {@link ../oauth-authcode-flow.authCodeLogin}, which surfaces as an opaque
+ * `Authentication failed: Invalid URL` — for a login that the fallback paths would have completed.
+ * That directly contradicts this module's contract that discovery "can only ever improve on the
+ * status quo", so an unusable value is treated exactly like an absent one.
+ */
+function dropUnusableEndpoints(document: Record<string, unknown>): Record<string, unknown> {
+  const result = { ...document };
+  for (const member of URL_VALUED_METADATA_MEMBERS) {
+    if (member in result && !isAbsoluteHttpUrl(result[member])) {
+      delete result[member];
+    }
+  }
+  return result;
+}
+
+/** True for an absolute `http(s)` URL — the only endpoint shape this package can actually use. */
+function isAbsoluteHttpUrl(value: unknown): boolean {
+  if (typeof value !== "string" || !value.trim()) {
+    return false;
+  }
+  try {
+    const url = new URL(value.trim());
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
   }
 }
 

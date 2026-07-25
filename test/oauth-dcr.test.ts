@@ -149,6 +149,26 @@ describe("discoverAuthorizationServer — never throws, always usable", () => {
   });
 
   it.each([
+    ["a relative URI", "/oauth/authorize"],
+    ["a non-HTTP scheme", "file:///etc/passwd"],
+    ["a non-string", 12345],
+    ["a garbage string", "not a url at all"],
+  ])("ignores an endpoint the AS advertises as %s and keeps the hardcoded one", async (_label, bad) => {
+    const { fetchImpl } = scriptedFetch(() =>
+      jsonResponse({ ...PRODUCTION_METADATA, authorization_endpoint: bad }),
+    );
+    const result = await discoverAuthorizationServer({ serverBaseUrl: "https://ai-game.dev", fetchImpl });
+
+    // The rest of the document is still honoured — only the unusable member degrades.
+    expect(result.discovered).toBe(true);
+    expect(result.metadata.registration_endpoint).toBe("https://ai-game.dev/oauth/register");
+    // ...and the bad member never reaches `new URL()` in the authorize flow, which would otherwise
+    // throw and fail a sign-in the fallback path would have completed.
+    expect(result.metadata.authorization_endpoint).toBe("https://ai-game.dev/oauth/authorize");
+    expect(() => new URL(String(result.metadata.authorization_endpoint))).not.toThrow();
+  });
+
+  it.each([
     ["a 404", () => new Response("nope", { status: 404 })],
     ["a non-JSON body", () => new Response("<html>hi</html>", { status: 200 })],
     ["a JSON array (not an object)", () => jsonResponse([1, 2, 3])],
