@@ -1,0 +1,49 @@
+test/oauth-device-flow.test.ts
+  s_a25c7f73c260fd::t_0c9624812ecfd6 4
+  s_a25c7f73c260fd::t_11e55e55cd0354 6-9
+  s_a25c7f73c260fd::t_c89dbf9380108b 135-154,341,361,401
+  s_a25c7f73c260fd::t_0b54d098e5571b 338-340
+  s_a25c7f73c260fd::t_6efffa645eeacd 342-344,358-360
+  s_a25c7f73c260fd::t_7d4ad6083bc0ab 362-364,398-400
+  s_a25c7f73c260fd::t_1f827569ed4849 402
+  s_a25c7f73c260fd::t_51f8dc698fc1c4 270-337,345-357,365-397
+test/token-refresher.test.ts
+  s_a25c7f73c260fd::t_b705235db3cf98 4,6
+  s_a25c7f73c260fd::t_845e23306a0925 37-51,160,183-185,187-188,205
+  s_a25c7f73c260fd::t_5723374c13681f 159
+  s_a25c7f73c260fd::t_59128e5f3081e5 161-163,180-182
+  s_a25c7f73c260fd::t_cdd7e7c8679df1 186
+  s_a25c7f73c260fd::t_f4ae8eda9cd639 189-191,202-204
+  s_a25c7f73c260fd::t_61eed5ec9df1cd 164-179,192-201
+src/oauth-device-flow.ts
+  s_a25c7f73c260fd::t_c838870c8c4fca 18-22
+  s_da2164df1dd72a::t_f82f4350caf445 64-66,107-113,131,145,152-155,170-172,209,211-218,264-265
+src/index.ts
+  s_a25c7f73c260fd::t_c53f806f879657 77
+src/token-refresher.ts
+  s_a25c7f73c260fd::t_b9f907eff0f8d0 45-49,54,56,62-66,98,100-104,118,130,164
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "2e85b9d1310f1cdbeef8031da24b101446911068",
+  "prompts": {},
+  "sessions": {
+    "s_a25c7f73c260fd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2f26822e-2e53-4409-9a4c-3dd9f28482a7",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Ivan Murzak <Ivan.D.Murzak@gmail.com>"
+    },
+    "s_da2164df1dd72a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ecd280e2-56e8-4d9b-b55c-90d0cf973d74",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Ivan Murzak <Ivan.D.Murzak@gmail.com>"
+    }
+  }
+}
