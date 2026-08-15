@@ -46,6 +46,23 @@ describe("enroll — redeem response normalization", () => {
     expect(camel.expiresAt).toBe("2030-01-01T00:00:00Z");
   });
 
+  it("prefers `sub` over the legacy `subject` alias and consumes `client_id` (O5/a6, defensively)", () => {
+    // a6 lands in parallel: both spellings must stay readable, with the contract field preferred.
+    const both = normalizeRedeemResponse({ access_token: "a", sub: "usr_contract", subject: "usr_legacy" });
+    expect(both.subject).toBe("usr_contract");
+
+    const legacyOnly = normalizeRedeemResponse({ access_token: "a", subject: "usr_legacy" });
+    expect(legacyOnly.subject).toBe("usr_legacy");
+
+    const withClient = normalizeRedeemResponse({ access_token: "a", client_id: "unity-mcp-plugin" });
+    expect(withClient.clientId).toBe("unity-mcp-plugin");
+
+    // Pre-a6 server: no sub, no client_id — both stay undefined (never inferred).
+    const preA6 = normalizeRedeemResponse({ access_token: "a" });
+    expect(preA6.subject).toBeUndefined();
+    expect(preA6.clientId).toBeUndefined();
+  });
+
   it("surfaces a non-2xx as an actionable EnrollmentError", async () => {
     await expect(
       redeemEnrollmentCode("BADCODE", { baseUrl: "https://ai-game.dev", fetchImpl: redeemFetch({}, 400) }),
@@ -93,6 +110,107 @@ describe("enroll — runEnroll side effects (v2 pin + MED-2 serverTarget)", () =
     expect(store.read()?.serverTarget).toBe("https://ai-game.dev");
     expect(store.read()?.serverTarget).not.toMatch(/\/p\//);
     expect(readProjectMarker(projectDir)?.serverTarget).toBe("https://ai-game.dev");
+  });
+
+  it("persists a v2 PLUGIN family (+ v1 mirror) with the response's client_id and scope=mcp:plugin (F10)", async () => {
+    const store = new MachineCredentialStore(path.join(tmp, "store"), identityCredentialCodec);
+    const projectDir = path.join(tmp, "project");
+    fs.mkdirSync(projectDir, { recursive: true });
+
+    await runEnroll({
+      code: "CODE",
+      projectPath: projectDir,
+      adapter: unityAdapter,
+      store,
+      baseUrl: "https://ai-game.dev",
+      fetchImpl: redeemFetch({
+        access_token: "a.b.c",
+        refresh_token: "r",
+        expires_in: 3600,
+        server_target: "https://ai-game.dev",
+        client_id: "unity-mcp-plugin",
+        sub: "usr_1",
+      }),
+      now: FIXED_NOW,
+    });
+
+    const stored = store.read()!;
+    expect(stored.version).toBe(2);
+    expect(stored.subject).toBe("usr_1"); // written from `sub`
+    expect(stored.families?.plugin).toMatchObject({
+      accessToken: "a.b.c",
+      refreshToken: "r",
+      clientId: "unity-mcp-plugin", // from the redeem response — never inferred
+      scope: "mcp:plugin",
+    });
+    expect(stored.families?.agent).toBeUndefined(); // tools-only shape: plugin family ONLY
+    expect(stored.accessToken).toBe("a.b.c"); // v1 compat mirror for old readers
+  });
+
+  it("writes NO subject key and NO clientId when a pre-a6 server omits them (enroll.ts:259 fix)", async () => {
+    const store = new MachineCredentialStore(path.join(tmp, "store"), identityCredentialCodec);
+    const projectDir = path.join(tmp, "project");
+    fs.mkdirSync(projectDir, { recursive: true });
+
+    await runEnroll({
+      code: "CODE",
+      projectPath: projectDir,
+      adapter: unityAdapter,
+      store,
+      baseUrl: "https://ai-game.dev",
+      fetchImpl: redeemFetch({ access_token: "a", refresh_token: "r", server_target: "https://ai-game.dev" }),
+    });
+
+    const raw = fs.readFileSync(store.credentialsPath, "utf-8");
+    expect(raw).not.toContain('"subject"'); // the key is OMITTED, not written as undefined/null
+    const stored = store.read()!;
+    expect(stored.families?.plugin?.clientId).toBeUndefined(); // never inferred (04 §1)
+    expect(stored.families?.plugin?.scope).toBe("mcp:plugin"); // plugin-plane by definition
+  });
+
+  it("preserves an existing agent family — enroll merges the plugin family, never clobbers the store", async () => {
+    const store = new MachineCredentialStore(path.join(tmp, "store"), identityCredentialCodec);
+    store.write({
+      version: 2,
+      subject: "usr_1",
+      serverTarget: "https://ai-game.dev",
+      families: { agent: { accessToken: "agent-a", refreshToken: "agent-r", clientId: "app-dcr", scope: "mcp:agent" } },
+    });
+    const projectDir = path.join(tmp, "project");
+    fs.mkdirSync(projectDir, { recursive: true });
+
+    await runEnroll({
+      code: "CODE",
+      projectPath: projectDir,
+      adapter: unityAdapter,
+      store,
+      baseUrl: "https://ai-game.dev",
+      fetchImpl: redeemFetch({ access_token: "plug-a", refresh_token: "plug-r", server_target: "https://ai-game.dev", sub: "usr_1" }),
+    });
+
+    const stored = store.read()!;
+    expect(stored.families?.agent).toMatchObject({ accessToken: "agent-a", refreshToken: "agent-r" });
+    expect(stored.families?.plugin?.accessToken).toBe("plug-a");
+  });
+
+  it("may replace an UNREADABLE store — enrolling is an explicit re-authorization (04 §1, A2 semantic)", async () => {
+    const storeDir = path.join(tmp, "store");
+    fs.mkdirSync(storeDir, { recursive: true });
+    const store = new MachineCredentialStore(storeDir, identityCredentialCodec);
+    fs.writeFileSync(store.credentialsPath, "corrupted / undecryptable blob");
+    const projectDir = path.join(tmp, "project");
+    fs.mkdirSync(projectDir, { recursive: true });
+
+    await runEnroll({
+      code: "CODE",
+      projectPath: projectDir,
+      adapter: unityAdapter,
+      store,
+      baseUrl: "https://ai-game.dev",
+      fetchImpl: redeemFetch({ access_token: "fresh", refresh_token: "r", server_target: "https://ai-game.dev" }),
+    });
+
+    expect(store.read()?.families?.plugin?.accessToken).toBe("fresh");
   });
 
   it("derives the pin with v2 normalization (B5 fix — no per-CLI workaround)", async () => {

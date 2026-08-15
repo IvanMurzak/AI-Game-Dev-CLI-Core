@@ -14,8 +14,7 @@ engine-specific adapters over it. The shared modules land here through the `auth
   - **machine credential store** — `MachineCredentialStore` at `~/.ai-game-dev/credentials.json`,
     full `MachineCredentials`, DPAPI on Windows / `0600` on POSIX, atomic (crash-safe) writes.
   - **OAuth 2.1 device-grant login** — `deviceLogin` (RFC 8628, `/oauth/device_authorization` +
-    `/oauth/token`) plus the proactive/reactive refresh loop (`HttpTokenRefresher`,
-    `MachineCredentialProvider`) with token rotation and a clean `login required` on family-revoke.
+    `/oauth/token`) with token rotation and a clean `login required` on family-revoke.
 - **Landed (b3 — shared modules + the engine-adapter contract):**
   - **engine-adapter contract** — `EngineAdapter` (+ `unityAdapter` / `unrealAdapter` / `godotAdapter`),
     the single typed seam that carries every per-engine difference: `serverName`, project markers,
@@ -52,6 +51,30 @@ engine-specific adapters over it. The shared modules land here through the `auth
     re-registers exactly once. **The device grant deliberately keeps its static client id** — the
     server binds each refresh-token family to the id used at issue time, so moving it would
     invalidate every existing CLI login.
+
+- **Landed (unified-machine-auth c3 — the shared refresher/provider + login plumbing):**
+  - **`MachineCredentialProvider` — THE single entry point for credential access + refresh.** The
+    three engine CLIs (W2: d2/e2/f2) and the desktop App (W3) obtain access tokens EXCLUSIVELY via
+    `getAccessToken({family})` / `refresh({family})`; nothing else re-implements refresh. It is
+    family-aware over store schema v2 (`agent` / `plugin` / `legacy` planes), runs every refresh
+    under the cross-process `MachineCredentialLock` with a **double-checked re-read** (a peer's
+    rotation is adopted without a network call), presents the **family's stored `clientId`**
+    (component default ONLY for `families.legacy`), **omits `scope`/`resource` on refresh**
+    (P0-3), keeps the previous refresh token when the server does not rotate one, treats
+    `invalid_grant` after a post-failure re-read as family death (one structured telemetry event,
+    other families untouched, never loops), rate-limits to one attempt per family per skew
+    window, and surfaces busy locks / unreadable stores as typed non-sign-out errors.
+  - **RFC 8693 token exchange** — `HttpTokenExchangeClient` (the frozen a5 wire shape:
+    `subject_token` = fresh agent access token, exact URNs, `scope=mcp:plugin`,
+    `audience` only as the exact `urn:agd:hub`), deriving the plugin family from the agent family.
+  - **Login-surface commit plumbing** — `commitAgentLogin` (the F1/F2 two-lock-hold sequence:
+    agent family under hold 1 → exchange → plugin family + v1 mirror under hold 2; a failed
+    exchange leaves the committed agent family and a "partially authorized, retrying" state
+    resumable via `derivePluginFamily`), `commitToolsOnlyLogin` (the `--tools-only` / O10
+    plugin-only mint for CI — F10), the D6/F7 **account-switch guard** (`evaluateAccountSwitch`;
+    decline revokes the just-minted family and leaves the store untouched),
+    `signOutMachineWide` (F6: best-effort RFC 7009 revocation of every family, then the
+    lock-guarded store delete), and `revokeTokenBestEffort` (RFC 7009).
 
 A small semver utility slice is also exposed. The package has **zero runtime dependencies**.
 

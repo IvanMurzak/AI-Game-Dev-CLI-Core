@@ -1,8 +1,10 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+import { MachineCredentialLock } from "./credential-lock.js";
 import type { EngineAdapter } from "./engine-adapter.js";
-import type { MachineCredentialStore } from "./machine-credentials.js";
+import type { MachineCredentialStore, MachineTokenFamily } from "./machine-credentials.js";
+import { DEFAULT_PLUGIN_SCOPE } from "./oauth-device-flow.js";
 import { derivePinV2 } from "./project-identity.js";
 import { writeProjectMarker } from "./project-marker.js";
 import { pinUrl } from "./routing.js";
@@ -45,6 +47,12 @@ export interface RedeemedCredential {
   expiresAt?: string;
   serverTarget?: string;
   subject?: string;
+  /**
+   * The OAuth client id the credential was minted under (O5/a6 adds `client_id` to the redeem
+   * response). Optional-but-preferred: older servers omit it, and the store never INFERS one
+   * (04 §1) — absent here means absent in the stored family.
+   */
+  clientId?: string;
 }
 
 export interface RedeemOptions {
@@ -78,14 +86,17 @@ export function normalizeRedeemResponse(data: Record<string, unknown>, now: () =
     nonEmptyString(data["serverTarget"]) ??
     nonEmptyString(data["server_url"]) ??
     nonEmptyString(data["serverUrl"]);
-  const subject = nonEmptyString(data["subject"]) ?? nonEmptyString(data["sub"]);
+  // `sub` is the O5/a6 contract field and is PREFERRED; `subject` is the defensive legacy alias
+  // (a6 lands in parallel with this code, so both spellings must stay readable).
+  const subject = nonEmptyString(data["sub"]) ?? nonEmptyString(data["subject"]);
+  const clientId = nonEmptyString(data["client_id"]) ?? nonEmptyString(data["clientId"]);
 
   let expiresAt = nonEmptyString(data["expires_at"]) ?? nonEmptyString(data["expiresAt"]);
   const expiresIn = numberOrUndefined(data["expires_in"]) ?? numberOrUndefined(data["expiresIn"]);
   if (!expiresAt && expiresIn !== undefined) {
     expiresAt = new Date(now() + expiresIn * 1000).toISOString();
   }
-  return { accessToken, refreshToken, expiresAt, serverTarget, subject };
+  return { accessToken, refreshToken, expiresAt, serverTarget, subject, clientId };
 }
 
 /**
@@ -222,6 +233,8 @@ export interface RunEnrollOptions {
   projectPath: string;
   adapter: EngineAdapter;
   store: MachineCredentialStore;
+  /** The 04 §2 cross-process store lock; defaults to one on the store's own directory. */
+  lock?: MachineCredentialLock;
   baseUrl?: string;
   fetchImpl?: typeof fetch;
   now?: () => number;
@@ -239,6 +252,14 @@ export interface RunEnrollResult {
  * Execute the full enrollment side effect: redeem → persist the plugin credential to the SHARED machine
  * store → write the project marker with the AS-root server target (MED-2) → upsert the v2 pin (B5 fix)
  * into existing project-local configs. On a redeem failure NOTHING is written.
+ *
+ * The persist is a **plugin-family write under the 04 §2 lock** (enroll is the browser-less
+ * tools-only mint path — F10): `families.plugin` (+ v1 mirror) carries the redeemed tokens, the
+ * response's `client_id` when the server provides one (O5/a6 — never inferred), and
+ * `scope=mcp:plugin`; any OTHER family already on the machine (e.g. an agent family) is
+ * preserved. `subject` is written from the response's `sub` and simply omitted when unknown.
+ * `replaceUnreadable` stays set — enrolling IS an explicit re-authorization, so it may replace
+ * an unreadable store (04 §1; the pre-v2 bare-write path had the same semantic).
  */
 export async function runEnroll(opts: RunEnrollOptions): Promise<RunEnrollResult> {
   const credential = await redeemEnrollmentCode(opts.code, {
@@ -251,13 +272,21 @@ export async function runEnroll(opts: RunEnrollOptions): Promise<RunEnrollResult
   const rawTarget = credential.serverTarget ?? opts.baseUrl ?? DEFAULT_CLOUD_BASE_URL;
   const serverTarget = opts.adapter.loginServerTarget(rawTarget);
 
-  opts.store.write({
+  const pluginFamily: MachineTokenFamily = {
     accessToken: credential.accessToken,
-    refreshToken: credential.refreshToken,
-    expiresAt: credential.expiresAt,
-    serverTarget,
-    subject: credential.subject,
-  });
+    ...(credential.refreshToken !== undefined ? { refreshToken: credential.refreshToken } : {}),
+    ...(credential.expiresAt !== undefined ? { expiresAt: credential.expiresAt } : {}),
+    ...(credential.clientId !== undefined ? { clientId: credential.clientId } : {}),
+    scope: DEFAULT_PLUGIN_SCOPE,
+  };
+  const lock = opts.lock ?? new MachineCredentialLock(opts.store.baseDirectory);
+  await lock.withLock(() =>
+    opts.store.writeFamily("plugin", pluginFamily, {
+      serverTarget,
+      ...(credential.subject !== undefined ? { subject: credential.subject } : {}),
+      replaceUnreadable: true,
+    }),
+  );
 
   const markerPath = writeProjectMarker(opts.projectPath, { serverTarget });
 
