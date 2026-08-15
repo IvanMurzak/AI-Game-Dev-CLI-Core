@@ -62,14 +62,27 @@ export type { ProjectIdentity } from "./project-identity.js";
 // ── machine credential store ──────────────────────────────────────────────────────────────────
 export {
   MachineCredentialStore,
+  MachineCredentialStoreUnreadableError,
   MACHINE_STORE_DIR_NAME,
   CREDENTIALS_FILE_NAME,
   CREDENTIALS_SCHEMA_VERSION,
+  CREDENTIALS_SCHEMA_VERSION_V1,
+  CREDENTIALS_SCHEMA_VERSION_V2,
+  documentSchemaVersion,
+  applyV1CompatMirror,
+  adoptToV2,
+  effectiveFamilies,
   identityCredentialCodec,
   dpapiCredentialCodec,
   defaultCredentialCodec,
 } from "./machine-credentials.js";
-export type { MachineCredentials, CredentialCodec } from "./machine-credentials.js";
+export type {
+  MachineCredentials,
+  MachineCredentialFamilies,
+  MachineTokenFamily,
+  MachineCredentialStoreState,
+  CredentialCodec,
+} from "./machine-credentials.js";
 
 // ── OAuth 2.1 device-grant login (RFC 8628) ───────────────────────────────────────────────────
 export {
@@ -130,6 +143,7 @@ export type {
 // ── crash-safe owner-only store primitives ──────────────────────────────────────────────────────
 export {
   writeFileAtomicSync,
+  tempSiblingPathFor,
   ensureOwnerOnlyDirectory,
   OWNER_ONLY_FILE_MODE,
   OWNER_ONLY_DIRECTORY_MODE,

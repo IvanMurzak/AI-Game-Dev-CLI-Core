@@ -47,7 +47,9 @@ describe("install-plugin — T5 resolution ladder (B1 fix)", () => {
     expect(res.kind).toBe("success");
     if (res.kind === "success") {
       expect(res.source).toBe("cwd");
-      expect(res.projectRoot).toBe(fs.realpathSync(tmp));
+      // Compare PHYSICAL paths: on macOS os.tmpdir() is a symlink (/var → /private/var), and the
+      // ladder resolves the given cwd without canonicalizing symlinks — same directory either way.
+      expect(fs.realpathSync(res.projectRoot)).toBe(fs.realpathSync(tmp));
     }
   });
 
