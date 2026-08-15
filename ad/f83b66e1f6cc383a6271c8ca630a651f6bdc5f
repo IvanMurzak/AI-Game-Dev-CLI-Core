@@ -1,0 +1,22 @@
+test/machine-credentials-clientid-fidelity.test.ts
+  s_887efbfc81dc0f::t_45e4d69ddceaa8 1-82
+test/golden-vectors/MachineCredentials.GoldenVectors.json
+  s_887efbfc81dc0f::t_51f356b3eeb9d4 2
+  s_887efbfc81dc0f::t_51f5f133dbb5c5 15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "adf83b66e1f6cc383a6271c8ca630a651f6bdc5f",
+  "prompts": {},
+  "sessions": {
+    "s_887efbfc81dc0f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "556ed732-8c84-4c19-bfb0-6231e40ac140",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Ivan Murzak <Ivan.D.Murzak@gmail.com>"
+    }
+  }
+}
