@@ -38,3 +38,74 @@ jobs:
 
       - name: Test
         run: npm test
+
+  # Cross-platform store legs (unified-machine-auth 04 §5): the credential store must be green on
+  # Windows (real DPAPI + AV/handle timing) and macOS (POSIX permission asserts) as well as Linux.
+  build-test-cross:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+  # Constrained Language Mode leg (unified-machine-auth 04 §1/§4): with powershell.exe locked down
+  # (WDAC/AppLocker CLM blocks Add-Type), the DPAPI codec is unusable and the store must degrade to
+  # the structured "store unreadable" state — never crash, never delete, never overwrite.
+  store-clm:
+    name: store suite under ConstrainedLanguage (windows)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Engage Constrained Language Mode
+        shell: pwsh
+        run: |
+          # SystemPolicy's lockdown debug hook reads __PSLockdownPolicy from the MACHINE scope only —
+          # a process-scoped variable does NOT engage (verified 2026-08-14). Machine scope is safe
+          # here: hosted runners are ephemeral, single-job VMs.
+          [Environment]::SetEnvironmentVariable('__PSLockdownPolicy', '4', 'Machine')
+          $mode = (& powershell.exe -NoProfile -NonInteractive -Command '$ExecutionContext.SessionState.LanguageMode' | Out-String).Trim()
+          Write-Host "powershell.exe language mode: $mode"
+          if ($mode -ne 'ConstrainedLanguage') {
+            throw "Constrained Language Mode did not engage (got '$mode') — the CLM leg would be vacuous."
+          }
+
+      - name: Store suite under CLM
+        # cmd, not pwsh: this step must only LAUNCH node — a constrained pwsh could reject its own
+        # script machinery, which would fail the step for a reason unrelated to the store.
+        shell: cmd
+        env:
+          AIGD_EXPECT_CLM: "1"
+        run: npx vitest run test/machine-credentials.clm.test.ts test/machine-credentials-v2.test.ts test/machine-credentials.test.ts test/atomic-file.test.ts

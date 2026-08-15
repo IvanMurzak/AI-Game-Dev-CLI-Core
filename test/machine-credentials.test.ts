@@ -43,11 +43,12 @@ const taggingCodec: CredentialCodec = {
 };
 
 describe("MachineCredentialStore — round-trip", () => {
-  it("writes then reads back the FULL credential set, forcing version=1", () => {
+  it("writes then reads back the FULL credential set; a v1-shaped document still lands as version 1", () => {
     const store = new MachineCredentialStore(freshDir(), identityCredentialCodec);
     store.write(FULL);
     const read = store.read();
     expect(read).toMatchObject(FULL);
+    // Version passthrough (04 §1): no version + no families ⇒ v1, the status quo for old callers.
     expect(read?.version).toBe(1);
   });
 
@@ -162,8 +163,13 @@ describe("MachineCredentialStore — rotate", () => {
   });
 });
 
+// The CLM CI leg runs this suite with PowerShell locked to Constrained Language Mode, where real
+// DPAPI is blocked BY DESIGN — the graceful-degradation behaviour is asserted by
+// machine-credentials.clm.test.ts; the two real-DPAPI tests below are skipped there.
+const clmLeg = process.platform === "win32" && process.env.AIGD_EXPECT_CLM === "1";
+
 describe("MachineCredentialStore — real default-codec round-trip (platform at-rest form)", () => {
-  it("round-trips through the platform default codec (real DPAPI on Windows / 0600 on POSIX)", () => {
+  it.skipIf(clmLeg)("round-trips through the platform default codec (real DPAPI on Windows / 0600 on POSIX)", () => {
     const dir = freshDir();
     const store = new MachineCredentialStore(dir); // default codec
     store.write(FULL);
@@ -180,7 +186,7 @@ describe("MachineCredentialStore — real default-codec round-trip (platform at-
     }
   });
 
-  it.skipIf(process.platform !== "win32")(
+  it.skipIf(process.platform !== "win32" || clmLeg)(
     "Windows on-disk ciphertext is decryptable by an independent DPAPI unprotect (C# interop shape)",
     () => {
       const dir = freshDir();
