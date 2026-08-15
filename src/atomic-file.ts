@@ -8,15 +8,35 @@ import * as path from "node:path";
  * registration).
  *
  * The write is **atomic**: bytes go to a unique sibling temp file that is `fsync`'d and
- * permission-restricted, then `rename`d over the target. A crash, an exception mid-write, or a full
- * disk therefore never leaves a torn/half-written document — the previous good file (or no file)
- * survives. The temp file is always cleaned up on failure, so a failed write leaves no litter.
+ * permission-restricted, then `rename`d over the target — with the 04 §1 contract retry
+ * ({@link RENAME_RETRY_ATTEMPTS} × {@link RENAME_RETRY_DELAY_MS} ms on `EPERM`/`EACCES`/`EBUSY`),
+ * because a Windows rename fails under ANY concurrent reader of the target and core Node retries
+ * nothing. A crash, an exception mid-write, or a full disk therefore never leaves a
+ * torn/half-written document — the previous good file (or no file) survives. The temp file is
+ * always cleaned up on failure, so a failed write leaves no litter.
  *
  * Extracted from `MachineCredentialStore.write` so both stores get the identical guarantees from ONE
  * implementation; the credential store's corruption-safety specs gate it.
  */
 
 const isWindows = process.platform === "win32";
+
+/**
+ * Attempts made to rename the fsynced temp sibling over the target before giving up.
+ * **Part of the store contract (04 §1): at least 4.** On Windows a rename onto a file another
+ * process merely has OPEN for reading fails (`EPERM`/`EBUSY`/`EACCES` sharing violation) — and
+ * that includes plain `fs.readFileSync` peers, .NET `File.ReadAllBytes` (`FileShare.Read`), AV
+ * scanners, and indexers. Core Node does NOT retry renames (the design note "Node inherits this
+ * from libuv" was wrong — that behavior lives in `graceful-fs`, which this package does not use),
+ * so the loop lives here, mirroring the C# twin's `MachineCredentialStore.RenameRetryAttempts`.
+ * Without it a lock-holding refresher can silently lose its store write to a µs-scale concurrent
+ * read, leaving the AS-revoked predecessor on disk (the x2 suite observed exactly that as a D10
+ * grace hit on the Windows CI leg).
+ */
+export const RENAME_RETRY_ATTEMPTS = 5;
+
+/** Backoff between rename attempts, in ms. Contract (04 §1): at least 250. */
+export const RENAME_RETRY_DELAY_MS = 250;
 
 /** Owner-only file mode (`rw-------`) applied to every store file on POSIX. */
 export const OWNER_ONLY_FILE_MODE = 0o600;
@@ -63,6 +83,29 @@ export function tempSiblingPathFor(targetPath: string): string {
  * to the pre-rename state. Failures of that advisory fsync are swallowed — the write has already
  * succeeded and some filesystems refuse directory fsync.
  */
+/**
+ * Rename with the 04 §1 contract retry: {@link RENAME_RETRY_ATTEMPTS} attempts,
+ * {@link RENAME_RETRY_DELAY_MS} ms apart, on the Windows transient-holder error shapes
+ * (`EPERM`/`EACCES`/`EBUSY`). Anything else — and the final attempt — throws to the caller,
+ * whose cleanup removes the temp sibling; the target is untouched either way. The wait is a
+ * true blocking sleep (`Atomics.wait`), matching this function's synchronous contract.
+ */
+function renameWithRetrySync(tempPath: string, targetPath: string): void {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      fs.renameSync(tempPath, targetPath);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      const transientHolder = code === "EPERM" || code === "EACCES" || code === "EBUSY";
+      if (!transientHolder || attempt >= RENAME_RETRY_ATTEMPTS) {
+        throw err;
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, RENAME_RETRY_DELAY_MS);
+    }
+  }
+}
+
 export function writeFileAtomicSync(targetPath: string, bytes: Buffer): void {
   const directory = path.dirname(targetPath);
   ensureOwnerOnlyDirectory(directory);
@@ -87,7 +130,7 @@ export function writeFileAtomicSync(targetPath: string, bytes: Buffer): void {
       fs.chmodSync(tempPath, OWNER_ONLY_FILE_MODE);
     }
     // Atomic replace: readers see either the old file or the new file, never a torn write.
-    fs.renameSync(tempPath, targetPath);
+    renameWithRetrySync(tempPath, targetPath);
     if (!isWindows) {
       // Advisory (04 §1): persist the directory entry so the rename survives power loss.
       try {
