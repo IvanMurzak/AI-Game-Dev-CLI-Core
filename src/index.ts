@@ -202,7 +202,7 @@ export type {
   RandomBytesFn,
 } from "./oauth-authcode-flow.js";
 
-// ── token refresh (HTTP seam + proactive/reactive loop) ───────────────────────────────────────
+// ── token refresh (HTTP seam; 04 §3 wire rules — stored clientId, NO scope/resource) ──────────
 export {
   HttpTokenRefresher,
   normalizeServerBase,
@@ -211,16 +211,75 @@ export {
 } from "./token-refresher.js";
 export type {
   TokenRefresher,
+  TokenRefreshRequest,
   TokenRefreshResult,
   HttpTokenRefresherOptions,
 } from "./token-refresher.js";
 
+// ── MachineCredentialProvider — THE single entry point for credential access + refresh ────────
+// (unified-machine-auth c3: family-aware, lock-guarded, double-checked refresh; the engine CLIs
+// adopt it in W2 — d2/e2/f2 — and the App in W3. Nothing else re-implements refresh.)
 export {
   MachineCredentialProvider,
   LoginRequiredError,
   DEFAULT_REFRESH_SKEW_MS,
 } from "./credential-provider.js";
-export type { MachineCredentialProviderOptions } from "./credential-provider.js";
+export type {
+  MachineCredentialProviderOptions,
+  CredentialPlane,
+  CredentialFamilyName,
+  CredentialTelemetryEvent,
+} from "./credential-provider.js";
+
+// ── RFC 8693 token exchange (04 §4; frozen a5 wire shape) ─────────────────────────────────────
+export {
+  HttpTokenExchangeClient,
+  buildTokenExchangeForm,
+  buildTokenExchangeResult,
+  TOKEN_EXCHANGE_GRANT_TYPE,
+  TOKEN_TYPE_ACCESS_TOKEN,
+  HUB_AUDIENCE,
+  TOKEN_EXCHANGE_MAX_CLIENT_ID_LENGTH,
+} from "./token-exchange.js";
+export type {
+  TokenExchangeClient,
+  TokenExchangeRequest,
+  TokenExchangeResponse,
+  TokenExchangeResult,
+  HttpTokenExchangeClientOptions,
+} from "./token-exchange.js";
+
+// ── login-surface commit plumbing (F1/F2 two-lock-hold, D6/F7 guard, O10 tools-only, F6) ──────
+export {
+  commitAgentLogin,
+  derivePluginFamily,
+  commitToolsOnlyLogin,
+  signOutMachineWide,
+  evaluateAccountSwitch,
+  runAccountSwitchGuard,
+  commitFamilyUnderHold,
+  revokeTokenBestEffort,
+  revocationUrl,
+  OAUTH_REVOCATION_PATH,
+} from "./login-commit.js";
+export type {
+  CommitAgentLoginOptions,
+  CommitAgentLoginResult,
+  DerivePluginFamilyOptions,
+  DerivePluginFamilyResult,
+  CommitToolsOnlyLoginOptions,
+  CommitToolsOnlyLoginResult,
+  CommitAbortReason,
+  SignOutMachineWideOptions,
+  SignOutMachineWideResult,
+  AccountSwitchDecision,
+  AccountSwitchGuardOptions,
+  AccountSwitchGuardOutcome,
+  FamilyCommitParams,
+  FamilyCommitOutcome,
+  RevokeTokenFn,
+  RevokeTokenOptions,
+} from "./login-commit.js";
 
 // ── agent-config writers (JSON + TOML; parity with C# AgentConfig, golden-vector gated) ─────────
 export {
