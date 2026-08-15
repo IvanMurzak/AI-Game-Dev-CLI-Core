@@ -340,6 +340,38 @@ describe("structured 'store unreadable' state (04 §1)", () => {
     expect(store.readState().status).toBe("ok");
   });
 
+  it("the 'unreadable' reason never leaks store content (B1): V8 parse errors quote input bytes", () => {
+    const dir = freshDir();
+    const credPath = path.join(dir, CREDENTIALS_FILE_NAME);
+    fs.mkdirSync(dir, { recursive: true });
+    // Decrypt SUCCEEDS (identity codec) but JSON.parse fails — on Node 22, V8's "Unexpected token"
+    // message quotes the first ~10 chars of the parsed input, i.e. these token-like head bytes.
+    const tokenLike = "eyJhbGciOi-SECRET-TOKEN-BYTES this is not JSON";
+    fs.writeFileSync(credPath, tokenLike);
+    const store = new MachineCredentialStore(dir, identityCredentialCodec);
+
+    const state = store.readState();
+    expect(state.status).toBe("unreadable");
+    if (state.status === "unreadable") {
+      // The reason is a UI/telemetry surface — no byte of the store content may reach it.
+      expect(state.reason).not.toContain("eyJhbGciOi");
+      expect(state.reason).not.toContain("SECRET");
+      // Programmatic access to the parse error stays available on cause.
+      expect(state.cause).toBeInstanceOf(SyntaxError);
+    }
+
+    // The typed error's message rides the same reason and must be equally clean.
+    let thrown: unknown;
+    try {
+      store.read();
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(MachineCredentialStoreUnreadableError);
+    expect((thrown as Error).message).not.toContain("eyJhbGciOi");
+    expect((thrown as Error).message).not.toContain("SECRET");
+  });
+
   it("a missing store is 'missing' — the unreadable state is never conflated with an empty store", () => {
     const store = new MachineCredentialStore(freshDir(), identityCredentialCodec);
     expect(store.readState().status).toBe("missing");

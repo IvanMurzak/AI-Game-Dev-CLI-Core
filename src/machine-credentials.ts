@@ -374,9 +374,14 @@ export class MachineCredentialStore {
     try {
       return { status: "ok", credentials: JSON.parse(json) as MachineCredentials };
     } catch (err) {
+      // SECURITY (review B1): never interpolate the parse error into the reason — V8's
+      // "Unexpected token" message quotes head-of-input bytes, i.e. DECRYPTED store content
+      // (potential token material), and `reason` is a UI/telemetry surface that also rides
+      // MachineCredentialStoreUnreadableError.message. The raw error stays on `cause` for
+      // programmatic access only.
       return {
         status: "unreadable",
-        reason: `parsing the credential document failed (corrupted content): ${errorMessage(err)}`,
+        reason: "parsing the credential document failed (corrupted content)",
         cause: err,
       };
     }
