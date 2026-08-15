@@ -1,0 +1,44 @@
+test/credential-lock.test.ts
+  s_887efbfc81dc0f::t_c6596331c75c7e 121-134
+  s_887efbfc81dc0f::t_01418ef7900107 433,438-442
+  s_887efbfc81dc0f::t_731dd6df8fa3c2 443,455-474
+  s_887efbfc81dc0f::t_e8d07e514d2e23 253-327
+  s_887efbfc81dc0f::t_2938d1bd4d9cb1 88-98
+  s_887efbfc81dc0f::t_e0e6d0dd5aa31d 15
+  s_887efbfc81dc0f::t_76e600966a14f0 444
+src/index.ts
+  s_887efbfc81dc0f::t_7ce1ea66d54f3c 92
+  s_887efbfc81dc0f::t_0ad7e52e72a8e3 100-104
+test/credential-lock.write-failure.test.ts
+  s_887efbfc81dc0f::t_9ad6c3bd343aa2 1-98
+test/golden-vectors/LockProtocol.GoldenVectors.json
+  s_887efbfc81dc0f::t_bcd96a2b3b0036 5-6
+src/credential-lock.ts
+  s_887efbfc81dc0f::t_ac6c7c2d62d9e0 29-33
+  s_887efbfc81dc0f::t_5441f9bd9180ee 481,502,615-616
+  s_887efbfc81dc0f::t_281e000d2a0b55 248
+  s_887efbfc81dc0f::t_d3b8d6cbfe19d5 110,116,118-159
+  s_887efbfc81dc0f::t_4589c1f53bcfd2 202-207
+  s_887efbfc81dc0f::t_cfe4406650ad86 361,382-397,399
+  s_887efbfc81dc0f::t_9bf4add06fe5fe 662-669
+  s_887efbfc81dc0f::t_e7ae9bb2f92241 447-448,477-480,482-488,494-501
+  s_887efbfc81dc0f::t_3cafbcbfa12f0d 520,530-532,541-542,567-594,601-614
+  s_887efbfc81dc0f::t_8da883b506b358 234
+  s_887efbfc81dc0f::t_9f7e7889f9d173 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "cf60fe7403073052e01784352bd27a985d56240a",
+  "prompts": {},
+  "sessions": {
+    "s_887efbfc81dc0f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "556ed732-8c84-4c19-bfb0-6231e40ac140",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Ivan Murzak <Ivan.D.Murzak@gmail.com>"
+    }
+  }
+}
