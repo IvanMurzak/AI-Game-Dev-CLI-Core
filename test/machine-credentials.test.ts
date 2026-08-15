@@ -169,7 +169,9 @@ describe("MachineCredentialStore — rotate", () => {
 const clmLeg = process.platform === "win32" && process.env.AIGD_EXPECT_CLM === "1";
 
 describe("MachineCredentialStore — real default-codec round-trip (platform at-rest form)", () => {
-  it.skipIf(clmLeg)("round-trips through the platform default codec (real DPAPI on Windows / 0600 on POSIX)", () => {
+  // Explicit timeout: each DPAPI call spawns powershell.exe, which can take several seconds to
+  // cold-start on a loaded CI runner — the 5s vitest default flaked on windows-latest.
+  it.skipIf(clmLeg)("round-trips through the platform default codec (real DPAPI on Windows / 0600 on POSIX)", { timeout: 60_000 }, () => {
     const dir = freshDir();
     const store = new MachineCredentialStore(dir); // default codec
     store.write(FULL);
@@ -188,6 +190,7 @@ describe("MachineCredentialStore — real default-codec round-trip (platform at-
 
   it.skipIf(process.platform !== "win32" || clmLeg)(
     "Windows on-disk ciphertext is decryptable by an independent DPAPI unprotect (C# interop shape)",
+    { timeout: 60_000 },
     () => {
       const dir = freshDir();
       new MachineCredentialStore(dir).write(FULL);
