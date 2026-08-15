@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   ACQUIRE_BUDGET,
   CREDENTIALS_LOCK_FILE_NAME,
+  CREDENTIALS_LOCK_TAKEOVER_FILE_NAME,
   CredentialLockBusyError,
   FOREIGN_LOCK_STALE_MS,
   LOCK_STALE_MS,
@@ -43,6 +44,10 @@ function lockFilePath(): string {
   return path.join(dir, CREDENTIALS_LOCK_FILE_NAME);
 }
 
+function intentFilePath(): string {
+  return path.join(dir, CREDENTIALS_LOCK_TAKEOVER_FILE_NAME);
+}
+
 /** Plant a lock file as if written by `hostId` and backdate its mtime by `ageMs`. */
 function plantLock(hostId: string, ageMs: number, rawContent?: string): Buffer {
   const bytes = Buffer.from(
@@ -62,6 +67,7 @@ describe("lock protocol constants (shared cross-language contract, 04 §2)", () 
     expect(ACQUIRE_BUDGET).toBe(75_000);
     expect(FOREIGN_LOCK_STALE_MS).toBe(86_400_000);
     expect(CREDENTIALS_LOCK_FILE_NAME).toBe("credentials.lock");
+    expect(CREDENTIALS_LOCK_TAKEOVER_FILE_NAME).toBe("credentials.lock.takeover");
   });
 
   it("holds the ordering invariant REFRESH_HTTP_TIMEOUT < LOCK_STALE_MS < ACQUIRE_BUDGET", () => {
@@ -73,6 +79,7 @@ describe("lock protocol constants (shared cross-language contract, 04 §2)", () 
     const vectorPath = path.join(import.meta.dirname, "golden-vectors", "LockProtocol.GoldenVectors.json");
     const vector = JSON.parse(fs.readFileSync(vectorPath, "utf-8")) as Record<string, unknown>;
     expect(vector["lockFileName"]).toBe(CREDENTIALS_LOCK_FILE_NAME);
+    expect(vector["takeoverIntentFileName"]).toBe(CREDENTIALS_LOCK_TAKEOVER_FILE_NAME);
     expect(vector["refreshHttpTimeoutMs"]).toBe(REFRESH_HTTP_TIMEOUT);
     expect(vector["lockStaleMs"]).toBe(LOCK_STALE_MS);
     expect(vector["acquireBudgetMs"]).toBe(ACQUIRE_BUDGET);
@@ -223,6 +230,47 @@ describe("stale takeover (compare-and-delete, 04 §2)", () => {
 
     await expect(lock.acquire()).rejects.toBeInstanceOf(CredentialLockBusyError);
     expect(fs.readFileSync(lockFilePath()).equals(planted)).toBe(true);
+  });
+
+  it("cleans the takeover-intent file up after a successful takeover", async () => {
+    plantLock(FIXTURE_HOST, 1_000);
+    const lock = lockAt({ staleMs: 400, acquireBudgetMs: 2_000, maxBackoffMs: 50 });
+    await lock.acquire();
+    expect(fs.existsSync(intentFilePath())).toBe(false);
+    lock.release();
+    expect(fs.existsSync(intentFilePath())).toBe(false);
+  });
+
+  it("backs off while a LIVE takeover intent exists — another claimant is mid-takeover", async () => {
+    const planted = plantLock(FIXTURE_HOST, 1_000); // stale main lock
+    // A fresh intent: some other claimant is between intent-create and intent-release.
+    fs.writeFileSync(
+      intentFilePath(),
+      JSON.stringify({ pid: 4242, startedAt: new Date().toISOString(), hostId: FIXTURE_HOST }),
+    );
+    const lock = lockAt({ staleMs: 400, acquireBudgetMs: 300, maxBackoffMs: 50 });
+
+    await expect(lock.acquire()).rejects.toBeInstanceOf(CredentialLockBusyError);
+    // Neither the stale lock nor the other claimant's intent was touched.
+    expect(fs.readFileSync(lockFilePath()).equals(planted)).toBe(true);
+    expect(fs.existsSync(intentFilePath())).toBe(true);
+  });
+
+  it("recovers a CRASHED claimant's stale takeover intent and completes the takeover", async () => {
+    plantLock(FIXTURE_HOST, 1_000); // stale main lock
+    // A stale intent: its claimant died between intent-create and intent-release.
+    fs.writeFileSync(
+      intentFilePath(),
+      JSON.stringify({ pid: 4242, startedAt: new Date(Date.now() - 1_000).toISOString(), hostId: FIXTURE_HOST }),
+    );
+    const past = new Date(Date.now() - 1_000);
+    fs.utimesSync(intentFilePath(), past, past);
+    const lock = lockAt({ staleMs: 400, acquireBudgetMs: 2_000, maxBackoffMs: 50 });
+
+    await lock.acquire();
+    expect(lock.isHeld).toBe(true);
+    expect(fs.existsSync(intentFilePath())).toBe(false);
+    lock.release();
   });
 });
 

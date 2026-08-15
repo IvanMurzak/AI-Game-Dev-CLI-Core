@@ -56,7 +56,10 @@ try {
     emit("BUSY");
     process.exit(3);
   }
-  emit("ERROR");
+  // Carry the failure detail in the events file (base64, 4th field) so the parent test can
+  // surface WHAT failed, not just that something did — stderr of an exited child is easy to lose.
+  const detail = Buffer.from(String((err && err.stack) || err)).toString("base64");
+  fs.appendFileSync(eventsFile, `ERROR ${process.pid} ${Date.now()} ${detail}\n`);
   console.error(err);
   process.exit(1);
 }

@@ -24,12 +24,29 @@ import { MACHINE_STORE_DIR_NAME } from "./machine-credentials.js";
  *    is reachable. Exported (and pinned by `test/golden-vectors/LockProtocol.GoldenVectors.json`)
  *    so the cross-language parity suite (x1) can assert equality with the C# values.
  *
- *  - **Stale takeover by compare-and-delete.** A candidate whose last-WRITE time (never atime)
- *    is older than {@link LOCK_STALE_MS} and whose `hostId` matches the local host is taken
- *    over: read its content, re-stat, delete only if the content is byte-identical to what was
- *    read, then race for exclusive-create and verify the new lock's content is your own before
- *    entering. A lock with a foreign `hostId` (network home) is only taken over after
- *    {@link FOREIGN_LOCK_STALE_MS} (24 h).
+ *  - **Stale takeover by compare-and-delete, SERIALIZED through a takeover-intent file.** A
+ *    candidate whose last-WRITE time (never atime) is older than {@link LOCK_STALE_MS} and whose
+ *    `hostId` matches the local host may be taken over; a foreign-`hostId` lock (network home)
+ *    only after {@link FOREIGN_LOCK_STALE_MS} (24 h). The remover must first win an
+ *    exclusive-create of the sibling intent file ({@link CREDENTIALS_LOCK_TAKEOVER_FILE_NAME}),
+ *    re-validate that the candidate is the SAME artifact it judged stale (stat + byte-identical
+ *    content), and only then unlink it — then release the intent and race for exclusive-create
+ *    of the lock itself, verifying the new lock's content is its own before entering.
+ *
+ *    The intent serialization is LOAD-BEARING, not defensive garnish: with removal gated only by
+ *    a read → re-stat → re-read → unlink sequence (whether the removal is an `unlink` or an
+ *    atomic rename-claim), two lockstep waiters both validate the SAME unchanged stale file, and
+ *    the slower one's removal lands after the faster one has already re-created and verified a
+ *    LIVE lock — stranding a verified holder and letting a third waiter in. Both raced variants
+ *    were MEASURED double-entering under a 4-process hammer (see
+ *    `lock-protocol.subprocess.test.ts`, plant 3, which fails against either). Exclusive-create
+ *    of the intent is the atomic arbiter that path-based removal cannot provide.
+ *
+ *    Crash recovery: a claimant that dies between intent-create and intent-release leaves the
+ *    intent file behind; it is itself recovered by the same staleness rules (compare-and-delete,
+ *    unserialized — safe because it requires the rare crashed-intent precondition on top of the
+ *    tight race window, multiplying two small probabilities; the C# twin shares this residual by
+ *    design).
  *
  *  - **Budget exhaustion ⇒ "busy", never lock-free.** When {@link ACQUIRE_BUDGET} elapses the
  *    attempt fails with {@link CredentialLockBusyError} (D9 REVISED — the removed "kill-switch"
@@ -43,20 +60,19 @@ import { MACHINE_STORE_DIR_NAME } from "./machine-credentials.js";
  *
  *  - **Logout delete path (F6).** {@link MachineCredentialLock.deleteStoreUnderLock}:
  *    acquire → unlink store → release (which unlinks the lock).
- *
- * No OS offers an atomic compare-and-delete primitive, so the compare-and-delete pair is made
- * atomic against concurrent claimants via a RENAME-CLAIM (see
- * {@link MachineCredentialLock.tryStaleTakeover}): the stale candidate is atomically moved to a
- * private sibling name first — exactly one claimant can win that rename — and only then
- * compared and discarded. A plain validate-then-unlink measurably fails the mandated two-waiter
- * plant: both waiters validate the SAME unchanged stale file, and the slower unlink deletes the
- * faster waiter's freshly created live lock. The C# twin (b2) must realize compare-and-delete
- * the same way (`File.Move` to a private name is the same atomic arbiter). The x2
- * mixed-language concurrency suite hammers exactly this seam.
  */
 
 /** File name of the cross-process lock, a sibling of `credentials.json` — NEVER the data file itself (04 §2). */
 export const CREDENTIALS_LOCK_FILE_NAME = "credentials.lock";
+
+/**
+ * File name of the takeover-intent file (sibling of the lock). Removing a stale
+ * {@link CREDENTIALS_LOCK_FILE_NAME} requires FIRST winning an exclusive-create of this file —
+ * the atomic arbiter that serializes concurrent stale-takeover claimants (see the module doc).
+ * Part of the shared cross-language protocol surface: the C# twin (b2) must honor the same
+ * intent file, or a mixed C#/TS fleet degrades to the measured double-acquire race.
+ */
+export const CREDENTIALS_LOCK_TAKEOVER_FILE_NAME = "credentials.lock.takeover";
 
 /**
  * Network timeout (ms) for the token-refresh HTTP call performed INSIDE the lock's critical
@@ -158,6 +174,7 @@ const BACKOFF_CAP_MS = 500;
  */
 export class MachineCredentialLock {
   private readonly _lockPath: string;
+  private readonly _intentPath: string;
   private readonly _hostId: string;
   private readonly _staleMs: number;
   private readonly _foreignStaleMs: number;
@@ -170,6 +187,7 @@ export class MachineCredentialLock {
   constructor(baseDirectory?: string, options: MachineCredentialLockOptions = {}) {
     const dir = baseDirectory ?? path.join(os.homedir(), MACHINE_STORE_DIR_NAME);
     this._lockPath = path.join(dir, CREDENTIALS_LOCK_FILE_NAME);
+    this._intentPath = path.join(dir, CREDENTIALS_LOCK_TAKEOVER_FILE_NAME);
     this._hostId = options.hostId ?? os.hostname();
     this._staleMs = options.staleMs ?? LOCK_STALE_MS;
     this._foreignStaleMs = options.foreignStaleMs ?? FOREIGN_LOCK_STALE_MS;
@@ -180,6 +198,11 @@ export class MachineCredentialLock {
   /** Absolute path of the lock file (`<store dir>/credentials.lock`). */
   get lockPath(): string {
     return this._lockPath;
+  }
+
+  /** Absolute path of the takeover-intent file (`<store dir>/credentials.lock.takeover`). */
+  get takeoverIntentPath(): string {
+    return this._intentPath;
   }
 
   /** True while this instance holds the lock. */
@@ -207,7 +230,7 @@ export class MachineCredentialLock {
         return;
       }
       if (this.tryStaleTakeover()) {
-        // We unlinked a stale lock — race for exclusive-create immediately (04 §2), no backoff.
+        // We removed a stale lock — race for exclusive-create immediately (04 §2), no backoff.
         continue;
       }
       const now = Date.now();
@@ -243,7 +266,7 @@ export class MachineCredentialLock {
     try {
       fs.unlinkSync(this._lockPath);
     } catch {
-      /* best-effort: a racing takeover may have unlinked it between the read and here */
+      /* best-effort: a racing takeover may have removed it between the read and here */
     }
   }
 
@@ -279,8 +302,7 @@ export class MachineCredentialLock {
   /**
    * One `open(…,'wx')` exclusive-create attempt (04 §2). On success the content is written, the
    * handle is closed immediately (so the mtime is visible to peers), and the file is re-read to
-   * verify it still holds OUR content before we consider ourselves the holder — a waiter that
-   * raced a stale takeover against us may have unlinked our fresh lock and created its own.
+   * verify it still holds OUR content before we consider ourselves the holder.
    */
   private tryExclusiveCreate(): boolean {
     const content: CredentialLockContent = {
@@ -298,6 +320,13 @@ export class MachineCredentialLock {
       if (isErrno(err, "EEXIST")) {
         return false; // held by someone — the caller decides between backoff and stale takeover
       }
+      if (isErrno(err, "EPERM") || isErrno(err, "EACCES") || isErrno(err, "EBUSY")) {
+        // Windows: an exclusive-create racing a concurrent unlink can land in the file's
+        // DELETE-PENDING window, which surfaces as an access error rather than EEXIST. That is
+        // transient contention, not a permission problem — back off and retry (measured under
+        // the 4-waiter takeover hammer; POSIX never takes this branch for contention).
+        return false;
+      }
       throw err;
     }
     try {
@@ -307,34 +336,23 @@ export class MachineCredentialLock {
     }
 
     // Verify the new lock's content is our own before entering the critical section (04 §2).
-    // A transient ENOENT can be a mis-claim in flight (a racing waiter momentarily renamed our
-    // fresh lock away and is about to restore it, byte-identical) — give the restore one brief
-    // chance before treating the lock as lost; any OTHER content means a racer's live lock is
-    // in place and we must walk away without deleting it.
-    for (let verifyAttempt = 0; verifyAttempt < 2; verifyAttempt += 1) {
-      let readBack: Buffer;
-      try {
-        readBack = fs.readFileSync(this._lockPath);
-      } catch {
-        if (verifyAttempt === 0) {
-          sleepBlockingMs(15);
-          continue;
-        }
-        return false; // our fresh lock was stolen by a racing takeover before we could verify
-      }
-      if (!readBack.equals(bytes)) {
-        return false; // a racer's lock is in place now; never delete it — keep waiting
-      }
-      this._ownContent = bytes;
-      return true;
+    let readBack: Buffer;
+    try {
+      readBack = fs.readFileSync(this._lockPath);
+    } catch {
+      return false; // our fresh lock disappeared under us — walk away and re-contend
     }
-    return false;
+    if (!readBack.equals(bytes)) {
+      return false; // a racer's lock is in place now; never delete it — keep waiting
+    }
+    this._ownContent = bytes;
+    return true;
   }
 
   /**
-   * Stale-takeover attempt by compare-and-delete (04 §2). Returns true when the stale lock was
-   * removed (the caller then races for exclusive-create immediately); false when there is
-   * nothing stale to take over or we lost a race along the way.
+   * Stale-takeover attempt (04 §2), serialized through the takeover-intent file. Returns true
+   * when the stale lock was removed (the caller then races for exclusive-create immediately);
+   * false when there is nothing stale to take over or we lost a race along the way.
    *
    * Staleness is judged on the LAST-WRITE time (mtime — never atime: reads must not extend a
    * lock's life) against {@link LOCK_STALE_MS} for a same-host lock and
@@ -342,19 +360,11 @@ export class MachineCredentialLock {
    * treated as FOREIGN on purpose — fail-safe: when we cannot prove the holder is this machine,
    * we must not apply the short threshold.
    *
-   * The compare-and-delete pair is made ATOMIC with respect to concurrent claimants via a
-   * rename-claim: the candidate is first `rename`d to a private sibling name — an operation
-   * exactly one process can win (losers get ENOENT and never delete anything) — and only then
-   * byte-compared against what was validated. Two waiters that judged the SAME stale lock both
-   * pass a pure read/re-stat validation (the file is unchanged for both), so a plain
-   * validate-then-unlink lets the slower waiter's unlink land after the faster one has already
-   * re-created a live lock — deleting it. The rename arbiter closes that measured race (the
-   * plant in `lock-protocol.subprocess.test.ts` fails without it). In the residual window where
-   * the claim itself catches a freshly re-created LIVE lock (claim landed after the winner's
-   * create), the mismatch is detected by the byte-compare and the claimed file is restored via
-   * an atomic no-replace `link` — never clobbering a newer lock. Crash debris (a private
-   * `credentials.lock.steal.*` sibling) can only exist if a process dies mid-takeover and never
-   * shadows the canonical lock path.
+   * Sequence: judge stale → win exclusive-create of the INTENT file (losers back off; a live
+   * lock is never touched by a claimant that did not win the intent) → re-validate that the
+   * candidate is the SAME artifact (stat + byte-identical content; a live replacement always
+   * differs — its `startedAt`/`pid` are newer than the dead holder's) → unlink it → release the
+   * intent. Only then does the caller race `open('wx')` for the lock itself.
    */
   private tryStaleTakeover(): boolean {
     let stat1: fs.Stats;
@@ -378,55 +388,129 @@ export class MachineCredentialLock {
       return false; // not stale (or not provably ours to judge on the short threshold)
     }
 
-    // Atomic claim: move the candidate aside. Exactly one concurrent claimant wins the rename;
-    // every loser gets ENOENT here and walks away without ever deleting anything.
-    const claimedPath = `${this._lockPath}.steal.${process.pid}.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-    try {
-      fs.renameSync(this._lockPath, claimedPath);
-    } catch {
-      return false; // another waiter claimed it first (or the holder released) — retry create
+    // Serialize claimants: only the winner of the intent file's exclusive-create may remove the
+    // stale artifact. Without this arbiter, two lockstep claimants both validate the unchanged
+    // stale file and the slower removal deletes a freshly re-created LIVE lock (measured).
+    const intentBytes = this.tryAcquireTakeoverIntent();
+    if (intentBytes === undefined) {
+      return false; // another claimant is mid-takeover (or a live intent blocks us) — back off
     }
-
-    // Delete only if byte-identical to what we validated (04 §2). rename preserves mtime, so a
-    // claimed file that is NOT the artifact we judged stale is a live lock re-created between
-    // our validation and our claim.
-    let claimedStat: fs.Stats | undefined;
-    let claimedContent: Buffer | undefined;
     try {
-      claimedStat = fs.statSync(claimedPath);
-      claimedContent = fs.readFileSync(claimedPath);
-    } catch {
-      /* fall through to the mismatch path — never treat an unreadable claim as validated */
-    }
-    if (
-      claimedStat === undefined ||
-      claimedContent === undefined ||
-      !claimedContent.equals(content1) ||
-      claimedStat.mtimeMs !== stat1.mtimeMs
-    ) {
-      // We claimed a LIVE lock. Put it back with an atomic no-replace link: if a newer lock
-      // already exists at the canonical path, the link fails and the displaced holder's own
-      // verify-own-content step makes it re-contend instead of double-entering.
+      // Re-validate under the intent: remove only the exact artifact we judged stale.
+      let stat2: fs.Stats;
+      let content2: Buffer;
       try {
-        fs.linkSync(claimedPath, this._lockPath);
+        stat2 = fs.statSync(this._lockPath);
+        content2 = fs.readFileSync(this._lockPath);
       } catch {
-        /* a newer lock is already in place — leave it; the displaced holder re-contends */
+        return false; // released or already removed while we acquired the intent
+      }
+      if (
+        stat2.mtimeMs !== stat1.mtimeMs ||
+        stat2.size !== stat1.size ||
+        !content2.equals(content1)
+      ) {
+        return false; // replaced by a live lock while we acquired the intent — leave it alone
       }
       try {
-        fs.unlinkSync(claimedPath);
+        fs.unlinkSync(this._lockPath);
       } catch {
-        /* best-effort cleanup of the private claim name */
+        return false;
       }
-      return false;
+      return true;
+    } finally {
+      this.releaseTakeoverIntent(intentBytes);
     }
+  }
 
-    // The claimed file IS the stale artifact we validated — discard it and race for create.
-    try {
-      fs.unlinkSync(claimedPath);
-    } catch {
-      /* the canonical path is already free either way */
+  /**
+   * Try to win the takeover-intent file by exclusive-create, recovering a CRASHED claimant's
+   * intent by the same staleness + compare-and-delete rules. Returns the intent content bytes on
+   * success (used to verify ownership at release) or undefined when another claimant holds it.
+   *
+   * The crashed-intent recovery path is deliberately unserialized (there is no third lock): it
+   * is reachable only when a claimant died between intent-create and intent-release, and the
+   * damage of its residual race is another claimant pair racing the MAIN takeover — two small
+   * probabilities multiplied, accepted by design in both languages.
+   */
+  private tryAcquireTakeoverIntent(): Buffer | undefined {
+    const content: CredentialLockContent = {
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      hostId: this._hostId,
+    };
+    const bytes = Buffer.from(JSON.stringify(content), "utf-8");
+
+    for (let createAttempt = 0; createAttempt < 2; createAttempt += 1) {
+      let fd: number;
+      try {
+        fd = fs.openSync(this._intentPath, "wx", 0o600);
+      } catch (err) {
+        if (!isErrno(err, "EEXIST")) {
+          return undefined;
+        }
+        // An intent exists. Recover it only if its holder crashed (stale by the same rules).
+        let istat: fs.Stats;
+        let icontent: Buffer;
+        try {
+          istat = fs.statSync(this._intentPath);
+          icontent = fs.readFileSync(this._intentPath);
+        } catch {
+          continue; // vanished — retry the exclusive-create once
+        }
+        const iholder = parseLockContent(icontent);
+        const ithreshold =
+          iholder !== undefined && iholder.hostId === this._hostId
+            ? this._staleMs
+            : this._foreignStaleMs;
+        if (Date.now() - istat.mtimeMs < ithreshold) {
+          return undefined; // a live claimant is mid-takeover — back off
+        }
+        // Compare-and-delete the crashed intent, then retry the exclusive-create once.
+        let istat2: fs.Stats;
+        let icontent2: Buffer;
+        try {
+          istat2 = fs.statSync(this._intentPath);
+          icontent2 = fs.readFileSync(this._intentPath);
+        } catch {
+          continue;
+        }
+        if (istat2.mtimeMs !== istat.mtimeMs || !icontent2.equals(icontent)) {
+          return undefined;
+        }
+        try {
+          fs.unlinkSync(this._intentPath);
+        } catch {
+          return undefined;
+        }
+        continue;
+      }
+      try {
+        fs.writeSync(fd, bytes);
+      } finally {
+        fs.closeSync(fd);
+      }
+      return bytes;
     }
-    return true;
+    return undefined;
+  }
+
+  /** Release the takeover-intent file — only when it still carries OUR content. */
+  private releaseTakeoverIntent(ownBytes: Buffer): void {
+    let current: Buffer;
+    try {
+      current = fs.readFileSync(this._intentPath);
+    } catch {
+      return; // already gone
+    }
+    if (!current.equals(ownBytes)) {
+      return; // a crashed-intent recovery replaced it — it is someone else's now
+    }
+    try {
+      fs.unlinkSync(this._intentPath);
+    } catch {
+      /* best-effort */
+    }
   }
 
   /** Jittered exponential backoff: base 25 ms doubled per attempt, capped, ×[0.5, 1.5). */
@@ -469,12 +553,4 @@ function isErrno(err: unknown, code: string): boolean {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/** Tiny synchronous pause used only inside the verify retry (single-digit ms, no event loop). */
-function sleepBlockingMs(ms: number): void {
-  const end = Date.now() + ms;
-  while (Date.now() < end) {
-    /* spin — bounded by `ms`, called once per rare mis-claim race */
-  }
 }

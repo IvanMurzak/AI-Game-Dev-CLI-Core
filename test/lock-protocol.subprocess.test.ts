@@ -83,6 +83,27 @@ function spawnRunner(mode: "hold" | "acquire", storeDir: string, eventsFile: str
   return child;
 }
 
+/** Decode the base64 detail field of any ERROR events so failures name the actual exception. */
+function errorDetails(eventsFile: string): string[] {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(eventsFile, "utf-8");
+  } catch {
+    return [];
+  }
+  return raw
+    .split("\n")
+    .filter((line) => line.startsWith("ERROR "))
+    .map((line) => {
+      const detail = line.trim().split(" ")[3];
+      try {
+        return detail === undefined ? line : Buffer.from(detail, "base64").toString("utf-8");
+      } catch {
+        return line;
+      }
+    });
+}
+
 function readEvents(eventsFile: string): RunnerEvent[] {
   let raw: string;
   try {
@@ -232,15 +253,21 @@ describe("lock protocol — mandated real-subprocess plants (04 §5)", () => {
   );
 
   it(
-    "plant 3: two waiters observing the same stale lock never both acquire (compare-and-delete)",
+    "plant 3: waiters observing the same stale lock never double-acquire (compare-and-delete)",
     async () => {
-      const ROUNDS = 5;
+      // Contention parameters are CALIBRATED, not arbitrary: with the takeover-intent
+      // serialization removed, 4 lockstep waiters double-acquire in ~12% of rounds on a loaded
+      // Windows box (3/25 measured; 2 waiters expose it far more rarely). 30 rounds put the
+      // mutation-detection probability near 1 - 0.88^30 ≈ 98% while the green path stays ~35 s.
+      const ROUNDS = 30;
+      const WAITERS = 4;
+      const HOLD_MS = 150;
       for (let round = 0; round < ROUNDS; round += 1) {
         const { dir, eventsFile, lockPath } = makeStoreDir();
         try {
-          // Fabricate a long-dead same-host holder: both waiters see it stale IMMEDIATELY, so
-          // both attempt the compare-and-delete takeover concurrently — the exact race the
-          // verify-own-content step exists for.
+          // Fabricate a long-dead same-host holder: every waiter sees it stale IMMEDIATELY, so
+          // all attempt the compare-and-delete takeover concurrently — the exact race the
+          // intent serialization + verify-own-content steps exist for.
           const deadHolderMtime = Date.now() - LOCK_STALE_MS - 60_000;
           fs.writeFileSync(
             lockPath,
@@ -252,42 +279,50 @@ describe("lock protocol — mandated real-subprocess plants (04 §5)", () => {
           );
           fs.utimesSync(lockPath, new Date(deadHolderMtime), new Date(deadHolderMtime));
 
-          const w1 = spawnRunner("acquire", dir, eventsFile, 300);
-          const w2 = spawnRunner("acquire", dir, eventsFile, 300);
-          await Promise.all([exited(w1), exited(w2)]);
+          const waiters = Array.from({ length: WAITERS }, () =>
+            spawnRunner("acquire", dir, eventsFile, HOLD_MS),
+          );
+          await Promise.all(waiters.map((w) => exited(w)));
 
           const events = readEvents(eventsFile);
           const tags = events.map((e) => e.tag);
           expect(tags).not.toContain("BUSY");
-          expect(tags).not.toContain("ERROR");
+          expect(errorDetails(eventsFile), "child processes reported errors").toEqual([]);
+          // A STOLEN report is a holder whose verified lock was removed from under it —
+          // the double-acquire mechanism caught red-handed even when the overlap is short.
           expect(tags).not.toContain("STOLEN");
 
-          // Positive half: BOTH waiters eventually acquired (sequentially) — a run where one
+          // Positive half: ALL waiters eventually acquired (sequentially) — a round where some
           // never entered would prove nothing about mutual exclusion.
           const enters = events.filter((e) => e.tag === "ENTER");
           const exits = events.filter((e) => e.tag === "EXIT");
-          expect(enters).toHaveLength(2);
-          expect(exits).toHaveLength(2);
+          expect(enters).toHaveLength(WAITERS);
+          expect(exits).toHaveLength(WAITERS);
 
-          // Negative half: the two [ENTER, EXIT] critical sections never overlap.
+          // Negative half: no two [ENTER, EXIT] critical sections overlap.
           const sections = enters
             .map((enter) => ({
               enter,
               exit: exits.find((exit) => exit.pid === enter.pid),
             }))
             .sort((a, b) => a.enter.t - b.enter.t);
-          expect(sections[0]?.exit).toBeDefined();
-          expect(sections[1]?.exit).toBeDefined();
-          expect((sections[0]?.exit?.t ?? Number.NaN) <= (sections[1]?.enter.t ?? Number.NaN)).toBe(
-            true,
-          );
+          for (const section of sections) {
+            expect(section.exit).toBeDefined();
+          }
+          for (let i = 1; i < sections.length; i += 1) {
+            expect((sections[i - 1]?.exit?.t ?? Number.NaN) <= (sections[i]?.enter.t ?? Number.NaN)).toBe(
+              true,
+            );
+          }
 
           expect(fs.existsSync(lockPath)).toBe(false); // fully released at the end
+          // The takeover-intent file never outlives the takeover that used it.
+          expect(fs.existsSync(`${lockPath}.takeover`)).toBe(false);
         } finally {
           fs.rmSync(dir, { recursive: true, force: true });
         }
       }
     },
-    60_000,
+    240_000,
   );
 });
