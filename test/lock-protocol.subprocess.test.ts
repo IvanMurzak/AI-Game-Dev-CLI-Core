@@ -256,9 +256,12 @@ describe("lock protocol — mandated real-subprocess plants (04 §5)", () => {
     "plant 3: waiters observing the same stale lock never double-acquire (compare-and-delete)",
     async () => {
       // Contention parameters are CALIBRATED, not arbitrary: with the takeover-intent
-      // serialization removed, 4 lockstep waiters double-acquire in ~12% of rounds on a loaded
-      // Windows box (3/25 measured; 2 waiters expose it far more rarely). 30 rounds put the
-      // mutation-detection probability near 1 - 0.88^30 ≈ 98% while the green path stays ~35 s.
+      // serialization removed, 4 lockstep waiters double-acquire in roughly 5–12% of rounds on
+      // a loaded Windows box (3/25 and 1-in-2 30-round runs measured; 2 waiters expose it far
+      // more rarely). 30 rounds keep the green path ~35 s while catching the mutation in most
+      // single runs — this plant is a strong but PROBABILISTIC end-to-end detector, and the
+      // DETERMINISTIC guard for the same control is the in-process unit test "backs off while
+      // a LIVE takeover intent exists" (RED instantly when the intent arbiter is bypassed).
       const ROUNDS = 30;
       const WAITERS = 4;
       const HOLD_MS = 150;
