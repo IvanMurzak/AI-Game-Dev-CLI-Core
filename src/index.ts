@@ -84,6 +84,25 @@ export type {
   CredentialCodec,
 } from "./machine-credentials.js";
 
+// ── cross-process credential-store lock (unified-machine-auth 04 §2; C# twin = b2) ────────────
+export {
+  MachineCredentialLock,
+  CredentialLockBusyError,
+  parseLockContent,
+  classifyLockDocument,
+  CREDENTIALS_LOCK_FILE_NAME,
+  CREDENTIALS_LOCK_TAKEOVER_FILE_NAME,
+  REFRESH_HTTP_TIMEOUT,
+  LOCK_STALE_MS,
+  ACQUIRE_BUDGET,
+  FOREIGN_LOCK_STALE_MS,
+} from "./credential-lock.js";
+export type {
+  CredentialLockContent,
+  MachineCredentialLockOptions,
+  LockDocumentClass,
+} from "./credential-lock.js";
+
 // ── OAuth 2.1 device-grant login (RFC 8628) ───────────────────────────────────────────────────
 export {
   deviceLogin,
