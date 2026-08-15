@@ -20,7 +20,12 @@
 // Events are appended to <eventsFile> as `<TAG> <pid> <epochMs> [detail]` lines (O_APPEND — the
 // same protocol as lock-runner.mjs). Tags: READY, TOKEN (detail = access token), UNREADABLE,
 // RETRY (a transient read glitch being retried), DONE (detail = "<refreshes> <distinct>"),
-// ONCE-OK (detail = "<refreshes>"), BUSY, DEAD (detail = base64 reason), ERROR (base64 detail).
+// ONCE-OK (detail = "<refreshes>"), BUSY, DEAD (detail = base64 reason), ERROR (base64 detail),
+// LOST-WRITE (base64 provider warning: a rotation was received but persisting it to the store
+// failed/was skipped — the store still holds the PREDECESSOR, the exact client-visible loss the
+// D10 window absorbs), LOST-RESPONSE (base64 provider warning: the refresh HTTP attempt itself
+// failed — if the AS had already committed, the predecessor stays current here too), WARN (any
+// other provider warning, base64).
 // Exits: 0 ok · 1 error · 3 busy (lock budget exhausted) · 5 dead (sign-in required).
 
 import * as fs from "node:fs";
@@ -89,11 +94,24 @@ async function main() {
     },
   };
 
+  // Client-side LOSS observability (the suite's attribution channel): a provider warning that a
+  // received rotation could not be persisted — or that the refresh HTTP attempt itself failed —
+  // is the client-visible record that the store may still hold a predecessor the AS has already
+  // revoked. The suite requires every green-run D10 grace hit to map onto one of these records;
+  // a grace hit with NO such record anywhere in the fleet would be a serialization hole.
+  const classifyWarning = (message) => {
+    if (message.startsWith("Persisting")) return "LOST-WRITE";
+    if (message.startsWith("Token refresh error") || message.startsWith("Account credential refresh failed")) {
+      return "LOST-RESPONSE";
+    }
+    return "WARN";
+  };
+
   const provider = new MachineCredentialProvider(store, refresher, {
     refreshSkewMs: config.skewMs,
     lock,
     defaultClientId: config.clientId,
-    onWarning: () => {},
+    onWarning: (message) => emit(classifyWarning(message), b64(message)),
     onTelemetry: () => {},
   });
 

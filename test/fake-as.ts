@@ -78,6 +78,21 @@ export interface FakeAsCounters {
   familyRevokes: number;
 }
 
+/**
+ * One grant-decision event, timestamped at the AS. The suite correlates these against the
+ * workers' client-side loss records (lost store write / lost response) to ATTRIBUTE every
+ * green-run grace hit — an unattributable grace hit is a serialization finding, an attributable
+ * one is the D10 window doing its designed job (03 F8 "any process that raced anyway is
+ * absorbed").
+ */
+export interface FakeAsEvent {
+  atMs: number;
+  kind: "rotation" | "grace-hit" | "family-revoke" | "invalid-grant";
+  /** Generation of the PRESENTED refresh token's row (rotation: the successor's generation). */
+  generation?: number;
+  detail?: string;
+}
+
 interface TokenRow {
   hash: string;
   familyId: string;
@@ -136,6 +151,7 @@ export class FakeAuthorizationServer {
   private _rotations = 0;
   private _graceHits = 0;
   private _familyRevokes = 0;
+  private readonly _events: FakeAsEvent[] = [];
 
   private _hold: {
     fired: boolean;
@@ -164,6 +180,11 @@ export class FakeAuthorizationServer {
       graceHits: this._graceHits,
       familyRevokes: this._familyRevokes,
     };
+  }
+
+  /** The timestamped grant-decision log behind {@link counters} (attribution evidence). */
+  get events(): readonly FakeAsEvent[] {
+    return this._events;
   }
 
   /** The family's current live (non-revoked) refresh-token hash, for end-state assertions. */
@@ -320,6 +341,7 @@ export class FakeAuthorizationServer {
 
     const row = this._rows.get(sha256Hex(rawToken)); // :783-790
     if (row === undefined) {
+      this._events.push({ atMs: Date.now(), kind: "invalid-grant", detail: "unknown token" });
       this.tokenError(res, 400, "invalid_grant", "unknown or invalid refresh token"); // :791-792
       return;
     }
@@ -331,6 +353,7 @@ export class FakeAuthorizationServer {
       const grace = this.tryRotationGrace(row, clientId, form.get("scope"), form.get("resource"), now); // :804-806
       if (grace !== null) {
         this._graceHits += 1; // :807-808 — the cached successor pair, by value; NO writes
+        this._events.push({ atMs: now, kind: "grace-hit", generation: row.generation });
         this.respondJson(res, 200, {
           access_token: grace.accessToken,
           token_type: "Bearer",
@@ -343,6 +366,7 @@ export class FakeAuthorizationServer {
       }
       this.revokeFamily(row.familyId, now); // :809-810 (_revoke_family :337-360)
       this._familyRevokes += 1;
+      this._events.push({ atMs: now, kind: "family-revoke", generation: row.generation });
       this.tokenError(res, 400, "invalid_grant", "refresh token reuse detected; token family revoked"); // :811
       return;
     }
@@ -393,6 +417,7 @@ export class FakeAuthorizationServer {
       revokedAtMs: null,
     });
     this._rotations += 1;
+    this._events.push({ atMs: now, kind: "rotation", generation });
     this.storeRotationGrace(predecessorHash, {
       successorHash: sha256Hex(successorRefresh),
       accessToken: successorAccess,

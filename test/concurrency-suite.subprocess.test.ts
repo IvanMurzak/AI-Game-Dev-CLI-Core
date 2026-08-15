@@ -13,7 +13,7 @@ import {
   REFRESH_HTTP_TIMEOUT,
 } from "../src/credential-lock.js";
 import { MachineCredentialStore, identityCredentialCodec } from "../src/machine-credentials.js";
-import { FakeAuthorizationServer } from "./fake-as.js";
+import { FakeAuthorizationServer, type FakeAsEvent } from "./fake-as.js";
 
 /**
  * The mixed-language REAL-PROCESS concurrency suite (unified-machine-auth 04 §5 / 03 F8, task
@@ -23,13 +23,18 @@ import { FakeAuthorizationServer } from "./fake-as.js";
  * rotation + reuse-revoke + D10 grace window) over ONE shared machine credential store.
  *
  * Acceptance (F8): zero family revokes at N≥4 mixed processes over ≥100 rotations, with the
- * REAL 15/60/75 s lock constants (no timing overrides anywhere in the green run).
+ * REAL 15/60/75 s lock constants (no timing overrides anywhere in the green run). Green-run
+ * grace hits are gated by ATTRIBUTION (see `graceAttribution`): every D10 hit must map onto a
+ * client-recorded loss (a store write lost to a transient Windows sharing violation, or a
+ * refresh attempt lost on the wire after the AS committed) — with zero recorded losses the gate
+ * is exactly `graceHits === 0`, and an unattributable hit (a serialization hole) always fails.
  *
  * Mandated plants (the suite's own falsifiability — G-SEC-1):
  *   1. grace window disabled AND lock disabled ⇒ a family revoke IS observed (the exact counter
  *      the green run gates on trips — the detector can fail);
  *   2. lock disabled, grace ON ⇒ redundant rotations are observable (the grace-hit counter
- *      rises; it is asserted === 0 in the green run);
+ *      rises) AND those raced hits are UNattributable — the exact predicate the green run gates
+ *      on goes false, so the green gate still discriminates the lock's presence;
  *   3. lost-response: a client killed between AS commit and response delivery; the next attempt
  *      (cross-language, taking over the victim's orphan lock with SCALED constants that keep
  *      the timeout < stale < budget ordering) succeeds idempotently within the D10 window —
@@ -258,6 +263,100 @@ function sha256Hex(raw: string): string {
   return crypto.createHash("sha256").update(raw, "utf-8").digest("hex");
 }
 
+// ── grace-hit attribution (the re-derived green-run gate) ─────────────────────────────────────
+//
+// A D10 grace hit is the AS answering a REVOKED-predecessor replay idempotently. Under an intact
+// lock that can legitimately happen for exactly one reason: a client-visible LOSS — a received
+// rotation whose store write failed/was skipped (the store keeps the AS-revoked predecessor), or
+// a refresh attempt that failed on the wire after the AS committed. Both are RECORDED by the
+// workers (TS: LOST-WRITE / LOST-RESPONSE events; C#: WARN stdout lines from the provider's
+// logger). A grace hit that no worker can account for means a second refresher raced the critical
+// section — a serialization hole, which is a red verdict, never tolerance. Plant 2 proves this
+// detector trips: with the lock cut, raced replays produce grace hits with NO loss records, so
+// the exact predicate the green run gates on goes false there.
+
+interface LossEvent {
+  kind: "LOST-WRITE" | "LOST-RESPONSE";
+  source: string;
+  atMs: number;
+  detail: string;
+}
+
+/** TS worker loss records from the shared events file (`<TAG> <pid> <epochMs> <base64 detail>`). */
+function tsLossEvents(eventsFile: string): LossEvent[] {
+  if (!fs.existsSync(eventsFile)) return [];
+  return fs
+    .readFileSync(eventsFile, "utf-8")
+    .split("\n")
+    .map((line) => line.trim().match(/^(LOST-WRITE|LOST-RESPONSE) (\d+) (\d+) (\S+)$/))
+    .filter((match): match is RegExpMatchArray => match !== null)
+    .map((match) => ({
+      kind: match[1] as LossEvent["kind"],
+      source: `ts-pid-${match[2]}`,
+      atMs: Number(match[3]),
+      detail: Buffer.from(match[4] ?? "", "base64").toString("utf-8"),
+    }));
+}
+
+/** C# worker loss records from the harness's `WARN t=<unixMs> m=<base64 message>` stdout lines. */
+function csLossEvents(workers: CsWorker[]): LossEvent[] {
+  const events: LossEvent[] = [];
+  for (const [index, worker] of workers.entries()) {
+    for (const line of worker.stdout) {
+      const match = line.match(/^WARN t=(\d+) m=(\S+)$/);
+      if (!match) continue;
+      const message = Buffer.from(match[2] ?? "", "base64").toString("utf-8");
+      const kind: LossEvent["kind"] | null = /^(Persisting refreshed credential failed|Credential lock was taken over mid-refresh)/.test(message)
+        ? "LOST-WRITE"
+        : /^(Token refresh threw|Token refresh failed transiently)/.test(message)
+          ? "LOST-RESPONSE"
+          : null;
+      if (kind !== null) {
+        events.push({ kind, source: `cs-worker-${index}`, atMs: Number(match[1]), detail: message });
+      }
+    }
+  }
+  return events;
+}
+
+function collectLossEvents(eventsFile: string, workers: CsWorker[]): LossEvent[] {
+  return [...tsLossEvents(eventsFile), ...csLossEvents(workers)].sort((a, b) => a.atMs - b.atMs);
+}
+
+/**
+ * The green-run grace gate: grace hits never outnumber recorded losses, and every grace hit has
+ * a loss recorded no later than the hit (small tolerance for cross-process clock/stamp skew —
+ * the same wall clock on one machine). Consequence: with ZERO recorded losses this predicate is
+ * exactly the old `graceHits === 0`, so a clean run is gated as strictly as before; it loosens
+ * only when a worker RECORDED the disruption that makes a grace hit the designed recovery.
+ */
+function graceAttribution(
+  graceEvents: readonly FakeAsEvent[],
+  lossEvents: readonly LossEvent[],
+): { ok: boolean; detail: string } {
+  const CLOCK_SKEW_TOLERANCE_MS = 100;
+  if (graceEvents.length > lossEvents.length) {
+    return {
+      ok: false,
+      detail:
+        `${graceEvents.length} grace hit(s) exceed ${lossEvents.length} recorded loss event(s) — ` +
+        `at least one predecessor replay no worker accounts for (grace: ${JSON.stringify(graceEvents)}; ` +
+        `losses: ${JSON.stringify(lossEvents)})`,
+    };
+  }
+  for (const grace of graceEvents) {
+    if (!lossEvents.some((loss) => loss.atMs <= grace.atMs + CLOCK_SKEW_TOLERANCE_MS)) {
+      return {
+        ok: false,
+        detail:
+          `grace hit at ${grace.atMs} (presented generation ${grace.generation}) precedes every ` +
+          `recorded loss event (losses: ${JSON.stringify(lossEvents)})`,
+      };
+    }
+  }
+  return { ok: true, detail: `${graceEvents.length} grace hit(s), ${lossEvents.length} recorded loss event(s)` };
+}
+
 // ── the suite ─────────────────────────────────────────────────────────────────────────────────
 
 suite("mixed-language refresh concurrency (x2)", () => {
@@ -331,10 +430,19 @@ suite("mixed-language refresh concurrency (x2)", () => {
       // THE acceptance invariant (03 F8): a lock-honoring mixed fleet never trips reuse
       // detection. Plant 1 below proves this exact counter CAN trip when the controls are cut.
       expect(counters.familyRevokes, "family revokes in the green run").toBe(0);
-      // A lock-honoring fleet also never needs the D10 window locally: every raced process
-      // adopts under the lock instead of replaying a predecessor. Plant 2 proves this counter
-      // rises when the lock is cut. (If this ever fires it is an interop finding, not noise.)
-      expect(counters.graceHits, "grace hits in the green run").toBe(0);
+      // Grace hits: a lock-honoring fleet needs the D10 window locally ONLY to absorb a
+      // client-RECORDED loss — a rotation whose store write failed under a transient Windows
+      // sharing violation (observed live: EPERM on the Windows CI leg; the store then still
+      // holds the AS-revoked predecessor, and the next locked refresher replays it — 03 F8
+      // "any process that raced anyway is absorbed"), or a refresh attempt lost on the wire
+      // after the AS committed. Every grace hit must therefore be ATTRIBUTABLE: never more
+      // grace hits than recorded losses, each hit preceded by one. With zero recorded losses
+      // this is exactly `graceHits === 0`; an UNATTRIBUTABLE hit is a serialization hole and
+      // fails here. Plant 2 proves this predicate trips when the lock is cut.
+      const lossEvents = collectLossEvents(eventsFile, csWorkers);
+      const graceEvents = as.events.filter((event) => event.kind === "grace-hit");
+      const verdict = graceAttribution(graceEvents, lossEvents);
+      expect(verdict.ok, `green-run grace attribution: ${verdict.detail}`).toBe(true);
 
       // Both languages actually rotated (the mixed-fleet mandate, not one language starving).
       expect(tsWorkerRefreshes(eventsFile), "TS-side successful refreshes").toBeGreaterThanOrEqual(5);
@@ -424,7 +532,7 @@ suite("mixed-language refresh concurrency (x2)", () => {
       const loopDelayMs = 15;
       const maxDurationMs = 90_000;
 
-      [0, 1].forEach(() =>
+      const tsWorkers = [0, 1].map(() =>
         spawnTsWorker({
           mode: "hammer",
           storeDir,
@@ -439,7 +547,7 @@ suite("mixed-language refresh concurrency (x2)", () => {
           scaled: null,
         }),
       );
-      [0, 1].forEach(() =>
+      const csWorkers = [0, 1].map(() =>
         spawnCsWorker(csHammerArgs("hammer-nolock", storeDir, as.baseUrl, skewMs, loopDelayMs, maxDurationMs, stopFile)),
       );
 
@@ -452,6 +560,22 @@ suite("mixed-language refresh concurrency (x2)", () => {
       }
 
       fs.writeFileSync(stopFile, "stop");
+      await withTimeout(
+        Promise.all([...tsWorkers.map(exited), ...csWorkers.map((worker) => exited(worker.child))]),
+        30_000,
+        "all plant-2 workers exiting after the stop signal",
+      );
+
+      // The green gate's discriminator: with the lock cut, the raced replays behind these grace
+      // hits happen WITHOUT any client-recorded loss (no write failed — a peer simply rotated
+      // first), so the EXACT attribution predicate the green run gates on must go false here.
+      // If this ever passes, the green-run assertion has stopped discriminating the lock's
+      // presence and must be re-derived (G-SEC-1).
+      const verdict = graceAttribution(
+        as.events.filter((event) => event.kind === "grace-hit"),
+        collectLossEvents(eventsFile, csWorkers),
+      );
+      expect(verdict.ok, `lock-cut grace hits must be UNattributable, got: ${verdict.detail}`).toBe(false);
     },
     120_000,
   );
