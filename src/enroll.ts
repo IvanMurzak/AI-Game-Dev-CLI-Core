@@ -3,6 +3,11 @@ import * as path from "node:path";
 
 import { MachineCredentialLock } from "./credential-lock.js";
 import type { EngineAdapter } from "./engine-adapter.js";
+import {
+  commitFamilyUnderHold,
+  runAccountSwitchGuard,
+  type RevokeTokenFn,
+} from "./login-commit.js";
 import type { MachineCredentialStore, MachineTokenFamily } from "./machine-credentials.js";
 import { DEFAULT_PLUGIN_SCOPE } from "./oauth-device-flow.js";
 import { derivePinV2 } from "./project-identity.js";
@@ -238,15 +243,38 @@ export interface RunEnrollOptions {
   baseUrl?: string;
   fetchImpl?: typeof fetch;
   now?: () => number;
+  /**
+   * D6/F7 account-switch confirmation (review fix B1): called when the redeemed credential's
+   * `sub` differs from the store's subject. ABSENT ⇒ a mismatch is DECLINED (fail closed — on a
+   * CI runner an unconfirmable switch must abort, `--yes`-gated on the CLIs).
+   */
+  confirmAccountSwitch?: (info: {
+    storedSubject: string;
+    newSubject: string;
+  }) => boolean | Promise<boolean>;
+  /** Injectable best-effort revoker; defaults to RFC 7009 against the redeemed serverTarget. */
+  revokeToken?: RevokeTokenFn;
+  onWarning?: (message: string) => void;
 }
 
-export interface RunEnrollResult {
-  serverTarget: string;
-  pin: string;
-  credentialPath: string;
-  markerPath: string;
-  pinnedConfigs: string[];
-}
+export type RunEnrollResult =
+  /** Redeem + store commit + project marker + pin upsert all completed. */
+  | {
+      status: "enrolled";
+      serverTarget: string;
+      pin: string;
+      credentialPath: string;
+      markerPath: string;
+      pinnedConfigs: string[];
+    }
+  /**
+   * D6/F7 decline (review fix B1): the machine is authorized as a DIFFERENT account and the
+   * switch was not confirmed. The just-redeemed family was revoked best-effort; the store, the
+   * project marker, and the agent configs are all untouched.
+   */
+  | { status: "switch-declined"; storedSubject: string; newSubject: string }
+  /** The store's subject changed between the guard evaluation and the write hold (B2b); retry. */
+  | { status: "aborted"; reason: "guard-premise-changed" };
 
 /**
  * Execute the full enrollment side effect: redeem → persist the plugin credential to the SHARED machine
@@ -260,6 +288,16 @@ export interface RunEnrollResult {
  * preserved. `subject` is written from the response's `sub` and simply omitted when unknown.
  * `replaceUnreadable` stays set — enrolling IS an explicit re-authorization, so it may replace
  * an unreadable store (04 §1; the pre-v2 bare-write path had the same semantic).
+ *
+ * **The D6/F7 account-switch guard applies here too (review fix B1).** Post-a6 the redeem
+ * response carries `sub`; redeeming a code for account B on a machine authorized as A is an
+ * account switch, and without the guard it would silently produce a mixed-account store
+ * (subject B beside A's agent family). The persist routes through the SAME guard primitive as
+ * every other login surface: mismatch ⇒ confirm-required; decline (or no confirm callback —
+ * fail closed) ⇒ revoke the just-redeemed family best-effort and abort with NOTHING written
+ * (no store write, no project marker, no pin upsert); confirm ⇒ revoke A's families and
+ * REPLACE the store (single-account, D6). Pre-a6 servers return no `sub` — nothing to compare,
+ * today's merge behavior is kept (F7.3).
  */
 export async function runEnroll(opts: RunEnrollOptions): Promise<RunEnrollResult> {
   const credential = await redeemEnrollmentCode(opts.code, {
@@ -272,6 +310,31 @@ export async function runEnroll(opts: RunEnrollOptions): Promise<RunEnrollResult
   const rawTarget = credential.serverTarget ?? opts.baseUrl ?? DEFAULT_CLOUD_BASE_URL;
   const serverTarget = opts.adapter.loginServerTarget(rawTarget);
 
+  // B1: the same D6/F7 guard every login surface runs, BEFORE any write. The revocation id is
+  // the redeemed family's own client id when the server names one, else the adapter's (F6.2).
+  const guard = await runAccountSwitchGuard({
+    store: opts.store,
+    clientId: credential.clientId ?? opts.adapter.clientId,
+    credentials: {
+      accessToken: credential.accessToken,
+      ...(credential.refreshToken !== undefined ? { refreshToken: credential.refreshToken } : {}),
+      ...(credential.expiresAt !== undefined ? { expiresAt: credential.expiresAt } : {}),
+      serverTarget,
+      ...(credential.subject !== undefined ? { subject: credential.subject } : {}),
+    },
+    confirmAccountSwitch: opts.confirmAccountSwitch,
+    revokeToken: opts.revokeToken,
+    fetchImpl: opts.fetchImpl,
+    onWarning: opts.onWarning,
+  });
+  if (guard.kind === "declined") {
+    return {
+      status: "switch-declined",
+      storedSubject: guard.storedSubject,
+      newSubject: guard.newSubject,
+    };
+  }
+
   const pluginFamily: MachineTokenFamily = {
     accessToken: credential.accessToken,
     ...(credential.refreshToken !== undefined ? { refreshToken: credential.refreshToken } : {}),
@@ -280,13 +343,21 @@ export async function runEnroll(opts: RunEnrollOptions): Promise<RunEnrollResult
     scope: DEFAULT_PLUGIN_SCOPE,
   };
   const lock = opts.lock ?? new MachineCredentialLock(opts.store.baseDirectory);
-  await lock.withLock(() =>
-    opts.store.writeFamily("plugin", pluginFamily, {
-      serverTarget,
-      ...(credential.subject !== undefined ? { subject: credential.subject } : {}),
-      replaceUnreadable: true,
-    }),
-  );
+  const hold = await commitFamilyUnderHold({
+    store: opts.store,
+    lock,
+    name: "plugin",
+    family: pluginFamily,
+    serverTarget,
+    subject: credential.subject,
+    guard,
+  });
+  if (!hold.committed) {
+    opts.onWarning?.(
+      "Enrollment aborted: the machine's stored account changed while the enrollment was being confirmed; retry to re-evaluate.",
+    );
+    return { status: "aborted", reason: "guard-premise-changed" };
+  }
 
   const markerPath = writeProjectMarker(opts.projectPath, { serverTarget });
 
@@ -295,6 +366,7 @@ export async function runEnroll(opts: RunEnrollOptions): Promise<RunEnrollResult
   const { updatedFiles } = upsertProjectPinIntoConfigs(opts.projectPath, pin, opts.adapter.serverName);
 
   return {
+    status: "enrolled",
     serverTarget,
     pin,
     credentialPath: opts.store.credentialsPath,

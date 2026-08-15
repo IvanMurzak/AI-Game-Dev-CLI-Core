@@ -71,10 +71,16 @@ engine-specific adapters over it. The shared modules land here through the `auth
     agent family under hold 1 → exchange → plugin family + v1 mirror under hold 2; a failed
     exchange leaves the committed agent family and a "partially authorized, retrying" state
     resumable via `derivePluginFamily`), `commitToolsOnlyLogin` (the `--tools-only` / O10
-    plugin-only mint for CI — F10), the D6/F7 **account-switch guard** (`evaluateAccountSwitch`;
-    decline revokes the just-minted family and leaves the store untouched),
-    `signOutMachineWide` (F6: best-effort RFC 7009 revocation of every family, then the
-    lock-guarded store delete), and `revokeTokenBestEffort` (RFC 7009).
+    plugin-only mint for CI — F10), the D6/F7 **account-switch guard** (`evaluateAccountSwitch` /
+    `runAccountSwitchGuard`; decline revokes the just-minted family and leaves the store
+    untouched; **`runEnroll` routes through the same guard**), `signOutMachineWide` (F6:
+    best-effort RFC 7009 revocation of every family, then the lock-guarded store delete), and
+    `revokeTokenBestEffort` (RFC 7009). Every commit **re-verifies the world under its lock
+    hold** before writing (`commitFamilyUnderHold`): a guard premise that changed during the
+    confirm dialog, a subject switched between the two holds, a store deleted by a concurrent
+    sign-out (never recreated), or a store turned unreadable (never overwritten) each abort with
+    a typed `CommitAbortReason` result — never a throw, never a mixed-account or resurrected
+    store.
 
 A small semver utility slice is also exposed. The package has **zero runtime dependencies**.
 

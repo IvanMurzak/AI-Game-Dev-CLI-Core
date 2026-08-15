@@ -1,5 +1,6 @@
 import { MachineCredentialLock } from "./credential-lock.js";
 import {
+  MachineCredentialStoreUnreadableError,
   applyV1CompatMirror,
   documentSchemaVersion,
   effectiveFamilies,
@@ -124,9 +125,12 @@ export type RevokeTokenFn = (
   tokenTypeHint: "refresh_token" | "access_token",
 ) => boolean | Promise<boolean>;
 
-interface GuardOptions {
+/** Options for {@link runAccountSwitchGuard} — the shared D6/F7 guard runner for login surfaces. */
+export interface AccountSwitchGuardOptions {
   store: MachineCredentialStore;
+  /** The client id presented when revoking the JUST-MINTED family on decline. */
   clientId: string;
+  /** The freshly minted credentials being committed (subject compared; tokens revoked on decline). */
   credentials: MachineCredentials;
   confirmAccountSwitch?:
     | ((info: { storedSubject: string; newSubject: string }) => boolean | Promise<boolean>)
@@ -136,19 +140,35 @@ interface GuardOptions {
   onWarning?: ((message: string) => void) | undefined;
 }
 
-type GuardOutcome =
-  | { kind: "proceed"; confirmedSwitch: false }
-  | { kind: "proceed"; confirmedSwitch: true }
+/**
+ * The guard's outcome. `premiseSubject` is the stored subject the decision was based on —
+ * {@link commitFamilyUnderHold} RE-VERIFIES it under the lock before writing (review fix B2b:
+ * the guard evaluates on a lock-free read and the confirm dialog can wait unbounded, so the
+ * premise must still hold at write time).
+ */
+export type AccountSwitchGuardOutcome =
+  | { kind: "proceed"; confirmedSwitch: boolean; premiseSubject: string | undefined }
   | { kind: "declined"; storedSubject: string; newSubject: string };
 
-/** Run the D6/F7 guard incl. the decline path (revoke just-minted, abort, store untouched). */
-async function runAccountSwitchGuard(options: GuardOptions): Promise<GuardOutcome> {
+function nonEmptySubject(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+/**
+ * Run the D6/F7 guard including the decline path (revoke just-minted, abort, store untouched)
+ * and — on a CONFIRMED switch — the best-effort revocation of the old account's families.
+ * Shared by every login surface commit path (agent login, tools-only login, enroll).
+ */
+export async function runAccountSwitchGuard(
+  options: AccountSwitchGuardOptions,
+): Promise<AccountSwitchGuardOutcome> {
   const { store, credentials } = options;
   const state = safeReadState(store);
   const stored = state?.status === "ok" ? state.credentials : null;
+  const premiseSubject = nonEmptySubject(stored?.subject);
   const decision = evaluateAccountSwitch(stored, credentials.subject);
   if (decision.kind === "proceed") {
-    return { kind: "proceed", confirmedSwitch: false };
+    return { kind: "proceed", confirmedSwitch: false, premiseSubject };
   }
 
   const confirmed =
@@ -179,19 +199,19 @@ async function runAccountSwitchGuard(options: GuardOptions): Promise<GuardOutcom
       await tryRevoke(revoke, token, familyClientId, "refresh_token", options.onWarning);
     }
   }
-  return { kind: "proceed", confirmedSwitch: true };
+  return { kind: "proceed", confirmedSwitch: true, premiseSubject };
 }
 
 function resolveRevoker(options: {
   revokeToken?: RevokeTokenFn | undefined;
   credentials?: MachineCredentials;
-  store?: MachineCredentialStore;
+  serverTarget?: string | undefined;
   fetchImpl?: typeof fetch | undefined;
 }): RevokeTokenFn {
   if (options.revokeToken) {
     return options.revokeToken;
   }
-  const serverTarget = options.credentials?.serverTarget;
+  const serverTarget = options.serverTarget ?? options.credentials?.serverTarget;
   return (token, clientId, tokenTypeHint) =>
     serverTarget
       ? revokeTokenBestEffort({
@@ -262,6 +282,91 @@ function safeReadState(store: MachineCredentialStore): ReturnType<MachineCredent
   }
 }
 
+/**
+ * Why a commit path aborted without writing (review fix B2):
+ *  - `guard-premise-changed` — the store's subject changed between the lock-free guard
+ *    evaluation (or the confirm dialog) and the write hold; re-run the commit so the guard
+ *    re-evaluates against the CURRENT store.
+ *  - `subject-changed` — a confirmed account switch landed between the two commit holds; the
+ *    derived family belongs to the OLD account and was not written.
+ *  - `store-missing` — a machine-wide sign-out (F6) landed between the holds; the store is
+ *    deliberately NOT recreated (a signed-out machine stays signed out).
+ *  - `store-unreadable` — the store turned unreadable at the write hold; it is never overwritten
+ *    by this path (04 §1) and the condition surfaces as a result, not a throw.
+ */
+export type CommitAbortReason =
+  | "guard-premise-changed"
+  | "subject-changed"
+  | "store-missing"
+  | "store-unreadable";
+
+/** Parameters of {@link commitFamilyUnderHold} — one guarded family write under ONE lock hold. */
+export interface FamilyCommitParams {
+  store: MachineCredentialStore;
+  lock: MachineCredentialLock;
+  name: "agent" | "plugin";
+  family: MachineTokenFamily;
+  serverTarget?: string | undefined;
+  subject?: string | undefined;
+  /** The {@link runAccountSwitchGuard} proceed outcome whose premise is re-verified under the hold. */
+  guard: { confirmedSwitch: boolean; premiseSubject: string | undefined };
+}
+
+/** Outcome of {@link commitFamilyUnderHold}: written, or the guard premise no longer held. */
+export type FamilyCommitOutcome =
+  | { committed: true; document: MachineCredentials }
+  | { committed: false; reason: "guard-premise-changed" };
+
+/**
+ * Write one family under ONE lock hold, RE-VERIFYING the account-switch guard's premise inside
+ * the hold before touching the store (review fix B2b — the guard evaluated on a lock-free read,
+ * and a confirm dialog may have waited unbounded):
+ *
+ *  - confirmed switch: the store's subject must still equal the premise the user confirmed
+ *    replacing; anything else (a concurrent login as a third account, a sign-out, an unreadable
+ *    store) aborts — the confirmation described a state that no longer exists.
+ *  - plain path: the guard is re-evaluated against the CURRENT store; a mismatch that appeared
+ *    since the lock-free read aborts (the confirm dialog cannot run under the lock). The
+ *    explicit-login `replaceUnreadable` semantic is preserved (04 §1).
+ *
+ * On `committed: false` the caller returns `guard-premise-changed` and the surface re-runs its
+ * commit — the guard then re-evaluates against the new store state.
+ */
+export async function commitFamilyUnderHold(params: FamilyCommitParams): Promise<FamilyCommitOutcome> {
+  return params.lock.withLock((): FamilyCommitOutcome => {
+    const state = safeReadState(params.store);
+    const stored = state?.status === "ok" ? state.credentials : null;
+    if (params.guard.confirmedSwitch) {
+      // The user confirmed replacing EXACTLY `premiseSubject`; replace only that store.
+      if (nonEmptySubject(stored?.subject) !== params.guard.premiseSubject) {
+        return { committed: false, reason: "guard-premise-changed" };
+      }
+      return {
+        committed: true,
+        document: writeFreshDocument(
+          params.store,
+          params.name,
+          params.family,
+          params.serverTarget,
+          params.subject,
+        ),
+      };
+    }
+    // Plain path: a mismatch appearing since the lock-free evaluation voids the premise.
+    if (evaluateAccountSwitch(stored, params.subject).kind !== "proceed") {
+      return { committed: false, reason: "guard-premise-changed" };
+    }
+    return {
+      committed: true,
+      document: params.store.writeFamily(params.name, params.family, {
+        ...(params.serverTarget !== undefined ? { serverTarget: params.serverTarget } : {}),
+        ...(params.subject !== undefined ? { subject: params.subject } : {}),
+        replaceUnreadable: true, // explicit re-authorization owns the store (04 §1)
+      }),
+    };
+  });
+}
+
 // ── agent login commit (F1/F2) ──────────────────────────────────────────────────────────────────
 
 export interface CommitAgentLoginOptions {
@@ -299,7 +404,9 @@ export type CommitAgentLoginResult =
    */
   | { status: "partial"; document: MachineCredentials; exchangeFailure: string }
   /** D6/F7 decline: the just-minted family was revoked (best effort); the store is untouched. */
-  | { status: "switch-declined"; storedSubject: string; newSubject: string };
+  | { status: "switch-declined"; storedSubject: string; newSubject: string }
+  /** Review fix B2: a concurrent store change voided the commit — see {@link CommitAbortReason}. */
+  | { status: "aborted"; reason: CommitAbortReason; detail?: string };
 
 /**
  * Commit an agent-plane login (03 F1.3–F1.4 / F2.2): D6 guard → agent family under the FIRST
@@ -331,17 +438,23 @@ export async function commitAgentLogin(
   const subject = credentials.subject;
 
   // FIRST lock hold (F1.3): the agent family is committed before the exchange is attempted, so a
-  // failed exchange still leaves the machine's root of trust on disk.
-  const agentDocument = await lock.withLock(() => {
-    if (guard.confirmedSwitch) {
-      return writeFreshDocument(store, "agent", agentFamily, serverTarget, subject);
-    }
-    return store.writeFamily("agent", agentFamily, {
-      ...(serverTarget !== undefined ? { serverTarget } : {}),
-      ...(subject !== undefined ? { subject } : {}),
-      replaceUnreadable: true, // explicit re-authorization owns the store (04 §1)
-    });
+  // failed exchange still leaves the machine's root of trust on disk. The guard's premise is
+  // re-verified INSIDE the hold (review fix B2b) — the confirm dialog may have waited unbounded.
+  const hold1 = await commitFamilyUnderHold({
+    store,
+    lock,
+    name: "agent",
+    family: agentFamily,
+    serverTarget,
+    subject,
+    guard,
   });
+  if (!hold1.committed) {
+    options.onWarning?.(
+      "Login commit aborted: the machine's stored account changed while the sign-in was being confirmed; retry to re-evaluate.",
+    );
+    return { status: "aborted", reason: "guard-premise-changed" };
+  }
 
   // Exchange + SECOND hold (F1.4) — deliberately outside the first hold.
   const derived = await derivePluginFamily({
@@ -350,17 +463,28 @@ export async function commitAgentLogin(
     exchangeClient: options.exchangeClient,
     clientId: options.clientId,
     agentAccessToken: credentials.accessToken,
+    ...(subject !== undefined ? { expectedSubject: subject } : {}),
     ...(serverTarget !== undefined ? { serverTarget } : {}),
+    ...(options.revokeToken ? { revokeToken: options.revokeToken } : {}),
+    ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
     ...(options.onWarning ? { onWarning: options.onWarning } : {}),
     ...(options.signal ? { signal: options.signal } : {}),
   });
   if (derived.status === "derived") {
     return { status: "committed", document: derived.document };
   }
+  if (derived.status === "aborted") {
+    // The hold-2 re-verification refused the write (subject changed / store gone / unreadable).
+    return {
+      status: "aborted",
+      reason: derived.reason,
+      ...(derived.detail !== undefined ? { detail: derived.detail } : {}),
+    };
+  }
   options.onWarning?.(
     `Token exchange failed (${derived.reason}) — partially authorized; the agent family is committed and the plugin derivation will be retried.`,
   );
-  return { status: "partial", document: agentDocument, exchangeFailure: derived.reason };
+  return { status: "partial", document: hold1.document, exchangeFailure: derived.reason };
 }
 
 export interface DerivePluginFamilyOptions {
@@ -371,18 +495,46 @@ export interface DerivePluginFamilyOptions {
   clientId: string;
   /** A FRESH agent-plane access token (the exchange `subject_token`). */
   agentAccessToken: string;
+  /**
+   * The subject the agent credential belongs to (review fix B2a). When the store's subject at
+   * the write hold is a DIFFERENT known subject — a confirmed account switch landed between the
+   * holds — the write is refused (`aborted`/`subject-changed`): the derived family belongs to
+   * the old account and must not enter the new account's store. Omit only when the mint carried
+   * no `sub` (pre-O5 servers — nothing to compare, F7.3).
+   */
+  expectedSubject?: string;
   serverTarget?: string;
+  /** Injectable best-effort revoker for a derived family orphaned by an abort. */
+  revokeToken?: RevokeTokenFn;
+  fetchImpl?: typeof fetch;
   onWarning?: (message: string) => void;
   signal?: AbortSignal;
 }
 
 export type DerivePluginFamilyResult =
   | { status: "derived"; document: MachineCredentials }
-  | { status: "exchange-failed"; reason: string };
+  | { status: "exchange-failed"; reason: string }
+  /** Review fix B2a: the hold-2 re-verification refused the write; nothing was written. */
+  | {
+      status: "aborted";
+      reason: Exclude<CommitAbortReason, "guard-premise-changed">;
+      detail?: string;
+    };
 
 /**
  * The F1.4 derivation leg alone: RFC 8693 exchange → plugin family + v1 mirror under ONE lock
  * hold. Also the retry entry point for the `partial` state. On failure NOTHING is written.
+ *
+ * **Hold-2 re-verification (review fix B2a).** The exchange runs with the lock released, so the
+ * world may have changed before the write hold. Under the hold, the store must still match the
+ * commit's expectations, or the write is refused as a result (never a throw):
+ *  - subject changed to a different known account (confirmed switch between holds) ⇒
+ *    `aborted`/`subject-changed`;
+ *  - store gone (machine-wide sign-out, F6) ⇒ `aborted`/`store-missing` — a signed-out machine
+ *    is NEVER signed back in by recreating its store;
+ *  - store unreadable ⇒ `aborted`/`store-unreadable` — never overwritten by this path (04 §1).
+ * On any abort the just-derived (now orphaned) family is revoked best-effort — no orphan device
+ * row.
  */
 export async function derivePluginFamily(
   options: DerivePluginFamilyOptions,
@@ -406,17 +558,69 @@ export async function derivePluginFamily(
     scope: exchange.scope ?? DEFAULT_PLUGIN_SCOPE,
   };
 
-  // SECOND lock hold (F1.4): plugin family + the v1 compat mirror (applied by writeFamily).
-  // `sub` from the exchange response backfills a missing store subject (04 §4 "no path writes a
-  // subject-less credential") but never overwrites a present one.
-  const document = await lock.withLock(() => {
+  // SECOND lock hold (F1.4): re-verify, then write the plugin family + the v1 compat mirror
+  // (applied by writeFamily). `sub` from the exchange response backfills a missing store subject
+  // (04 §4 "no path writes a subject-less credential") but never overwrites a present one.
+  type Hold2Outcome =
+    | { ok: true; document: MachineCredentials }
+    | { ok: false; reason: Exclude<CommitAbortReason, "guard-premise-changed">; detail?: string };
+  const outcome = await lock.withLock((): Hold2Outcome => {
     const state = safeReadState(options.store);
-    const storedSubject = state?.status === "ok" ? state.credentials.subject : undefined;
-    return options.store.writeFamily("plugin", pluginFamily, {
-      ...(storedSubject === undefined && exchange.sub ? { subject: exchange.sub } : {}),
-    });
+    if (state === null) {
+      return { ok: false, reason: "store-unreadable", detail: "reading the machine credential store failed" };
+    }
+    if (state.status === "unreadable") {
+      return { ok: false, reason: "store-unreadable", detail: state.reason };
+    }
+    if (state.status === "missing") {
+      return { ok: false, reason: "store-missing" }; // signed out between holds — never recreate
+    }
+    const storedSubject = nonEmptySubject(state.credentials.subject);
+    if (
+      options.expectedSubject !== undefined &&
+      storedSubject !== undefined &&
+      storedSubject !== options.expectedSubject
+    ) {
+      return { ok: false, reason: "subject-changed" };
+    }
+    try {
+      return {
+        ok: true,
+        document: options.store.writeFamily("plugin", pluginFamily, {
+          ...(storedSubject === undefined && exchange.sub ? { subject: exchange.sub } : {}),
+        }),
+      };
+    } catch (err) {
+      if (err instanceof MachineCredentialStoreUnreadableError) {
+        // A non-lock-honoring writer corrupted the store inside our microsecond window —
+        // result-shaped, never an escaping throw, never an overwrite (B2a).
+        return { ok: false, reason: "store-unreadable", detail: err.message };
+      }
+      throw err;
+    }
   });
-  return { status: "derived", document };
+
+  if (!outcome.ok) {
+    // The derived family has no home now — revoke it best-effort so no orphan device row lingers.
+    const minted = exchange.refreshToken ?? exchange.accessToken;
+    const revoke = resolveRevoker(options);
+    await tryRevoke(
+      revoke,
+      minted,
+      options.clientId,
+      exchange.refreshToken ? "refresh_token" : "access_token",
+      options.onWarning,
+    );
+    options.onWarning?.(
+      `Plugin-family derivation aborted (${outcome.reason}): the machine's credential store changed between the commit holds.`,
+    );
+    return {
+      status: "aborted",
+      reason: outcome.reason,
+      ...(outcome.detail !== undefined ? { detail: outcome.detail } : {}),
+    };
+  }
+  return { status: "derived", document: outcome.document };
 }
 
 // ── tools-only login commit (O10/F10) ───────────────────────────────────────────────────────────
@@ -439,12 +643,14 @@ export interface CommitToolsOnlyLoginOptions {
 
 export type CommitToolsOnlyLoginResult =
   | { status: "committed"; document: MachineCredentials }
-  | { status: "switch-declined"; storedSubject: string; newSubject: string };
+  | { status: "switch-declined"; storedSubject: string; newSubject: string }
+  /** Review fix B2b: the guard's premise changed before the write hold; nothing was written. */
+  | { status: "aborted"; reason: "guard-premise-changed" };
 
 /**
  * Commit a `--tools-only` (O10) mint: ONE lock hold writing the plugin family only (F10 — the
  * store then holds no agent family; App pickup is impossible by design). The same D6/F7 guard
- * applies; a confirmed switch replaces the store.
+ * applies (premise re-verified under the hold — B2b); a confirmed switch replaces the store.
  */
 export async function commitToolsOnlyLogin(
   options: CommitToolsOnlyLoginOptions,
@@ -464,21 +670,22 @@ export async function commitToolsOnlyLogin(
     };
   }
 
-  const pluginFamily = tokenFamily(credentials, options.clientId, DEFAULT_PLUGIN_SCOPE);
-  const serverTarget = credentials.serverTarget;
-  const subject = credentials.subject;
-
-  const document = await lock.withLock(() => {
-    if (guard.confirmedSwitch) {
-      return writeFreshDocument(store, "plugin", pluginFamily, serverTarget, subject);
-    }
-    return store.writeFamily("plugin", pluginFamily, {
-      ...(serverTarget !== undefined ? { serverTarget } : {}),
-      ...(subject !== undefined ? { subject } : {}),
-      replaceUnreadable: true, // explicit re-authorization owns the store (04 §1)
-    });
+  const hold = await commitFamilyUnderHold({
+    store,
+    lock,
+    name: "plugin",
+    family: tokenFamily(credentials, options.clientId, DEFAULT_PLUGIN_SCOPE),
+    serverTarget: credentials.serverTarget,
+    subject: credentials.subject,
+    guard,
   });
-  return { status: "committed", document };
+  if (!hold.committed) {
+    options.onWarning?.(
+      "Tools-only login aborted: the machine's stored account changed while the sign-in was being confirmed; retry to re-evaluate.",
+    );
+    return { status: "aborted", reason: "guard-premise-changed" };
+  }
+  return { status: "committed", document: hold.document };
 }
 
 // ── machine-wide sign-out (F6/D5) ───────────────────────────────────────────────────────────────

@@ -297,6 +297,165 @@ describe("commitAgentLogin — the D6/F7 account-switch guard", () => {
   });
 });
 
+describe("fix round 1 — B2: re-verification under the lock", () => {
+  it("hold 2 aborts 'subject-changed' when a confirmed switch lands between holds — A's plugin family never enters B's store", async () => {
+    const store = freshStore();
+    const revoked: string[] = [];
+    // Between hold 1 and hold 2 (during the exchange), another surface switches the machine to usr_B.
+    const exchange = scriptedExchange(() => {
+      store.write({
+        version: 2,
+        subject: "usr_B",
+        serverTarget: "https://ai-game.dev",
+        families: { agent: { accessToken: "b-a", refreshToken: "b-r", clientId: "x", scope: "mcp:agent" } },
+      });
+      return EXCHANGE_OK;
+    });
+
+    const result = await commitAgentLogin({
+      store,
+      exchangeClient: exchange,
+      clientId: "unity-mcp-plugin",
+      credentials: AGENT_CREDS, // usr_A
+      revokeToken: (token) => {
+        revoked.push(token);
+        return true;
+      },
+    });
+
+    expect(result).toMatchObject({ status: "aborted", reason: "subject-changed" });
+    const stored = store.read()!;
+    expect(stored.subject).toBe("usr_B"); // B's store intact
+    expect(stored.families?.plugin).toBeUndefined(); // A's derived family NOT written
+    expect(revoked).toContain("plug-r"); // the orphaned just-derived family revoked best-effort
+  });
+
+  it("hold 2 aborts 'store-missing' after a machine-wide sign-out between holds — the store is NEVER recreated", async () => {
+    const store = freshStore();
+    const exchange = scriptedExchange(() => {
+      store.delete(); // signOutMachineWide ran between the holds
+      return EXCHANGE_OK;
+    });
+
+    const result = await commitAgentLogin({
+      store,
+      exchangeClient: exchange,
+      clientId: "unity-mcp-plugin",
+      credentials: AGENT_CREDS,
+      revokeToken: () => true,
+    });
+
+    expect(result).toMatchObject({ status: "aborted", reason: "store-missing" });
+    expect(store.exists).toBe(false); // a signed-out machine stays signed out
+  });
+
+  it("hold 2 surfaces an unreadable store as a RESULT ('store-unreadable'), never an escaping throw", async () => {
+    const store = freshStore();
+    const exchange = scriptedExchange(() => {
+      fs.writeFileSync(store.credentialsPath, "corrupted mid-commit");
+      return EXCHANGE_OK;
+    });
+
+    const result = await commitAgentLogin({
+      store,
+      exchangeClient: exchange,
+      clientId: "unity-mcp-plugin",
+      credentials: AGENT_CREDS,
+      revokeToken: () => true,
+    });
+
+    expect(result).toMatchObject({ status: "aborted", reason: "store-unreadable" });
+    expect(fs.readFileSync(store.credentialsPath).toString()).toBe("corrupted mid-commit"); // untouched
+  });
+
+  it("derivePluginFamily (the partial-retry leg) re-verifies expectedSubject under its hold", async () => {
+    // The machine was switched to usr_B while the surface still holds usr_A's agent token.
+    const store = freshStore({
+      version: 2,
+      subject: "usr_B",
+      serverTarget: "https://ai-game.dev",
+      families: { agent: { accessToken: "b-a", refreshToken: "b-r", clientId: "x", scope: "mcp:agent" } },
+    });
+
+    const result = await derivePluginFamily({
+      store,
+      exchangeClient: scriptedExchange(EXCHANGE_OK),
+      clientId: "unity-mcp-plugin",
+      agentAccessToken: "agent-a",
+      serverTarget: "https://ai-game.dev",
+      expectedSubject: "usr_A",
+      revokeToken: () => true,
+    });
+
+    expect(result).toMatchObject({ status: "aborted", reason: "subject-changed" });
+    expect(store.read()?.families?.plugin).toBeUndefined();
+  });
+
+  it("hold 1 re-verifies the guard premise: a store mutated during the confirm dialog aborts, nothing replaced", async () => {
+    const store = freshStore({
+      version: 2,
+      subject: "usr_B",
+      serverTarget: "https://ai-game.dev",
+      families: { agent: { accessToken: "b-agent-a", refreshToken: "b-agent-r", clientId: "app-dcr", scope: "mcp:agent" } },
+    });
+
+    const result = await commitAgentLogin({
+      store,
+      exchangeClient: scriptedExchange(EXCHANGE_OK),
+      clientId: "unity-mcp-plugin",
+      credentials: AGENT_CREDS, // usr_A
+      confirmAccountSwitch: async () => {
+        // While the dialog is open, a concurrent login switches the machine to usr_C.
+        store.write({
+          version: 2,
+          subject: "usr_C",
+          serverTarget: "https://ai-game.dev",
+          families: { agent: { accessToken: "c-a", refreshToken: "c-r", clientId: "c", scope: "mcp:agent" } },
+        });
+        return true; // the user confirms replacing usr_B — a premise that no longer holds
+      },
+      revokeToken: () => true,
+    });
+
+    expect(result).toMatchObject({ status: "aborted", reason: "guard-premise-changed" });
+    const stored = store.read()!;
+    expect(stored.subject).toBe("usr_C"); // usr_C's store intact — never replaced on a stale confirmation
+    expect(stored.families?.agent?.accessToken).toBe("c-a");
+  });
+
+  it("hold 1 premise re-check on the plain path: a mismatch appearing before the hold aborts (tools-only)", async () => {
+    const store = freshStore(); // empty at guard evaluation
+    const lock = new MachineCredentialLock(store.baseDirectory, { onWarning: () => {} });
+    let injected = false;
+    const originalWithLock = lock.withLock.bind(lock);
+    vi.spyOn(lock, "withLock").mockImplementation((fn) =>
+      originalWithLock(async () => {
+        if (!injected) {
+          injected = true; // usr_C signs in between the lock-free guard read and hold 1
+          store.write({
+            version: 2,
+            subject: "usr_C",
+            families: { agent: { accessToken: "c-a", refreshToken: "c-r", clientId: "c", scope: "mcp:agent" } },
+          });
+        }
+        return (await fn()) as never;
+      }),
+    );
+
+    const result = await commitToolsOnlyLogin({
+      store,
+      lock,
+      clientId: "godot-cli",
+      credentials: { accessToken: "a", refreshToken: "r", subject: "usr_A", serverTarget: "https://ai-game.dev" },
+      revokeToken: () => true,
+    });
+
+    expect(result).toMatchObject({ status: "aborted", reason: "guard-premise-changed" });
+    expect(store.read()?.subject).toBe("usr_C");
+    expect(store.read()?.families?.plugin).toBeUndefined();
+  });
+});
+
 describe("commitToolsOnlyLogin (O10 --tools-only / F10)", () => {
   it("writes a plugin family ONLY — no agent family, so App pickup is impossible by design", async () => {
     const store = freshStore();

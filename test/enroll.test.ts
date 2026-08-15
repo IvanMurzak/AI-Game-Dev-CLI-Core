@@ -213,6 +213,90 @@ describe("enroll — runEnroll side effects (v2 pin + MED-2 serverTarget)", () =
     expect(store.read()?.families?.plugin?.accessToken).toBe("fresh");
   });
 
+  it("B1: post-a6 redeem for account B on a machine authorized as A → declined (fail closed), store untouched, minted revoked", async () => {
+    const store = new MachineCredentialStore(path.join(tmp, "store"), identityCredentialCodec);
+    store.write({
+      version: 2,
+      subject: "usr_A",
+      serverTarget: "https://ai-game.dev",
+      families: { agent: { accessToken: "a-agent", refreshToken: "a-agent-r", clientId: "app-dcr", scope: "mcp:agent" } },
+    });
+    const before = fs.readFileSync(store.credentialsPath);
+    const projectDir = path.join(tmp, "project");
+    fs.mkdirSync(projectDir, { recursive: true });
+    const revoked: Array<{ token: string; clientId: string }> = [];
+
+    const res = await runEnroll({
+      code: "CODE",
+      projectPath: projectDir,
+      adapter: unityAdapter,
+      store,
+      baseUrl: "https://ai-game.dev",
+      fetchImpl: redeemFetch({
+        access_token: "b-plug-a",
+        refresh_token: "b-plug-r",
+        server_target: "https://ai-game.dev",
+        sub: "usr_B",
+        client_id: "unity-mcp-plugin",
+      }),
+      revokeToken: (token, clientId) => {
+        revoked.push({ token, clientId });
+        return true;
+      },
+    });
+
+    expect(res).toMatchObject({ status: "switch-declined", storedSubject: "usr_A", newSubject: "usr_B" });
+    // F untouched — byte-identical; no mixed-account store, subject still usr_A.
+    expect(fs.readFileSync(store.credentialsPath).equals(before)).toBe(true);
+    // The just-minted (declined) enrollment family was revoked best-effort with ITS client id.
+    expect(revoked).toEqual([{ token: "b-plug-r", clientId: "unity-mcp-plugin" }]);
+    // No project side effects either: the enrollment was aborted before the marker/pin writes.
+    expect(readProjectMarker(projectDir)).toBeNull();
+  });
+
+  it("B1: confirmed switch REPLACES the store (same semantics as login) — no A remnant, old families revoked", async () => {
+    const store = new MachineCredentialStore(path.join(tmp, "store"), identityCredentialCodec);
+    store.write({
+      version: 2,
+      subject: "usr_A",
+      serverTarget: "https://ai-game.dev",
+      families: { agent: { accessToken: "a-agent", refreshToken: "a-agent-r", clientId: "app-dcr", scope: "mcp:agent" } },
+    });
+    const projectDir = path.join(tmp, "project");
+    fs.mkdirSync(projectDir, { recursive: true });
+    const revoked: Array<{ token: string; clientId: string }> = [];
+
+    const res = await runEnroll({
+      code: "CODE",
+      projectPath: projectDir,
+      adapter: unityAdapter,
+      store,
+      baseUrl: "https://ai-game.dev",
+      fetchImpl: redeemFetch({
+        access_token: "b-plug-a",
+        refresh_token: "b-plug-r",
+        server_target: "https://ai-game.dev",
+        sub: "usr_B",
+        client_id: "unity-mcp-plugin",
+      }),
+      confirmAccountSwitch: async () => true,
+      revokeToken: (token, clientId) => {
+        revoked.push({ token, clientId });
+        return true;
+      },
+    });
+
+    expect(res).toMatchObject({ status: "enrolled" });
+    // Old account's families were revoked best-effort with their stored client id …
+    expect(revoked).toEqual([{ token: "a-agent-r", clientId: "app-dcr" }]);
+    // … and the store was REPLACED: only usr_B's plugin family remains (D6 single-account).
+    const stored = store.read()!;
+    expect(stored.subject).toBe("usr_B");
+    expect(stored.families?.plugin?.accessToken).toBe("b-plug-a");
+    expect(stored.families?.agent).toBeUndefined();
+    expect(JSON.stringify(stored)).not.toContain("a-agent");
+  });
+
   it("derives the pin with v2 normalization (B5 fix — no per-CLI workaround)", async () => {
     const store = new MachineCredentialStore(path.join(tmp, "store"), identityCredentialCodec);
     const projectDir = path.join(tmp, "project");
