@@ -418,10 +418,13 @@ export class MachineCredentialLock {
    * false when there is nothing stale to take over or we lost a race along the way.
    *
    * Staleness is judged on the LAST-WRITE time (mtime — never atime: reads must not extend a
-   * lock's life) against {@link LOCK_STALE_MS} for a same-host lock and
-   * {@link FOREIGN_LOCK_STALE_MS} for a foreign or unreadable one. Unparseable content is
-   * treated as FOREIGN on purpose — fail-safe: when we cannot prove the holder is this machine,
-   * we must not apply the short threshold.
+   * lock's life) against {@link LOCK_STALE_MS} for a same-host (`local`) or `unparseable` document
+   * and {@link FOREIGN_LOCK_STALE_MS} (24 h) only for a genuinely `foreign` one — see
+   * {@link classifyLockDocument} and {@link LockDocumentClass}. Unparseable content is judged at
+   * the SHORT bar on purpose (B2 amendment): such an artifact's writer can never have entered the
+   * critical section (a well-formed document is written before that point), so nothing live can be
+   * disturbed by treating it as stale quickly — the 24 h foreign bar would protect nothing here
+   * while wedging every future acquirer behind a corrupt file for a day.
    *
    * Sequence: judge stale → win exclusive-create of the INTENT file (losers back off; a live
    * lock is never touched by a claimant that did not win the intent) → re-validate that the
