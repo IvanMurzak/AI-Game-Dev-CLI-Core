@@ -166,6 +166,8 @@ export {
   ensureOwnerOnlyDirectory,
   OWNER_ONLY_FILE_MODE,
   OWNER_ONLY_DIRECTORY_MODE,
+  RENAME_RETRY_ATTEMPTS,
+  RENAME_RETRY_DELAY_MS,
 } from "./atomic-file.js";
 
 // ── OAuth 2.1 authorization-code + PKCE + loopback login (RFC 8252) ─────────────────────────────
