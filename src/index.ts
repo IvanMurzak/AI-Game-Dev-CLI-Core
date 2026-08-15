@@ -89,6 +89,7 @@ export {
   MachineCredentialLock,
   CredentialLockBusyError,
   parseLockContent,
+  classifyLockDocument,
   CREDENTIALS_LOCK_FILE_NAME,
   CREDENTIALS_LOCK_TAKEOVER_FILE_NAME,
   REFRESH_HTTP_TIMEOUT,
@@ -96,7 +97,11 @@ export {
   ACQUIRE_BUDGET,
   FOREIGN_LOCK_STALE_MS,
 } from "./credential-lock.js";
-export type { CredentialLockContent, MachineCredentialLockOptions } from "./credential-lock.js";
+export type {
+  CredentialLockContent,
+  MachineCredentialLockOptions,
+  LockDocumentClass,
+} from "./credential-lock.js";
 
 // ── OAuth 2.1 device-grant login (RFC 8628) ───────────────────────────────────────────────────
 export {

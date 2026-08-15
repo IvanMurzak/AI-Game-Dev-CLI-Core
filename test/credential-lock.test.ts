@@ -12,6 +12,7 @@ import {
   LOCK_STALE_MS,
   MachineCredentialLock,
   REFRESH_HTTP_TIMEOUT,
+  classifyLockDocument,
   parseLockContent,
 } from "../src/credential-lock.js";
 
@@ -84,6 +85,17 @@ describe("lock protocol constants (shared cross-language contract, 04 §2)", () 
     expect(vector["lockStaleMs"]).toBe(LOCK_STALE_MS);
     expect(vector["acquireBudgetMs"]).toBe(ACQUIRE_BUDGET);
     expect(vector["foreignLockStaleMs"]).toBe(FOREIGN_LOCK_STALE_MS);
+    expect(vector["hostIdCompare"]).toBe("case-insensitive");
+  });
+
+  it("writes lock documents whose field NAMES AND ORDER match the golden vector (x1 byte-parity)", async () => {
+    const vectorPath = path.join(import.meta.dirname, "golden-vectors", "LockProtocol.GoldenVectors.json");
+    const vector = JSON.parse(fs.readFileSync(vectorPath, "utf-8")) as Record<string, unknown>;
+    const lock = lockAt();
+    await lock.acquire();
+    const written = JSON.parse(fs.readFileSync(lockFilePath(), "utf-8")) as Record<string, unknown>;
+    expect(Object.keys(written)).toEqual(vector["lockDocumentFields"]);
+    lock.release();
   });
 });
 
@@ -104,6 +116,20 @@ describe("acquire / release", () => {
     lock.release();
     expect(lock.isHeld).toBe(false);
     expect(fs.existsSync(lockFilePath())).toBe(false);
+  });
+
+  it("stamps a fresh random 128-bit nonce per acquisition (same-process ms-tie breaker)", async () => {
+    const lock = lockAt();
+    await lock.acquire();
+    const first = parseLockContent(fs.readFileSync(lockFilePath()));
+    lock.release();
+    await lock.acquire();
+    const second = parseLockContent(fs.readFileSync(lockFilePath()));
+    lock.release();
+
+    expect(first?.nonce).toMatch(/^[0-9a-f]{32}$/);
+    expect(second?.nonce).toMatch(/^[0-9a-f]{32}$/);
+    expect(first?.nonce).not.toBe(second?.nonce);
   });
 
   it("creates the store directory when missing", async () => {
@@ -224,8 +250,81 @@ describe("stale takeover (compare-and-delete, 04 §2)", () => {
     lock.release();
   });
 
-  it("treats unparseable lock content as FOREIGN (fail-safe): no short-threshold takeover", async () => {
-    const planted = plantLock(FIXTURE_HOST, 2_000, "not json at all {{{");
+  it("takes over an UNPARSEABLE lock at LOCK_STALE_MS with one diagnostic warning (amended contract)", async () => {
+    // Its writer never entered the critical section (full write precedes handle return precedes
+    // entry), so the 24 h foreign bar would protect nothing while wedging same-host recovery.
+    plantLock(FIXTURE_HOST, 2_000, "not json at all {{{");
+    const warnings: string[] = [];
+    const lock = lockAt({
+      staleMs: 400,
+      foreignStaleMs: 60_000,
+      acquireBudgetMs: 2_000,
+      maxBackoffMs: 50,
+      onWarning: (message) => warnings.push(message),
+    });
+
+    await lock.acquire();
+    expect(lock.isHeld).toBe(true);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/unparseable/);
+    lock.release();
+  });
+
+  it("takes over a ZERO-BYTE lock artifact at LOCK_STALE_MS (crashed 'wx' creator)", async () => {
+    plantLock(FIXTURE_HOST, 2_000, "");
+    const warnings: string[] = [];
+    const lock = lockAt({
+      staleMs: 400,
+      foreignStaleMs: 60_000,
+      acquireBudgetMs: 2_000,
+      maxBackoffMs: 50,
+      onWarning: (message) => warnings.push(message),
+    });
+
+    await lock.acquire();
+    expect(lock.isHeld).toBe(true);
+    expect(warnings).toHaveLength(1);
+    lock.release();
+  });
+
+  it("does NOT take over an unparseable lock younger than LOCK_STALE_MS, and stays silent", async () => {
+    const planted = plantLock(FIXTURE_HOST, 1_000, "not json at all {{{");
+    const warnings: string[] = [];
+    const lock = lockAt({
+      staleMs: 5_000,
+      acquireBudgetMs: 300,
+      maxBackoffMs: 50,
+      onWarning: (message) => warnings.push(message),
+    });
+
+    await expect(lock.acquire()).rejects.toBeInstanceOf(CredentialLockBusyError);
+    expect(fs.readFileSync(lockFilePath()).equals(planted)).toBe(true);
+    expect(warnings).toHaveLength(0);
+  });
+
+  it("compares hostId CASE-INSENSITIVELY: a case-differing same-host lock gets the short threshold", async () => {
+    plantLock(FIXTURE_HOST.toUpperCase(), 2_000);
+    const lock = lockAt({ staleMs: 400, foreignStaleMs: 60_000, acquireBudgetMs: 2_000, maxBackoffMs: 50 });
+
+    await lock.acquire();
+    expect(lock.isHeld).toBe(true);
+    lock.release();
+  });
+
+  it("treats an EMPTY hostId in a parseable doc as FOREIGN (24 h bar)", async () => {
+    const planted = plantLock("", 2_000);
+    const lock = lockAt({ staleMs: 400, foreignStaleMs: 60_000, acquireBudgetMs: 300, maxBackoffMs: 50 });
+
+    await expect(lock.acquire()).rejects.toBeInstanceOf(CredentialLockBusyError);
+    expect(fs.readFileSync(lockFilePath()).equals(planted)).toBe(true);
+  });
+
+  it("treats a MISSING hostId in a parseable doc as FOREIGN (24 h bar)", async () => {
+    const planted = plantLock(
+      FIXTURE_HOST,
+      2_000,
+      JSON.stringify({ pid: 999, startedAt: new Date().toISOString() }),
+    );
     const lock = lockAt({ staleMs: 400, foreignStaleMs: 60_000, acquireBudgetMs: 300, maxBackoffMs: 50 });
 
     await expect(lock.acquire()).rejects.toBeInstanceOf(CredentialLockBusyError);
@@ -331,9 +430,16 @@ describe("F6 logout delete path (acquire → unlink store → release → unlink
 });
 
 describe("parseLockContent", () => {
-  it("parses a well-formed lock document", () => {
+  it("parses a well-formed lock document (nonce optional — pre-nonce writers stay readable)", () => {
     const bytes = Buffer.from(JSON.stringify({ pid: 7, startedAt: "2026-08-14T00:00:00.000Z", hostId: "h" }));
     expect(parseLockContent(bytes)).toEqual({ pid: 7, startedAt: "2026-08-14T00:00:00.000Z", hostId: "h" });
+  });
+
+  it("passes a nonce through when present", () => {
+    const bytes = Buffer.from(
+      JSON.stringify({ pid: 7, startedAt: "2026-08-14T00:00:00.000Z", hostId: "h", nonce: "ab12" }),
+    );
+    expect(parseLockContent(bytes)?.nonce).toBe("ab12");
   });
 
   it.each([
@@ -344,5 +450,25 @@ describe("parseLockContent", () => {
     ["mistyped pid", JSON.stringify({ pid: "1", startedAt: "t", hostId: "h" })],
   ])("returns undefined for %s", (_name, raw) => {
     expect(parseLockContent(Buffer.from(raw))).toBeUndefined();
+  });
+});
+
+describe("classifyLockDocument (amended staleness classes)", () => {
+  const doc = (hostId: unknown): Buffer =>
+    Buffer.from(JSON.stringify({ pid: 1, startedAt: "t", hostId }));
+
+  it.each([
+    ["same host, same case", doc("host-a"), "local"],
+    ["same host, different case", doc("HOST-A"), "local"],
+    ["different host", doc("host-b"), "foreign"],
+    ["empty hostId", doc(""), "foreign"],
+    ["missing hostId", Buffer.from(JSON.stringify({ pid: 1, startedAt: "t" })), "foreign"],
+    ["mistyped hostId", doc(42), "foreign"],
+    ["zero-byte", Buffer.alloc(0), "unparseable"],
+    ["garbage", Buffer.from("]]]not json"), "unparseable"],
+    ["non-object", Buffer.from("42"), "unparseable"],
+    ["array", Buffer.from("[1,2]"), "unparseable"],
+  ])("classifies %s as %s", (_name, bytes, expected) => {
+    expect(classifyLockDocument(bytes as Buffer, "host-a")).toBe(expected);
   });
 });

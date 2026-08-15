@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -25,9 +26,11 @@ import { MACHINE_STORE_DIR_NAME } from "./machine-credentials.js";
  *    so the cross-language parity suite (x1) can assert equality with the C# values.
  *
  *  - **Stale takeover by compare-and-delete, SERIALIZED through a takeover-intent file.** A
- *    candidate whose last-WRITE time (never atime) is older than {@link LOCK_STALE_MS} and whose
- *    `hostId` matches the local host may be taken over; a foreign-`hostId` lock (network home)
- *    only after {@link FOREIGN_LOCK_STALE_MS} (24 h). The remover must first win an
+ *    candidate whose last-WRITE time (never atime) is older than its class's threshold may be
+ *    taken over ({@link classifyLockDocument}): same-host (case-insensitive `hostId`) and
+ *    unparseable/zero-byte documents at {@link LOCK_STALE_MS}; parseable foreign-`hostId`
+ *    documents (network home) only after {@link FOREIGN_LOCK_STALE_MS} (24 h). The remover must
+ *    first win an
  *    exclusive-create of the sibling intent file ({@link CREDENTIALS_LOCK_TAKEOVER_FILE_NAME}),
  *    re-validate that the candidate is the SAME artifact it judged stale (stat + byte-identical
  *    content), and only then unlink it — then release the intent and race for exclusive-create
@@ -104,14 +107,56 @@ export const ACQUIRE_BUDGET = 75_000;
  */
 export const FOREIGN_LOCK_STALE_MS = 24 * 60 * 60 * 1000;
 
-/** The JSON document written into the lock file at acquisition (04 §2). */
+/** The JSON document written into the lock file at acquisition (04 §2 + fix-round amendment). */
 export interface CredentialLockContent {
   /** Process id of the holder (diagnostic; staleness is judged by mtime, never by pid probing). */
   pid: number;
   /** ISO-8601 instant the holder acquired the lock (diagnostic). */
   startedAt: string;
-  /** Stable machine identifier of the holder — hostname is acceptable (04 §2). */
+  /** Stable machine identifier of the holder — hostname is acceptable (04 §2). Compared CASE-INSENSITIVELY. */
   hostId: string;
+  /**
+   * Fresh random 128-bit hex per acquisition attempt (fix-round amendment): `startedAt` has only
+   * millisecond granularity, so two same-process attempts inside one ms would otherwise produce
+   * byte-identical documents and defeat every content-identity comparison in the protocol.
+   * Optional on READ — both twins tolerate documents from writers that predate the field.
+   */
+  nonce?: string;
+}
+
+/**
+ * Staleness class of a lock/intent document (fix-round contract amendment):
+ *  - `local`       — parseable, `hostId` equal to ours case-insensitively ⇒ {@link LOCK_STALE_MS}.
+ *  - `foreign`     — parseable, `hostId` missing/empty/different ⇒ {@link FOREIGN_LOCK_STALE_MS}.
+ *  - `unparseable` — zero-byte or corrupted ⇒ {@link LOCK_STALE_MS}: such an artifact's writer
+ *    NEVER entered the critical section (the full document write precedes the handle return,
+ *    which precedes entry), so the 24 h foreign bar would protect nothing while wedging
+ *    same-host recovery for a day. Takeover of this class emits one diagnostic warning.
+ */
+export type LockDocumentClass = "local" | "foreign" | "unparseable";
+
+/**
+ * Classify a lock/intent document for staleness-threshold selection (see
+ * {@link LockDocumentClass}). `hostId` is compared case-insensitively (hostnames are
+ * case-insensitive on every platform we ship to, and Windows reports them inconsistently);
+ * an empty or missing `hostId` in an otherwise-parseable document classifies as FOREIGN —
+ * a foreign implementation's document proves nothing about which machine wrote it.
+ */
+export function classifyLockDocument(bytes: Buffer, localHostId: string): LockDocumentClass {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(bytes.toString("utf-8"));
+  } catch {
+    return "unparseable";
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return "unparseable";
+  }
+  const hostId = (parsed as Record<string, unknown>)["hostId"];
+  if (typeof hostId !== "string" || hostId.length === 0) {
+    return "foreign";
+  }
+  return hostId.toLowerCase() === localHostId.toLowerCase() ? "local" : "foreign";
 }
 
 /**
@@ -154,6 +199,12 @@ export interface MachineCredentialLockOptions {
   acquireBudgetMs?: number;
   /** TEST-ONLY cap of the jittered retry backoff (ms). Default 500. */
   maxBackoffMs?: number;
+  /**
+   * Structured diagnostic-warning sink (never receives token material — lock documents carry
+   * none). Default: `console.warn`, so the one mandated diagnostic — taking over an
+   * unparseable/zero-byte lock artifact — surfaces even before a consumer wires a sink.
+   */
+  onWarning?: (message: string) => void;
 }
 
 /** Backoff base delay (ms); doubled per attempt up to the cap, then jittered ×[0.5, 1.5). */
@@ -180,6 +231,7 @@ export class MachineCredentialLock {
   private readonly _foreignStaleMs: number;
   private readonly _acquireBudgetMs: number;
   private readonly _maxBackoffMs: number;
+  private readonly _onWarning: (message: string) => void;
 
   /** The exact bytes we wrote into the lock file while held; undefined when not held. */
   private _ownContent: Buffer | undefined;
@@ -193,6 +245,7 @@ export class MachineCredentialLock {
     this._foreignStaleMs = options.foreignStaleMs ?? FOREIGN_LOCK_STALE_MS;
     this._acquireBudgetMs = options.acquireBudgetMs ?? ACQUIRE_BUDGET;
     this._maxBackoffMs = options.maxBackoffMs ?? BACKOFF_CAP_MS;
+    this._onWarning = options.onWarning ?? ((message) => console.warn(message));
   }
 
   /** Absolute path of the lock file (`<store dir>/credentials.lock`). */
@@ -305,12 +358,7 @@ export class MachineCredentialLock {
    * verify it still holds OUR content before we consider ourselves the holder.
    */
   private tryExclusiveCreate(): boolean {
-    const content: CredentialLockContent = {
-      pid: process.pid,
-      startedAt: new Date().toISOString(),
-      hostId: this._hostId,
-    };
-    const bytes = Buffer.from(JSON.stringify(content), "utf-8");
+    const bytes = this.newDocumentBytes();
 
     let fd: number;
     try {
@@ -331,9 +379,24 @@ export class MachineCredentialLock {
     }
     try {
       fs.writeSync(fd, bytes);
-    } finally {
-      fs.closeSync(fd); // close immediately: peers judge staleness by our mtime (04 §2)
+    } catch (err) {
+      // Own-artifact cleanup (fix-round amendment): a failed write must not leave OUR zero-byte
+      // or partial artifact wedging peers until it goes stale — close, best-effort unlink of the
+      // file THIS process just created (it is milliseconds old, so no takeover can own it yet),
+      // and propagate the environmental error.
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* already on the error path */
+      }
+      try {
+        fs.unlinkSync(this._lockPath);
+      } catch {
+        /* best-effort */
+      }
+      throw err;
     }
+    fs.closeSync(fd); // close immediately: peers judge staleness by our mtime (04 §2)
 
     // Verify the new lock's content is our own before entering the critical section (04 §2).
     let readBack: Buffer;
@@ -381,9 +444,8 @@ export class MachineCredentialLock {
       return false;
     }
 
-    const holder = parseLockContent(content1);
-    const threshold =
-      holder !== undefined && holder.hostId === this._hostId ? this._staleMs : this._foreignStaleMs;
+    const documentClass = classifyLockDocument(content1, this._hostId);
+    const threshold = documentClass === "foreign" ? this._foreignStaleMs : this._staleMs;
     if (Date.now() - stat1.mtimeMs < threshold) {
       return false; // not stale (or not provably ours to judge on the short threshold)
     }
@@ -412,10 +474,31 @@ export class MachineCredentialLock {
       ) {
         return false; // replaced by a live lock while we acquired the intent — leave it alone
       }
+      // Re-verify intent ownership IMMEDIATELY before the removal (fix-round amendment): if a
+      // crashed-intent recovery displaced our intent between acquisition and here, the removal
+      // authority is no longer ours.
+      let intentNow: Buffer;
+      try {
+        intentNow = fs.readFileSync(this._intentPath);
+      } catch {
+        return false;
+      }
+      if (!intentNow.equals(intentBytes)) {
+        return false;
+      }
       try {
         fs.unlinkSync(this._lockPath);
       } catch {
         return false;
+      }
+      if (documentClass === "unparseable") {
+        // One diagnostic per takeover of a corrupt artifact (fix-round amendment): its writer
+        // never entered the critical section, but its existence usually means a crashed or
+        // interrupted acquisition worth surfacing. Lock documents carry no token material.
+        this._onWarning(
+          `credential lock takeover: removed an unparseable (zero-byte or corrupted) lock artifact at ${this._lockPath}; ` +
+            "treated as stale at LOCK_STALE_MS because its writer can never have entered the critical section",
+        );
       }
       return true;
     } finally {
@@ -434,12 +517,7 @@ export class MachineCredentialLock {
    * probabilities multiplied, accepted by design in both languages.
    */
   private tryAcquireTakeoverIntent(): Buffer | undefined {
-    const content: CredentialLockContent = {
-      pid: process.pid,
-      startedAt: new Date().toISOString(),
-      hostId: this._hostId,
-    };
-    const bytes = Buffer.from(JSON.stringify(content), "utf-8");
+    const bytes = this.newDocumentBytes();
 
     for (let createAttempt = 0; createAttempt < 2; createAttempt += 1) {
       let fd: number;
@@ -449,7 +527,9 @@ export class MachineCredentialLock {
         if (!isErrno(err, "EEXIST")) {
           return undefined;
         }
-        // An intent exists. Recover it only if its holder crashed (stale by the same rules).
+        // An intent exists. Recover it only if its holder crashed (stale by the same
+        // classification rules as the lock itself — an unparseable/zero-byte intent's writer
+        // never completed intent acquisition, so it gets the short threshold too).
         let istat: fs.Stats;
         let icontent: Buffer;
         try {
@@ -458,11 +538,8 @@ export class MachineCredentialLock {
         } catch {
           continue; // vanished — retry the exclusive-create once
         }
-        const iholder = parseLockContent(icontent);
-        const ithreshold =
-          iholder !== undefined && iholder.hostId === this._hostId
-            ? this._staleMs
-            : this._foreignStaleMs;
+        const intentClass = classifyLockDocument(icontent, this._hostId);
+        const ithreshold = intentClass === "foreign" ? this._foreignStaleMs : this._staleMs;
         if (Date.now() - istat.mtimeMs < ithreshold) {
           return undefined; // a live claimant is mid-takeover — back off
         }
@@ -487,12 +564,54 @@ export class MachineCredentialLock {
       }
       try {
         fs.writeSync(fd, bytes);
-      } finally {
-        fs.closeSync(fd);
+      } catch (err) {
+        // Own-artifact cleanup (fix-round amendment) — mirror of the lock path: never leave OUR
+        // zero-byte intent wedging every claimant until it goes stale.
+        try {
+          fs.closeSync(fd);
+        } catch {
+          /* already on the error path */
+        }
+        try {
+          fs.unlinkSync(this._intentPath);
+        } catch {
+          /* best-effort */
+        }
+        throw err;
+      }
+      fs.closeSync(fd);
+
+      // Verify the intent still carries OUR content before relying on it (fix-round amendment —
+      // the lock path has always had this step; a racing crashed-intent recovery could have
+      // replaced our intent between the write and here).
+      let readBack: Buffer;
+      try {
+        readBack = fs.readFileSync(this._intentPath);
+      } catch {
+        return undefined;
+      }
+      if (!readBack.equals(bytes)) {
+        return undefined; // displaced — the removal authority is not ours; never delete theirs
       }
       return bytes;
     }
     return undefined;
+  }
+
+  /**
+   * Fresh protocol document bytes for one acquisition attempt: `{pid, startedAt, hostId, nonce}`
+   * with a fresh random 128-bit hex `nonce` (fix-round amendment) — `startedAt` alone has ms
+   * granularity, so same-process attempts inside one ms would otherwise be byte-identical and
+   * defeat the protocol's content-identity comparisons.
+   */
+  private newDocumentBytes(): Buffer {
+    const content: CredentialLockContent = {
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      hostId: this._hostId,
+      nonce: randomBytes(16).toString("hex"),
+    };
+    return Buffer.from(JSON.stringify(content), "utf-8");
   }
 
   /** Release the takeover-intent file — only when it still carries OUR content. */
@@ -540,7 +659,14 @@ export function parseLockContent(bytes: Buffer): CredentialLockContent | undefin
   ) {
     return undefined;
   }
-  return { pid: record["pid"], startedAt: record["startedAt"], hostId: record["hostId"] };
+  const nonce = record["nonce"];
+  return {
+    pid: record["pid"],
+    startedAt: record["startedAt"],
+    hostId: record["hostId"],
+    // Optional on read (fix-round amendment): documents from pre-nonce writers stay parseable.
+    ...(typeof nonce === "string" ? { nonce } : {}),
+  };
 }
 
 function isErrno(err: unknown, code: string): boolean {
