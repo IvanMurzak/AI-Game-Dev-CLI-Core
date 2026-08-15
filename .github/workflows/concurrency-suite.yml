@@ -1,0 +1,80 @@
+# The mixed-language REAL-PROCESS refresh concurrency suite (unified-machine-auth 04 §5 / 03 F8,
+# task x2): Node workers driving this repo's built dist/ + C# workers driving MCP-Plugin-dotnet's
+# McpPlugin.Tests.RefreshHarness, hammering refresh against a local fake AS over ONE shared
+# machine credential store. Acceptance: zero family revokes at N≥4 mixed processes over ≥100
+# rotations — plus the three mandated falsifiability plants (see the suite file).
+#
+# THIS WORKFLOW IS THE SUITE'S ONE CI HOME for both repos (the DoD's "one CI home invoking both
+# toolchains" option): cli-core owns the driver/fake AS and already has 3-OS coverage, and the
+# hosted runners provide the dotnet SDK the C# harness needs. MCP-Plugin-dotnet's own CI builds
+# the harness project but does not run the suite. Deliberately a SEPARATE workflow: the required
+# check `typecheck + build + test` stays exactly as it is (the suite is opt-in via
+# X2_CONCURRENCY=1 and skips itself inside a plain `npm test`).
+#
+# The C# twin is cloned by ref with a fallback ladder: the coordinated development branch first
+# (both halves of x2 land as a coordinated PR pair), then main (after the twin PR merges and its
+# branch is deleted, main contains the harness — the ladder is self-healing and needs no edit).
+
+name: concurrency-suite
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: x2-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  MCP_PLUGIN_DOTNET_REPO: https://github.com/IvanMurzak/MCP-Plugin-dotnet.git
+  MCP_PLUGIN_DOTNET_REF: worktree-x2-concurrency-suite
+
+jobs:
+  suite:
+    name: concurrency suite (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: |
+            8.0.x
+            9.0.x
+
+      - name: Install and build (dist/ is what the Node workers run)
+        run: |
+          npm ci
+          npm run build
+
+      - name: Clone and build the C# harness (MCP-Plugin-dotnet)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Forward slashes everywhere: RUNNER_TEMP is backslashed on the Windows runner and the
+          # resulting path crosses bash, dotnet, and a Node spawn.
+          twin="${RUNNER_TEMP//\\//}/mcp-plugin-dotnet"
+          git clone --depth 1 --branch "$MCP_PLUGIN_DOTNET_REF" "$MCP_PLUGIN_DOTNET_REPO" "$twin" \
+            || git clone --depth 1 --branch main "$MCP_PLUGIN_DOTNET_REPO" "$twin"
+          echo "twin ref: $(git -C "$twin" rev-parse HEAD) ($(git -C "$twin" branch --show-current))"
+          dotnet build "$twin/McpPlugin.Tests.RefreshHarness/McpPlugin.Tests.RefreshHarness.csproj" -c Release -f net9.0
+          echo "X2_CSHARP_HARNESS=$twin/McpPlugin.Tests.RefreshHarness/bin/Release/net9.0/McpPlugin.Tests.RefreshHarness.dll" >> "$GITHUB_ENV"
+
+      - name: Run the mixed-language concurrency suite
+        env:
+          X2_CONCURRENCY: "1"
+        run: npx vitest run test/concurrency-suite.subprocess.test.ts
