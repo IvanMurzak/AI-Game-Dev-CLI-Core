@@ -1,0 +1,41 @@
+README.md
+  s_887efbfc81dc0f::t_08a0c0c13b80b2 74-83
+test/enroll.test.ts
+  s_887efbfc81dc0f::t_8fc6d27918d9f5 216-299
+src/login-commit.ts
+  s_887efbfc81dc0f::t_3cbc3397ea4b5d 3
+  s_887efbfc81dc0f::t_9d37d34a8f4734 407-409
+  s_887efbfc81dc0f::t_0fa0fa4b5a4527 208,214
+  s_887efbfc81dc0f::t_43d9ab91f93e8c 441-450,452-457,466,468-469,476-483,487
+  s_887efbfc81dc0f::t_14812549b3d4dc 498-505,507-509,516-522,527-537,561-567,569-600,602-623
+  s_887efbfc81dc0f::t_8af6db4ed09160 202
+  s_887efbfc81dc0f::t_b53fbd48c67b10 646-648,653,673-680,682-688
+  s_887efbfc81dc0f::t_73fd698c6be2a4 355-358
+  s_887efbfc81dc0f::t_46e3db04e39519 128-129,131,133,143-150,153-164,168,171
+  s_887efbfc81dc0f::t_0b56cf5aa398a9 285-354,359-369
+test/login-commit.test.ts
+  s_887efbfc81dc0f::t_d49a25309a23f4 300-458
+src/enroll.ts
+  s_887efbfc81dc0f::t_c820f1f8b5093c 6-10
+  s_887efbfc81dc0f::t_bebe35fccd24ef 369
+  s_887efbfc81dc0f::t_0f525e3d6633fc 246-257,260-277
+  s_887efbfc81dc0f::t_4d62764145cfe2 291-300,313-337,346-360
+src/index.ts
+  s_887efbfc81dc0f::t_669fe0cb91a8ab 259-260,272,276-279
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "97a8329ee816acae566b274c4a86226f013c2f89",
+  "prompts": {},
+  "sessions": {
+    "s_887efbfc81dc0f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "556ed732-8c84-4c19-bfb0-6231e40ac140",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Ivan Murzak <Ivan.D.Murzak@gmail.com>"
+    }
+  }
+}

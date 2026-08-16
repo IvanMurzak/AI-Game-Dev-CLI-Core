@@ -1,0 +1,49 @@
+README.md
+  s_84c6c9c40bd001::t_9618b01323d6ff 7-22
+package-lock.json
+  s_84c6c9c40bd001::t_ad3a194c4995d9 12,883-892,1465-1471
+package.json
+  s_84c6c9c40bd001::t_f146f93603e7ac 48
+src/credential-provider.ts
+  s_84c6c9c40bd001::t_f406455aaddaba 1-203
+src/index.ts
+  s_84c6c9c40bd001::t_ff7db31afd6527 4-11,19-95
+src/machine-credentials.ts
+  s_84c6c9c40bd001::t_7fb9ec66fbeba8 1-257
+src/oauth-device-flow.ts
+  s_84c6c9c40bd001::t_506156ed5541bc 1-427
+src/project-identity.ts
+  s_84c6c9c40bd001::t_248c6607d47949 1-218
+src/token-refresher.ts
+  s_84c6c9c40bd001::t_edc6f3e09652a9 1-170
+test/credential-provider.test.ts
+  s_84c6c9c40bd001::t_3d4aff87721ea9 1-201
+test/golden-vectors/ProjectIdentity.GoldenVectors.json
+  s_84c6c9c40bd001::t_6681b293a5d255 1-87
+test/golden-vectors/ProjectIdentity.GoldenVectors.v2.json
+  s_84c6c9c40bd001::t_fb6338262ef60b 1-100
+test/machine-credentials.test.ts
+  s_84c6c9c40bd001::t_01a2d4fce6f9f4 1-201
+test/oauth-device-flow.test.ts
+  s_84c6c9c40bd001::t_0dfa4cc0916171 1-244
+test/project-identity.test.ts
+  s_84c6c9c40bd001::t_2548e71a31476e 1-198
+test/token-refresher.test.ts
+  s_84c6c9c40bd001::t_dba38d4138d85d 1-142
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "5413be8332b353a13dcd634508728758d3dbe312",
+  "prompts": {},
+  "sessions": {
+    "s_84c6c9c40bd001": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "s_84c6c9c40bd001",
+        "model": "unknown"
+      },
+      "human_author": "Ivan Murzak <Ivan.D.Murzak@gmail.com>"
+    }
+  }
+}
