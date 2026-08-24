@@ -7,6 +7,19 @@ Versions are set at publish time by the `release.yml` workflow input (`gh workfl
 MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not auto-resolve
 `0.4.0` — adopt deliberately).
 
+## 0.4.1 — 2026-08-24
+
+### Fixed
+
+- **`invalid_target` on refresh is terminal** (defensive hardening, b1): an `invalid_target`
+  OAuth error on a refresh attempt now takes the same terminal path as `invalid_grant` —
+  post-failure store re-read, then the dead-family memo (never a retry loop; re-arms when
+  another surface replaces the credential) — with its own raw reason preserved end-to-end in
+  the dead-family telemetry and warning, never remapped. The TS refresher sends no `resource`
+  on refresh, so a conformant authorization server cannot answer `invalid_target` today; the
+  mapping exists so any future resource-bearing refresh inherits sane terminal behavior
+  instead of retry-forever via the generic `failed` path.
+
 ## 0.4.0 — 2026-08-15
 
 The unified-machine-auth release: credential store v2, the cross-process store lock, and
