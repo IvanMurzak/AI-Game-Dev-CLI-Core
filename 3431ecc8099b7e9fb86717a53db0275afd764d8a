@@ -1,0 +1,36 @@
+src/oauth-authcode-flow.ts
+  s_ebe602a82c6eeb::t_ab4e47e5f2a7f2 1-664
+test/oauth-authcode-flow.test.ts
+  s_ebe602a82c6eeb::t_585c726dde5ac4 17
+  s_ebe602a82c6eeb::t_0e0c1070eb4e3e 35
+  s_ebe602a82c6eeb::t_6e248062a1a65d 14-16
+  s_ebe602a82c6eeb::t_b74c15ce8ef7f9 18-20,32-34
+  s_ebe602a82c6eeb::t_8d48f05112c762 36-38
+  s_ebe602a82c6eeb::t_f370d52fe10875 1-13,21-31,39-386
+src/index.ts
+  s_e70383bb4cb548::t_b187336045d5b0 90-123
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "3431ecc8099b7e9fb86717a53db0275afd764d8a",
+  "prompts": {},
+  "sessions": {
+    "s_e70383bb4cb548": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "96b28b90-eda7-4907-9bb9-08e5da0e87d6",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Ivan Murzak <Ivan.D.Murzak@gmail.com>"
+    },
+    "s_ebe602a82c6eeb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "292006eb-c7cc-4f39-8bc7-373838cbadbb",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Ivan Murzak <Ivan.D.Murzak@gmail.com>"
+    }
+  }
+}
