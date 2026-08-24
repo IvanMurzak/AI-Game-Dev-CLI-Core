@@ -369,7 +369,13 @@ export class MachineCredentialProvider {
     if (!result.ok || !result.accessToken) {
       const reason = result.ok ? "empty access token" : result.reason;
       this._lastFailureReason = reason;
-      if (!result.ok && reason === "invalid_grant") {
+      // D2 REVISED (defensive): `invalid_target` on refresh is terminal exactly like
+      // `invalid_grant` — same dead-family outcome kind, its own raw reason preserved
+      // end-to-end (telemetry/warning show `invalid_target`, never a remap). Our refresher
+      // sends no `resource` on refresh (rule 3, token-refresher.ts), so this cannot fire
+      // today; the mapping exists so any future resource-bearing refresh inherits sane
+      // terminal behavior instead of retry-forever via the generic `failed` path.
+      if (!result.ok && (reason === "invalid_grant" || reason === "invalid_target")) {
         return { kind: "invalid-grant", reason, presentedRefreshToken: refreshToken };
       }
       this._onWarning(`Account credential refresh failed (${reason}).`);

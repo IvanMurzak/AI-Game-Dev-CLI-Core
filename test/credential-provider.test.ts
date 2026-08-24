@@ -395,6 +395,77 @@ describe("MachineCredentialProvider — invalid_grant / family death (04 §3 rul
     scripted = { ok: true, accessToken: "fresh-after-relogin" };
     expect(await p.getAccessToken()).toBe("fresh-after-relogin");
   });
+
+  // D2 REVISED: `invalid_target` on refresh joins the terminal dead-family map. Defensive —
+  // the TS refresher sends no `resource` on refresh (rule 3), so a real AS cannot answer
+  // `invalid_target` today; the mapping exists so any future resource-bearing refresh
+  // inherits terminal behavior instead of retry-forever via the generic `failed` path.
+  it(
+    "invalid_target is terminal: family dead, ONE telemetry event with its OWN reason, no second network attempt",
+    async () => {
+      const store = freshStore({
+        version: 2,
+        serverTarget: "https://ai-game.dev",
+        subject: "user-1",
+        families: {
+          agent: { accessToken: "agent-a", refreshToken: "agent-r", expiresAt: iso(30 * 60_000), clientId: "c", scope: "mcp:agent" },
+          plugin: { accessToken: "plug-a", refreshToken: "plug-r", expiresAt: iso(-1000), clientId: "c", scope: "mcp:plugin" },
+        },
+      });
+      const filePath = path.join(store.baseDirectory, CREDENTIALS_FILE_NAME);
+      const before = fs.readFileSync(filePath);
+      const events: CredentialTelemetryEvent[] = [];
+      const warnings: string[] = [];
+      const refresher = scriptedRefresher({ ok: false, reason: "invalid_target" });
+      // refreshSkewMs: 0 disables the rate-discipline window, so ONLY the dead-family memo
+      // can suppress the second attempt — reverting the terminal mapping reddens the
+      // `calls` assertion below via the generic `failed` path (which never memoizes).
+      const p = provider(store, refresher, {
+        refreshSkewMs: 0,
+        onTelemetry: (e) => events.push(e),
+        onWarning: (w) => warnings.push(w),
+      });
+
+      await expect(p.getAccessToken()).rejects.toBeInstanceOf(LoginRequiredError);
+
+      // ONE structured event carrying the RAW reason — `invalid_target`, never remapped to
+      // `invalid_grant`.
+      expect(events).toEqual([{ type: "family-dead", family: "plugin", reason: "invalid_target" }]);
+      // The dead-family warning names the family and the raw reason.
+      expect(warnings).toContainEqual(expect.stringContaining("'plugin' is no longer valid (invalid_target)"));
+      expect(warnings.join("\n")).not.toContain("invalid_grant");
+      // Store untouched: no delete, no rewrite, the agent family survives.
+      expect(fs.readFileSync(filePath).equals(before)).toBe(true);
+
+      // NEVER loops: the dead memo (not the skew window — it is 0 here) blocks attempt 2.
+      await expect(p.getAccessToken()).rejects.toBeInstanceOf(LoginRequiredError);
+      expect(refresher.calls).toHaveLength(1);
+      expect(events).toHaveLength(1);
+
+      // The agent plane is still fully alive through the same provider.
+      expect(await p.getAccessToken({ family: "agent" })).toBe("agent-a");
+    },
+    15_000, // explicit budget: this suite inherits vitest's 5s default (repo gotcha)
+  );
+
+  it(
+    "invalid_target dead family re-arms when another surface replaces the credential",
+    async () => {
+      const store = freshStore({ accessToken: "old", refreshToken: "dead-r", expiresAt: iso(-1000) });
+      let scripted: TokenRefreshResult = { ok: false, reason: "invalid_target" };
+      const refresher = scriptedRefresher(async () => scripted);
+      const p = provider(store, refresher, { refreshSkewMs: 0 }); // isolate the dead-memo from rate discipline
+
+      await expect(p.getAccessToken()).rejects.toBeInstanceOf(LoginRequiredError);
+
+      // A fresh login (new refresh token) re-arms the family — the memo keys on the token.
+      store.write({ accessToken: "relogin", refreshToken: "new-r", expiresAt: iso(-1000) });
+      scripted = { ok: true, accessToken: "fresh-after-relogin" };
+      expect(await p.getAccessToken()).toBe("fresh-after-relogin");
+      expect(refresher.calls).toHaveLength(2);
+    },
+    15_000, // explicit budget: this suite inherits vitest's 5s default (repo gotcha)
+  );
 });
 
 describe("MachineCredentialProvider — rate discipline (04 §3 rule 6)", () => {
