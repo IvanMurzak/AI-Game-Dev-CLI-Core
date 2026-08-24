@@ -1,0 +1,26 @@
+test/concurrency-suite.subprocess.test.ts
+  s_887efbfc81dc0f::t_573f4375d75b46 1-576
+test/fake-as.ts
+  s_887efbfc81dc0f::t_53a8e594e095d2 1-478
+test/fixtures/concurrency-worker.mjs
+  s_887efbfc81dc0f::t_4778b6dd85a6bb 1-172
+.github/workflows/concurrency-suite.yml
+  s_887efbfc81dc0f::t_f52f0cfd629ec0 1-67,71-80
+  s_887efbfc81dc0f::t_b2b1408b63c667 68-70
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "e71f16388d9091ebeb119ba47a8ef02da52944f9",
+  "prompts": {},
+  "sessions": {
+    "s_887efbfc81dc0f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "556ed732-8c84-4c19-bfb0-6231e40ac140",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Ivan Murzak <Ivan.D.Murzak@gmail.com>"
+    }
+  }
+}
