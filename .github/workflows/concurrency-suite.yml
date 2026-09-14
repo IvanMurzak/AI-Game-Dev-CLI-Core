@@ -21,7 +21,8 @@
 # a fallback), the clone step below builds that checkout instead of running the ladder, and
 # `record` proves identity[] {consumer: "concurrency-suite twin"} against the lock sha. When the
 # lock RELEASES MCP-Plugin-dotnet the variable is unset and the ladder runs (a named skip in the
-# record). On an ordinary push / pull_request every chain step is a no-op.
+# record). Every chain step is a no-op unless a lock is supplied (the dispatch input, or the
+# fenced lock block of a `train/`-labelled pull request's body).
 
 name: concurrency-suite
 
@@ -55,7 +56,8 @@ permissions:
 
 env:
   MCP_PLUGIN_DOTNET_REPO: https://github.com/IvanMurzak/MCP-Plugin-dotnet.git
-  # The non-chain fallback. Under a lock it is ignored (the twin comes from the lock), not edited.
+  # The non-chain fallback, also used when a lock RELEASES MCP-Plugin-dotnet. Under a lock that
+  # pins it, the twin comes from the lock instead. Kept, not edited.
   MCP_PLUGIN_DOTNET_REF: worktree-x2-concurrency-suite
   CHAIN_LOCK: ${{ inputs.lock }}
   CHAIN_LOCK_HASH8: ${{ inputs.lock_hash8 }}

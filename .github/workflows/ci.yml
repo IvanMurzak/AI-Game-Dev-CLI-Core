@@ -4,10 +4,11 @@ name: CI
 # `workflow_dispatch` with a chain lock as its input. `.github/scripts/chain_feed.py` (vendored,
 # byte-identical to ai-game-dev-software `.scripts/chain/leg/chain_feed.py`) asserts this run is
 # at the lock's sha and exports `CHAIN_ACTIVE=1` + `CHAIN_WS_VERSION=<ws>`; `build-test` then packs
-# the ws tarball by the release recipe and `record` proves that tarball's own
+# the ws tarball by the script's chain pack recipe and `record` proves that tarball's own
 # `package/package.json` version. A root consumes nothing, so there are no lower layers to
-# self-build. On an ordinary pull_request / push every chain step is a no-op
-# ("chain: no lock (ordinary run)").
+# self-build. Every chain step is a no-op ("chain: no lock (ordinary run)") unless a lock is
+# supplied: the dispatch input, or the fenced lock block of a `train/`-labelled pull request's body.
+# Do not gate these steps on `workflow_dispatch` — that would silently disable the train path.
 on:
   pull_request:
   push:
@@ -84,8 +85,9 @@ jobs:
       - name: Test
         run: npm test
 
-      # The root's own pack by the release recipe, at the lock's ws version. `npm pkg set`, never
-      # `npm version` (which refuses a dirty tree); there is no `prepack`, so build before pack.
+      # The root's own pack at the lock's ws version, by the chain pack recipe embedded in
+      # `chain_feed.py` (`RECIPES`, which is `npm pkg set` — not release.yml's `npm version`); there
+      # is no `prepack`, so build before pack.
       # The tarball is NOT uploaded (artifact quota): `record` reads its package/package.json
       # version into the leg record's identity[], which is the evidence.
       - name: chain pack
@@ -246,7 +248,7 @@ jobs:
       - name: chain leg record
         id: chain_record
         if: always()
-        # cmd for the same reason as the CLM step above: CLM is engaged machine-wide by now.
+        # cmd for the same reason as the CLM step above: CLM may already be engaged machine-wide.
         shell: cmd
         run: ${{ env.CHAIN_PY }} .github/scripts/chain_feed.py record --node cli-core --job store-clm --edges none --job-status ${{ job.status }} --out chain-leg.json
 
