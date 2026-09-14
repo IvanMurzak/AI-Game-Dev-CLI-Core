@@ -1,0 +1,27 @@
+.github/workflows/concurrency-suite.yml
+  s_de71e20c9d8602::t_cf9f2f69394aad 93-97,99
+  s_de71e20c9d8602::t_49196a8be91510 105-107,109-113,115
+.github/workflows/ci.yml
+  s_de71e20c9d8602::t_6b0d62d6274789 154-156,158-162,164,219-221,223-227,229
+  s_de71e20c9d8602::t_fffa2f7133a8f4 65-69,71,142-146,148
+.gitattributes
+  s_de71e20c9d8602::t_8cf19fb81a65f5 1-3
+.github/scripts/chain_feed.py
+  s_de71e20c9d8602::t_beb06505f98584 36,54-80,120-122,478-487,553-589,602-603,705-781,887,893,1241-1243,1993-1995,2243-2269,2272-2280,2284,2540-2545,2580,2756-2761,2764,3223-3229,3231-3232,3241-3245,3247,3252-3254,3256-3263,3265
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "ef88eeb6ba5e4aa3d4733b9ac951cd3aadba57ca",
+  "prompts": {},
+  "sessions": {
+    "s_de71e20c9d8602": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b1fa7ae0-224c-4b0e-8499-22456e0d6a3f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ivan Murzak <Ivan.D.Murzak@gmail.com>"
+    }
+  }
+}
