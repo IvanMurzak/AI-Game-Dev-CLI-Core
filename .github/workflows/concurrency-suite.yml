@@ -48,8 +48,10 @@ run-name: ${{ github.event_name == 'workflow_dispatch' && format('chain {0} cli-
 # Ordinary runs keep the ref-keyed, cancelling group. Dispatched chain legs are keyed on the lock
 # (+ workflow, so ci.yml's leg for the same lock is a different group) and never cancelled.
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && format('chain-{0}-{1}', inputs.lock_hash8, github.workflow) || format('x2-{0}-{1}', github.workflow, github.ref) }}
-  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+  # SCRATCH PLANT (run 01a09d72...): reverted to the pre-PR unconditional ref-keyed group, to prove
+  # the group EXPRESSION is what changed the C02 outcome, not something else. Never merge.
+  group: x2-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

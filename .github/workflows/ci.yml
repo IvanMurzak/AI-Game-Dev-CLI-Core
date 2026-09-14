@@ -32,8 +32,10 @@ run-name: ${{ github.event_name == 'workflow_dispatch' && format('chain {0} cli-
 # Dispatched chain legs: keyed on the LOCK (+ workflow, so this repo's two dispatched workflows
 # never share one group) and never cancelled, so two different locks run side by side.
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && format('chain-{0}-{1}', inputs.lock_hash8, github.workflow) || format('ci-{0}-{1}', github.workflow, github.ref) }}
-  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+  # SCRATCH PLANT (run 01a09d72...): reverted to the pre-PR unconditional ref-keyed group, to prove
+  # the group EXPRESSION is what changed the C02 outcome, not something else. Never merge.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
