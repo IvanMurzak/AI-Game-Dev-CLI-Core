@@ -14,6 +14,15 @@
 # The C# twin is cloned by ref with a fallback ladder: the coordinated development branch first
 # (both halves of x2 land as a coordinated PR pair), then main (after the twin PR merges and its
 # branch is deleted, main contains the harness — the ladder is self-healing and needs no edit).
+#
+# Chain leg (node `cli-core`, job `suite`): under `workflow_dispatch` with a chain lock,
+# `.github/scripts/chain_feed.py apply --edges twin:mcp-plugin-dotnet` clones MCP-Plugin-dotnet at
+# the LOCK's sha into $CHAIN_TWIN_MCP_PLUGIN_DOTNET (a bogus sha fails `apply` at the fetch — never
+# a fallback), the clone step below builds that checkout instead of running the ladder, and
+# `record` proves identity[] {consumer: "concurrency-suite twin"} against the lock sha. When the
+# lock RELEASES MCP-Plugin-dotnet the variable is unset and the ladder runs (a named skip in the
+# record). Every chain step is a no-op unless a lock is supplied (the dispatch input, or the
+# fenced lock block of a `train/`-labelled pull request's body).
 
 name: concurrency-suite
 
@@ -21,17 +30,37 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      lock:
+        description: the chain lock JSON (<= 60000 characters)
+        required: true
+        type: string
+      lock_hash8:
+        description: first 8 hex characters of the lock hash
+        required: true
+        type: string
 
+# Empty on ordinary runs => GitHub's default title. The chain dispatcher captures a dispatched run
+# by this exact title + headSha.
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('chain {0} cli-core', inputs.lock_hash8) || '' }}
+
+# Ordinary runs keep the ref-keyed, cancelling group. Dispatched chain legs are keyed on the lock
+# (+ workflow, so ci.yml's leg for the same lock is a different group) and never cancelled.
 concurrency:
-  group: x2-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.event_name == 'workflow_dispatch' && format('chain-{0}-{1}', inputs.lock_hash8, github.workflow) || format('x2-{0}-{1}', github.workflow, github.ref) }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 permissions:
   contents: read
 
 env:
   MCP_PLUGIN_DOTNET_REPO: https://github.com/IvanMurzak/MCP-Plugin-dotnet.git
+  # The non-chain fallback, also used when a lock RELEASES MCP-Plugin-dotnet. Under a lock that
+  # pins it, the twin comes from the lock instead. Kept, not edited.
   MCP_PLUGIN_DOTNET_REF: worktree-x2-concurrency-suite
+  CHAIN_LOCK: ${{ inputs.lock }}
+  CHAIN_LOCK_HASH8: ${{ inputs.lock_hash8 }}
 
 jobs:
   suite:
@@ -56,6 +85,34 @@ jobs:
             8.0.x
             9.0.x
 
+      - name: chain python (posix)
+        if: runner.os != 'Windows' && env.CHAIN_PY == ''
+        shell: bash
+        run: |
+          for c in python3 python; do
+            if "$c" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1; then
+              echo "CHAIN_PY=$c" >> "$GITHUB_ENV"; exit 0
+            fi
+          done
+          echo 'chain: no Python 3.9+ on PATH (tried python3, python)' >&2; exit 2
+
+      - name: chain python (windows)
+        if: runner.os == 'Windows' && env.CHAIN_PY == ''
+        shell: pwsh
+        run: |
+          foreach ($c in 'python', 'py', 'python3') {
+            if (-not (Get-Command $c -ErrorAction SilentlyContinue)) { continue }
+            $global:LASTEXITCODE = $null
+            & $c -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' 2>$null
+            if ($LASTEXITCODE -eq 0) { "CHAIN_PY=$c" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8; exit 0 }
+          }
+          [Console]::Error.WriteLine('chain: no Python 3.9+ on PATH (tried python, py, python3)'); exit 2
+
+      # Drives the MCP-Plugin-dotnet twin, packs nothing: the own pack is a named skip.
+      - name: chain feed
+        id: chain
+        run: ${{ env.CHAIN_PY }} .github/scripts/chain_feed.py apply --node cli-core --job suite --edges twin:mcp-plugin-dotnet
+
       - name: Install and build (dist/ is what the Node workers run)
         run: |
           npm ci
@@ -65,11 +122,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Forward slashes everywhere: RUNNER_TEMP is backslashed on the Windows runner and the
-          # resulting path crosses bash, dotnet, and a Node spawn.
-          twin="${RUNNER_TEMP//\\//}/mcp-plugin-dotnet"
-          git clone --depth 1 --branch "$MCP_PLUGIN_DOTNET_REF" "$MCP_PLUGIN_DOTNET_REPO" "$twin" \
-            || git clone --depth 1 --branch main "$MCP_PLUGIN_DOTNET_REPO" "$twin"
+          if [ -n "${CHAIN_TWIN_MCP_PLUGIN_DOTNET:-}" ]; then
+            # Chain leg: `chain feed` already cloned the twin at the lock's sha. Never the ladder.
+            twin="${CHAIN_TWIN_MCP_PLUGIN_DOTNET//\\//}"
+            echo "twin: chain lock checkout $twin"
+          else
+            # Forward slashes everywhere: RUNNER_TEMP is backslashed on the Windows runner and the
+            # resulting path crosses bash, dotnet, and a Node spawn.
+            twin="${RUNNER_TEMP//\\//}/mcp-plugin-dotnet"
+            git clone --depth 1 --branch "$MCP_PLUGIN_DOTNET_REF" "$MCP_PLUGIN_DOTNET_REPO" "$twin" \
+              || git clone --depth 1 --branch main "$MCP_PLUGIN_DOTNET_REPO" "$twin"
+          fi
           echo "twin ref: $(git -C "$twin" rev-parse HEAD) ($(git -C "$twin" branch --show-current))"
           dotnet build "$twin/McpPlugin.Tests.RefreshHarness/McpPlugin.Tests.RefreshHarness.csproj" -c Release -f net9.0
           echo "X2_CSHARP_HARNESS=$twin/McpPlugin.Tests.RefreshHarness/bin/Release/net9.0/McpPlugin.Tests.RefreshHarness.dll" >> "$GITHUB_ENV"
@@ -78,3 +141,16 @@ jobs:
         env:
           X2_CONCURRENCY: "1"
         run: npx vitest run test/concurrency-suite.subprocess.test.ts
+
+      - name: chain leg record
+        id: chain_record
+        if: always()
+        run: ${{ env.CHAIN_PY }} .github/scripts/chain_feed.py record --node cli-core --job suite --edges twin:mcp-plugin-dotnet --job-status ${{ job.status }} --out chain-leg.json
+
+      - name: chain leg artifact
+        if: always() && steps.chain_record.outputs.artifact_name != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.chain_record.outputs.artifact_name }}
+          path: chain-leg.json
+          retention-days: 1
