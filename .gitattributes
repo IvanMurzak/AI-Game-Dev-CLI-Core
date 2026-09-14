@@ -1,0 +1,3 @@
+# Vendored byte-identical from ai-game-dev-software .scripts/chain/leg/chain_feed.py; its sha256 is
+# compared against the canonical blob, so it must never be CRLF-converted on checkout.
+.github/scripts/chain_feed.py text eol=lf
