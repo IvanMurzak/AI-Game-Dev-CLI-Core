@@ -1,0 +1,38 @@
+src/index.ts
+  s_6478c2d8175e73::t_cee7f54dab5975 66-70
+src/machine-credentials.ts
+  s_6478c2d8175e73::t_33b44912ed8598 382-383
+  s_6478c2d8175e73::t_4d45de53bb598e 604
+  s_6478c2d8175e73::t_5d7b7bed14f3f9 178-190
+  s_6478c2d8175e73::t_b90a2df38303c6 37-41
+  s_6478c2d8175e73::t_cac43ac31d81c5 554-598,600-603,605-680,688-693,696-698,708-715
+  s_6478c2d8175e73::t_2b775cddbd723c 599
+  s_6478c2d8175e73::t_2b06ec8385ac22 716-742,744-748
+  s_6478c2d8175e73::t_f92ec49d308aa2 364-369
+  s_6478c2d8175e73::t_5a163f59469df4 156-177,191-197,553,694
+  s_6478c2d8175e73::t_0f7d50b1550b04 378-381,384-385
+test/machine-credentials-powershell-host.test.ts
+  s_6478c2d8175e73::t_0907cfadcbf8a2 1-83,86-318
+  s_6478c2d8175e73::t_f8bab453111cbc 84-85
+  s_6478c2d8175e73::t_197dc8e38b95e7 319-321
+CHANGELOG.md
+  s_6478c2d8175e73::t_3b9428f1ee8908 10-38
+test/machine-credentials.test.ts
+  s_6478c2d8175e73::t_fc3a34ec2b98c8 11,118-129
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "66ef24e074d014487838a2a859e14ea515ebb45b",
+  "prompts": {},
+  "sessions": {
+    "s_6478c2d8175e73": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bd56abd1-95c9-4d8c-a685-c37012337370",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ivan Murzak <Ivan.D.Murzak@gmail.com>"
+    }
+  }
+}
