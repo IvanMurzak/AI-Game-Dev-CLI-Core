@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   CREDENTIALS_FILE_NAME,
   MachineCredentialStore,
+  MachineCredentialStoreUnwritableError,
   identityCredentialCodec,
   type CredentialCodec,
   type MachineCredentials,
@@ -114,7 +115,18 @@ describe("MachineCredentialStore — atomic write / corruption safety (design 03
       decrypt: (c) => c,
     };
     const badStore = new MachineCredentialStore(dir, failing);
-    expect(() => badStore.write({ accessToken: "should-not-land" })).toThrow(/keystore unavailable/);
+    // The codec failure is surfaced as the STRUCTURED unwritable error (the raw error would
+    // otherwise escape the login-commit path as e.g. `spawnSync powershell.exe ENOENT`); the
+    // original error stays reachable on `cause` for diagnostics, never in the message.
+    let thrown: unknown;
+    try {
+      badStore.write({ accessToken: "should-not-land" });
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(MachineCredentialStoreUnwritableError);
+    expect((thrown as Error).message).not.toMatch(/keystore unavailable/);
+    expect(((thrown as Error).cause as Error).message).toBe("keystore unavailable");
 
     // The original good file is byte-for-byte intact, and readable.
     const after = fs.readFileSync(path.join(dir, CREDENTIALS_FILE_NAME));

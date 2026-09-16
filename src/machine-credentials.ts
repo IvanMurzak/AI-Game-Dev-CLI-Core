@@ -34,6 +34,11 @@ import { writeFileAtomicSync } from "./atomic-file.js";
  * the caller with a raw spawn error, never deletes the file, and never lets a background write
  * ({@link MachineCredentialStore.rotate}) overwrite it. Only an explicit re-authorization
  * (a fresh {@link MachineCredentialStore.write} from a login flow) may replace an unreadable store.
+ * The write side has the mirror-image mapping: a codec failure on {@link
+ * MachineCredentialStore.write} throws the structured {@link MachineCredentialStoreUnwritableError}
+ * rather than a raw spawn error. The PowerShell host itself is resolved by ABSOLUTE PATH with
+ * fallbacks ({@link powerShellHostCandidates}) so a PATH missing
+ * `%SystemRoot%\System32\WindowsPowerShell\v1.0` no longer breaks the codec at all.
  *
  * **Corruption safety (auth-fixes design 03 F4 / DoD):** writes go through
  * {@link ../atomic-file.writeFileAtomicSync} — a **same-directory sibling** temp file that is
@@ -145,6 +150,48 @@ export class MachineCredentialStoreUnreadableError extends Error {
   constructor(reason: string, cause?: unknown) {
     super(`machine credential store unreadable: ${reason}`, cause === undefined ? undefined : { cause });
     this.name = "MachineCredentialStoreUnreadableError";
+  }
+}
+
+/**
+ * Thrown by {@link MachineCredentialStore.write} when the at-rest codec cannot PROTECT the document
+ * — the mirror image of {@link MachineCredentialStoreUnreadableError}, and the reason `write()` no
+ * longer escapes a raw `Error: spawnSync powershell.exe ENOENT` to its caller.
+ *
+ * Why this matters (customer incident): `write()` is the login-commit path
+ * ({@link ../login-commit.writeFreshDocument}). On a Windows box whose `PATH` has lost
+ * `%SystemRoot%\System32\WindowsPowerShell\v1.0` (edited/truncated PATH, hardened or "debloated"
+ * Windows), the DPAPI shell-out failed to spawn and the raw errno error propagated out of the
+ * credential persist that runs immediately after a SUCCESSFUL sign-in — so the user could complete
+ * OAuth over and over (eight full cycles in 3.5 minutes on the server side) and never get past
+ * login. `readState()` already mapped its codec failures to the structured `"unreadable"` state;
+ * `write()` had no such mapping. It does now.
+ *
+ * The ordering guarantee is unchanged and is what makes this error safe to surface: encryption
+ * happens fully in memory BEFORE any file is touched, so a store that already holds a good
+ * `credentials.json` is left byte-identical, with no new file and no temp sibling behind.
+ *
+ * SECURITY: `reason` is a static, actionable string. Like the JSON-parse branch of
+ * {@link MachineCredentialStore.readState}, the raw error rides only on `cause` — never
+ * interpolated into `reason`/`message`, which are UI and telemetry surfaces.
+ */
+/**
+ * The static, actionable `reason` {@link MachineCredentialStore.write} reports when the at-rest
+ * codec throws. Deliberately free of any interpolated error text (SECURITY — see
+ * {@link MachineCredentialStoreUnwritableError}), and it names both remedies a support engineer
+ * can hand the customer without shipping a release.
+ */
+export const CODEC_ENCRYPT_FAILURE_REASON =
+  "encrypting the credential document failed, so nothing was written (an existing credential file " +
+  "is untouched). On Windows this means the DPAPI codec could not run: no PowerShell host could be " +
+  "started, or PowerShell is locked down by Constrained Language Mode. Remedy: add " +
+  "%SystemRoot%\\System32\\WindowsPowerShell\\v1.0 to PATH, or set AIGD_DPAPI_POWERSHELL to the " +
+  "absolute path of powershell.exe (or pwsh.exe), then sign in again";
+
+export class MachineCredentialStoreUnwritableError extends Error {
+  constructor(reason: string, cause?: unknown) {
+    super(`machine credential store unwritable: ${reason}`, cause === undefined ? undefined : { cause });
+    this.name = "MachineCredentialStoreUnwritableError";
   }
 }
 
@@ -314,6 +361,12 @@ export class MachineCredentialStore {
    * sibling temp file, fsync'd, permission-restricted, and finally `rename`d over the target. The
    * temp file is always cleaned up on failure, so an interrupted or failed write never corrupts an
    * existing good credential file.
+   *
+   * A codec failure throws the structured {@link MachineCredentialStoreUnwritableError} — never a
+   * raw `spawnSync powershell.exe ENOENT`. That mapping mirrors {@link readState}'s `"unreadable"`
+   * state and exists because this is the LOGIN-COMMIT path: an unmapped spawn error here makes a
+   * successful sign-in unusable forever (see the class docblock). Because encryption completes in
+   * memory first, that throw leaves an existing good credential file byte-identical.
    */
   write(credentials: MachineCredentials): void {
     // Serialize + encrypt BEFORE creating any file: a failure here must not touch the store.
@@ -322,7 +375,14 @@ export class MachineCredentialStore {
       version: documentSchemaVersion(credentials),
     });
     const json = JSON.stringify(document, undefinedOmittingReplacer, 2);
-    const bytes = this._codec.encrypt(Buffer.from(json, "utf-8"));
+    let bytes: Buffer;
+    try {
+      bytes = this._codec.encrypt(Buffer.from(json, "utf-8"));
+    } catch (err) {
+      // SECURITY: static reason only — the raw error (which can quote command lines and codec
+      // output) rides on `cause`, never in a message that reaches UI/telemetry.
+      throw new MachineCredentialStoreUnwritableError(CODEC_ENCRYPT_FAILURE_REASON, err);
+    }
 
     writeFileAtomicSync(this.credentialsPath, bytes);
   }
@@ -491,15 +551,151 @@ function errorMessage(err: unknown): string {
 }
 
 /**
+ * Environment variable that overrides which PowerShell binary the DPAPI codec shells out to.
+ *
+ * **Support lever, deliberately narrow.** It exists so an affected customer can be unblocked with
+ * no release at all (set it, sign in again) — but it is honoured ONLY when it is an ABSOLUTE path
+ * that `fs.existsSync` confirms. A bare or relative name is IGNORED and resolution continues down
+ * the candidate list, because honouring one would re-introduce exactly the PATH-resolved spawn this
+ * fix removes and would additionally let anything earlier on PATH answer to the name.
+ *
+ * Trade-off, stated plainly: the named binary is executed with the base64 **plaintext credential
+ * document** in its environment. Anyone who can set this variable for the user's process can
+ * therefore read the credential. That is NOT a new exposure — it is the same local-attacker model
+ * the store already accepts (an attacker with that much reach can also read the DPAPI-protected
+ * file and call `CryptUnprotectData` as the same user, which is the whole of CurrentUser-scope
+ * DPAPI's threat model). What must never be accepted is a BARE NAME resolved through PATH, which
+ * would turn a PATH entry — a much weaker thing to control — into code execution with the
+ * plaintext in hand.
+ */
+export const DPAPI_POWERSHELL_HOST_ENV = "AIGD_DPAPI_POWERSHELL";
+
+/** Relative path of the Windows PowerShell 5.1 host inside a `System32`/`SysWOW64` directory. */
+const WINDOWS_POWERSHELL_RELATIVE_PATH = path.join("WindowsPowerShell", "v1.0", "powershell.exe");
+
+/**
+ * The ordered PowerShell host candidates the DPAPI codec will try, most-specific first:
+ *
+ *  1. `$AIGD_DPAPI_POWERSHELL` — only when absolute AND existing ({@link DPAPI_POWERSHELL_HOST_ENV}).
+ *  2. `<SystemRoot>\System32\WindowsPowerShell\v1.0\powershell.exe` — the native host.
+ *  3. `<SystemRoot>\SysWOW64\WindowsPowerShell\v1.0\powershell.exe` — the 32-bit host, which is
+ *     what a 32-bit Node process reaches under WOW64 file-system redirection, and a real fallback
+ *     when System32's copy has been removed.
+ *  4. `pwsh.exe` — PowerShell 7, via PATH. Verified on Windows 11 to support the identical call
+ *     (`Add-Type -AssemblyName System.Security` then `ProtectedData::Protect`), producing blobs
+ *     interoperable with the 5.1 host and with the C# `CryptProtectData` twin.
+ *  5. `powershell.exe` — via PATH, last resort; preserves the historical behaviour exactly.
+ *
+ * `SystemRoot` is read from `SystemRoot`, then `windir`, then the `C:\Windows` default. Candidates
+ * 2 and 3 are selected with `existsSync`; 4 and 5 are bare names that can only be tested by
+ * spawning, so they are always offered and {@link dpapiTransform} discovers which one starts.
+ *
+ * Exported for tests (preference-order assertions) — production code goes through the cache.
+ */
+export function powerShellHostCandidates(): string[] {
+  const candidates: string[] = [];
+
+  const override = process.env[DPAPI_POWERSHELL_HOST_ENV]?.trim();
+  if (override !== undefined && override.length > 0 && path.isAbsolute(override) && fs.existsSync(override)) {
+    candidates.push(override);
+  }
+
+  const systemRoot = process.env.SystemRoot ?? process.env.windir ?? "C:\\Windows";
+  for (const systemDirectory of ["System32", "SysWOW64"]) {
+    const candidate = path.join(systemRoot, systemDirectory, WINDOWS_POWERSHELL_RELATIVE_PATH);
+    if (fs.existsSync(candidate)) {
+      candidates.push(candidate);
+    }
+  }
+
+  candidates.push("pwsh.exe");
+  candidates.push("powershell.exe");
+  return candidates;
+}
+
+interface PowerShellHostResolution {
+  /** Environment fingerprint this resolution was computed from. */
+  signature: string;
+  /** Ordered candidates from {@link powerShellHostCandidates}. */
+  candidates: string[];
+  /** The candidate last observed to actually START (not necessarily to succeed). */
+  spawnable?: string;
+}
+
+let powerShellHostResolution: PowerShellHostResolution | undefined;
+
+/**
+ * Fingerprint of every environment value {@link powerShellHostCandidates} reads. Cheap (env reads
+ * only, no filesystem), and it is what makes the cache SELF-INVALIDATING: change `PATH`,
+ * `SystemRoot`, `windir` or the override and the next call re-probes. Without this a test that
+ * warmed the cache would silently decide the next test's outcome.
+ */
+function powerShellHostSignature(): string {
+  return JSON.stringify([
+    process.env[DPAPI_POWERSHELL_HOST_ENV] ?? null,
+    process.env.SystemRoot ?? null,
+    process.env.windir ?? null,
+    process.env.PATH ?? process.env.Path ?? null,
+  ]);
+}
+
+/**
+ * The cached candidate resolution for the CURRENT environment, recomputing (and re-`existsSync`ing)
+ * only when the environment fingerprint changes.
+ *
+ * The cache is not an optimization detail: `readState()` runs on the connectivity probe, the
+ * cold-connect watcher and every tool call, and each DPAPI round trip already costs 165–365 ms —
+ * re-probing the filesystem on every one of those is waste we can simply not incur.
+ */
+function resolvePowerShellHosts(): PowerShellHostResolution {
+  const signature = powerShellHostSignature();
+  if (powerShellHostResolution === undefined || powerShellHostResolution.signature !== signature) {
+    powerShellHostResolution = { signature, candidates: powerShellHostCandidates() };
+  }
+  return powerShellHostResolution;
+}
+
+/**
+ * Drop the cached PowerShell host resolution. Exported for tests; the cache also invalidates itself
+ * whenever the environment fingerprint changes ({@link powerShellHostSignature}), so this is a
+ * belt-and-braces hook rather than the only way to force a re-resolve.
+ */
+export function resetPowerShellHostCache(): void {
+  powerShellHostResolution = undefined;
+}
+
+/**
+ * True when `err` says the child could not be STARTED at all (the binary is not where we looked),
+ * as opposed to "it started and then failed" — a non-zero exit, a timeout, or a CLM refusal.
+ * Only the former may advance to the next candidate: a host that ran and refused has given us a
+ * real answer about DPAPI, and silently retrying a different host would mask it.
+ *
+ * The string-type guard matters: on a NON-ZERO EXIT Node can put the numeric exit status on
+ * `code`, and a numeric `code` must never be read as a spawn failure.
+ */
+function isHostStartFailure(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  return typeof code === "string" && (code === "ENOENT" || code === "ENOTDIR" || code === "EACCES");
+}
+
+/**
  * Run a Windows DPAPI Protect/Unprotect round trip through PowerShell's
  * `System.Security.Cryptography.ProtectedData` (CurrentUser scope, no entropy) — interoperable with
  * the C# store's `CryptProtectData`/`CryptUnprotectData`. Input and output are passed as base64
  * through an environment variable so the plaintext never lands in argv or the process table. Only
  * ever invoked on Windows.
  *
+ * The host is resolved by ABSOLUTE PATH first ({@link powerShellHostCandidates}), never by a bare
+ * `"powershell.exe"` alone: a machine whose PATH has lost
+ * `%SystemRoot%\System32\WindowsPowerShell\v1.0` (edited/truncated PATH, hardened or "debloated"
+ * Windows) otherwise fails the spawn with `Error: spawnSync powershell.exe ENOENT` — which, on the
+ * `write()` login-commit path, made a paying customer's desktop app unusable after every otherwise
+ * successful sign-in.
+ *
  * Under WDAC/AppLocker **Constrained Language Mode** the `Add-Type` call (and any .NET method
- * invocation) is blocked, so PowerShell exits non-zero and `execFileSync` throws — the store maps
- * that throw to the structured `"unreadable"` state instead of crashing (04 §1/§4).
+ * invocation) is blocked, so PowerShell exits non-zero and `execFileSync` throws. That is NOT a
+ * start failure, so it is re-thrown immediately instead of walking to the next candidate; the store
+ * maps it to the structured `"unreadable"` (read) / `"unwritable"` (write) outcome (04 §1/§4).
  */
 function dpapiTransform(action: "Protect" | "Unprotect", input: Buffer): Buffer {
   const script =
@@ -509,16 +705,45 @@ function dpapiTransform(action: "Protect" | "Unprotect", input: Buffer): Buffer 
     `$out=[System.Security.Cryptography.ProtectedData]::${action}($in,$null,[System.Security.Cryptography.DataProtectionScope]::CurrentUser);` +
     "[Convert]::ToBase64String($out)";
 
-  const stdout = execFileSync(
-    "powershell.exe",
-    ["-NoProfile", "-NonInteractive", "-Command", script],
-    {
-      encoding: "utf-8",
-      env: { ...process.env, AIGD_DPAPI_IN: input.toString("base64") },
-      timeout: 20000,
-      windowsHide: true,
-    },
-  );
+  const args = ["-NoProfile", "-NonInteractive", "-Command", script];
+  const options = {
+    encoding: "utf-8" as const,
+    env: { ...process.env, AIGD_DPAPI_IN: input.toString("base64") },
+    timeout: 20000,
+    windowsHide: true,
+  };
 
-  return Buffer.from(stdout.trim(), "base64");
+  const resolution = resolvePowerShellHosts();
+  // Try the known-startable host first, then everything else (it may have been uninstalled).
+  const attempts =
+    resolution.spawnable === undefined
+      ? resolution.candidates
+      : [resolution.spawnable, ...resolution.candidates.filter((c) => c !== resolution.spawnable)];
+
+  const unstartable: string[] = [];
+  for (const host of attempts) {
+    let stdout: string;
+    try {
+      stdout = execFileSync(host, args, options);
+    } catch (err) {
+      if (isHostStartFailure(err)) {
+        unstartable.push(host);
+        if (resolution.spawnable === host) {
+          resolution.spawnable = undefined;
+        }
+        continue;
+      }
+      // The host STARTED — this is a real DPAPI/CLM/timeout failure, not a wrong-host failure.
+      resolution.spawnable = host;
+      throw err;
+    }
+    resolution.spawnable = host;
+    return Buffer.from(stdout.trim(), "base64");
+  }
+
+  throw new Error(
+    `no PowerShell host could be started for the DPAPI codec (tried: ${unstartable.join(", ")}). ` +
+      "Add %SystemRoot%\\System32\\WindowsPowerShell\\v1.0 to PATH, or set " +
+      `${DPAPI_POWERSHELL_HOST_ENV} to the absolute path of powershell.exe (or pwsh.exe).`,
+  );
 }
