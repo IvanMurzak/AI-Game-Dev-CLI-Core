@@ -11,6 +11,26 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
 
 ### Fixed
 
+- **Cloud `run-tool` / `run-system-tool` / `status` answered `401 invalid_token` on every call,
+  even right after `login --force`.** The engine CLIs resolve the Bearer for the MCP server's
+  HTTP API (`/api/tools/*`, `/api/system-tools/*`, streamable `/mcp`) through
+  `MachineCredentialProvider.getAccessToken({ family: "plugin" })` (or the default plane), which
+  resolved `families.plugin` → `families.legacy`. After a normal login `families.plugin` is the
+  RFC 8693 exchange-derived credential with `aud=urn:agd:hub` — and the MCP server validates
+  every HTTP route on its AGENT plane, which accepts only its canonical `/mcp` resource as
+  audience and refuses `urn:agd:hub` outright. The reactive refresh-and-retry then rotated the
+  same plugin family and retried with another hub-audienced token, so the call could never
+  succeed. The `plugin` plane (and the default) now resolves **`families.agent` first**, then
+  `families.plugin`, then `families.legacy` — the agent family is the `mcp:agent` credential the
+  HTTP routes accept, and its refresh presents the agent family's own stored `clientId`. Stores
+  with no agent family (`--tools-only`, enroll-minted, adopted v1) resolve exactly as before. No
+  consumer change is needed: the shipped CLIs pick this up on their existing `^0.4.0` range.
+- **`refresh()` could hand back a token other than the one it refreshed.** Callers read the
+  returned document's top-level `accessToken` first; that is the v1 compat mirror of the plugin
+  plane, and when the rotation could not be persisted it was the STALE on-disk token. The
+  returned document's top-level `accessToken`/`refreshToken`/`expiresAt` are now always those of
+  the family that was refreshed (in-memory when persisting failed); the on-disk mirror is
+  unchanged.
 - **Windows login was fatal on a PATH without PowerShell** (`spawnSync powershell.exe ENOENT`).
   The DPAPI codec resolved its PowerShell host through **PATH** via the bare name
   `powershell.exe`, so on a machine whose PATH has lost
@@ -35,6 +55,9 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
 - **`AIGD_DPAPI_POWERSHELL`** (`DPAPI_POWERSHELL_HOST_ENV`) — a support lever to point the DPAPI
   codec at a specific PowerShell binary with no release. Honoured ONLY when it is an absolute
   path that exists; a bare/relative value is ignored rather than resolved through PATH.
+- **`CredentialPlane` `"hub"`** — the plugin-plane credential proper (`families.plugin`, then
+  `families.legacy`), for a caller connecting to the SignalR hub, which validates on the PLUGIN
+  plane. It is what `"plugin"` resolved to before the run-tool 401 fix above.
 
 ## 0.4.1 — 2026-08-24
 

@@ -15,7 +15,7 @@ import type { TokenRefresher } from "./token-refresher.js";
  * It owns the family-aware machine store view, the cross-process lock, and the 04 §3 refresh rules:
  *
  *  1. **Proactive** refresh inside the expiry skew (60 s) via {@link getAccessToken}; **reactive**
- *     refresh on a hub 401 via {@link refresh}. Both run the 04 §2 critical section under the
+ *     refresh on a server 401 via {@link refresh}. Both run the 04 §2 critical section under the
  *     {@link MachineCredentialLock}: acquire → **re-read the store** (double-checked — a peer that
  *     already refreshed is adopted without a network call) → refresh (≤15 s) → write → release.
  *  2. The refresh request presents the **family's stored `clientId`** (04 §1/D8). The component
@@ -57,10 +57,32 @@ export class LoginRequiredError extends Error {
 /** Default proactive-refresh skew: refresh once the token is within 60s of expiry. */
 export const DEFAULT_REFRESH_SKEW_MS = 60_000;
 
-/** The two consumable credential planes (02): CLIs/plugins use `plugin`, the App uses `agent`. */
-export type CredentialPlane = "agent" | "plugin";
+/**
+ * Which credential a caller needs — resolved to a concrete store family by the provider:
+ *
+ *  - `"agent"` — the `families.agent` credential ONLY (`scope=mcp:agent`, `aud` = the `/mcp`
+ *    resource). The desktop App's plane.
+ *  - `"plugin"` (the default) — **the engine CLI's credential for the MCP server's HTTP API**:
+ *    `/api/tools/*`, `/api/system-tools/*`, and the streamable `/mcp` endpoint. Resolves
+ *    `families.agent` FIRST, then `families.plugin`, then `families.legacy`.
+ *
+ *    Why agent-first: the MCP server authorizes every HTTP route on its AGENT plane, which
+ *    requires `aud` = its canonical `/mcp` resource and refuses the hub audience `urn:agd:hub`
+ *    outright (MCP-Plugin-dotnet `AccessTokenValidator.AudienceEntryAccepted`). The
+ *    exchange-derived `families.plugin` credential always carries `aud=urn:agd:hub`
+ *    (AI-Game-Dev-Server `mint_plugin_tokens_for_sub`), so presenting it to `/api/tools/*` is
+ *    a guaranteed `401 invalid_token` — which is what every Cloud-mode `run-tool` did while this
+ *    plane resolved `plugin → legacy`. The engine CLIs shipped passing `"plugin"` for exactly
+ *    those HTTP calls, so the fix lives in this resolution rather than in each consumer. A store
+ *    with no agent family (a `--tools-only` login, an enroll-minted or adopted v1 credential)
+ *    still falls back to the plugin-plane families, unchanged.
+ *  - `"hub"` — the plugin-plane credential proper (`families.plugin`, then `families.legacy`):
+ *    for a caller that connects to the SignalR hub (`/hub/mcp-server`, validated on the PLUGIN
+ *    plane). No TypeScript consumer does today; the engine plugins read the store themselves.
+ */
+export type CredentialPlane = "agent" | "plugin" | "hub";
 
-/** A concrete store family a refresh operates on (the `plugin` plane falls back to `legacy`). */
+/** A concrete store family a refresh operates on (see {@link CredentialPlane} for the resolution). */
 export type CredentialFamilyName = "agent" | "plugin" | "legacy";
 
 /**
@@ -155,8 +177,9 @@ export class MachineCredentialProvider {
 
   /**
    * True when a usable (access-token-bearing) credential is present on disk for `plane`
-   * (default: the plugin plane, which falls back to `families.legacy`). Never throws — an
-   * unreadable store reads as signed-out here (04 §1: surface "sign in required").
+   * (default `plugin` — see {@link CredentialPlane} for how each plane resolves to a family).
+   * Never throws — an unreadable store reads as signed-out here (04 §1: surface "sign in
+   * required").
    */
   isSignedIn(plane: CredentialPlane = "plugin"): boolean {
     const current = this.safeRead();
@@ -165,9 +188,11 @@ export class MachineCredentialProvider {
   }
 
   /**
-   * Return a valid access token for `options.family` (default `plugin`; the plugin plane falls
-   * back to `families.legacy` — an adopted v1 credential IS the plugin-plane credential),
-   * proactively refreshing under the lock when it is within the skew window of expiry.
+   * Return a valid access token for `options.family` (default `plugin` — the engine CLI's
+   * MCP-server HTTP credential, resolved agent → plugin → legacy; see {@link CredentialPlane}),
+   * proactively refreshing under the lock when it is within the skew window of expiry. The
+   * refresh operates on the family that SERVED the request, presenting that family's stored
+   * `clientId`.
    *
    * Throws {@link LoginRequiredError} when signed out or when the token is expired and the family
    * is dead / the refresh failed; {@link CredentialLockBusyError} when the token is expired and
@@ -205,8 +230,16 @@ export class MachineCredentialProvider {
   }
 
   /**
-   * Reactively refresh now (driven by a hub 401) for `options.family` (default `plugin`).
-   * Returns the machine-store document holding the rotated family on success; throws
+   * Reactively refresh now (driven by a server 401) for `options.family` (default `plugin`),
+   * refreshing the SAME family {@link getAccessToken} resolves for that plane — the one whose
+   * token the server just rejected — with that family's stored `clientId`.
+   *
+   * Returns the machine-store document holding the rotated family on success. Its top-level
+   * `accessToken`/`refreshToken`/`expiresAt` are those of the family that was refreshed — for a
+   * plugin/legacy family that is exactly the on-disk v1 compat mirror, for the agent family it is
+   * a view (the on-disk mirror keeps following the plugin plane). This holds even when the
+   * rotation could NOT be persisted: the top level then carries the in-memory rotated token,
+   * never the stale token still on disk. Throws
    * {@link LoginRequiredError} when refresh is impossible or the family is dead (expiry /
    * family-revoke), {@link CredentialLockBusyError} on a contended lock (retry later), and
    * {@link MachineCredentialStoreUnreadableError} on an unreadable store.
@@ -223,7 +256,10 @@ export class MachineCredentialProvider {
 
     const outcome = await this.refreshFamily(resolved.name, resolved.family, options.signal);
     if (outcome.kind === "refreshed" || outcome.kind === "adopted") {
-      return outcome.document ?? this.inMemoryDocument(current, resolved.name, outcome.family);
+      return this.servedDocument(
+        outcome.document ?? this.inMemoryDocument(current, resolved.name, outcome.family),
+        outcome.family,
+      );
     }
     throw this.failureToError(outcome);
   }
@@ -447,14 +483,22 @@ export class MachineCredentialProvider {
 
   // ── store access / family resolution ─────────────────────────────────────────────────────────
 
-  /** Resolve the concrete family serving `plane` (plugin → `plugin` then `legacy`; agent → `agent`). */
+  /**
+   * Resolve the concrete family serving `plane` (see {@link CredentialPlane}): agent → `agent`;
+   * plugin → `agent`, then `plugin`, then `legacy`; hub → `plugin`, then `legacy`.
+   */
   private resolvePlane(
     credentials: MachineCredentials,
     plane: CredentialPlane,
   ): { name: CredentialFamilyName; family: MachineTokenFamily } | null {
     const families = effectiveFamilies(credentials);
-    if (plane === "agent") {
-      return families.agent ? { name: "agent", family: families.agent } : null;
+    if (plane === "agent" || plane === "plugin") {
+      if (families.agent) {
+        return { name: "agent", family: families.agent };
+      }
+      if (plane === "agent") {
+        return null;
+      }
     }
     if (families.plugin) {
       return { name: "plugin", family: families.plugin };
@@ -493,6 +537,24 @@ export class MachineCredentialProvider {
       );
       return null;
     }
+  }
+
+  /**
+   * The document {@link refresh} hands back: `document` with its top-level token triple set to
+   * the family that was refreshed, so a caller reading `document.accessToken` retries with the
+   * token it asked for — never the plugin-plane mirror when the agent family was refreshed, and
+   * never the stale on-disk token when the rotation could not be persisted.
+   */
+  private servedDocument(document: MachineCredentials, family: MachineTokenFamily): MachineCredentials {
+    const served: MachineCredentials = { ...document };
+    for (const key of ["accessToken", "refreshToken", "expiresAt"] as const) {
+      if (family[key] === undefined) {
+        delete served[key];
+      } else {
+        served[key] = family[key];
+      }
+    }
+    return served;
   }
 
   /** Build the in-memory fallback document when a rotated family could not be persisted. */
