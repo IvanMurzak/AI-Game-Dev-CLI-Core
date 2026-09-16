@@ -342,7 +342,7 @@ describe("MachineCredentialProvider — invalid_grant / family death (04 §3 rul
     const refresher = scriptedRefresher({ ok: false, reason: "invalid_grant" });
     const p = provider(store, refresher, { onTelemetry: (e) => events.push(e) });
 
-    await expect(p.getAccessToken()).rejects.toBeInstanceOf(LoginRequiredError);
+    await expect(p.getAccessToken({ family: "hub" })).rejects.toBeInstanceOf(LoginRequiredError);
 
     // ONE structured event, carrying no token material.
     expect(events).toEqual([{ type: "family-dead", family: "plugin", reason: "invalid_grant" }]);
@@ -351,7 +351,7 @@ describe("MachineCredentialProvider — invalid_grant / family death (04 §3 rul
     expect(store.read()?.families?.agent?.refreshToken).toBe("agent-r");
 
     // NEVER loops: a second call re-throws from the memo without a new network attempt or event.
-    await expect(p.getAccessToken()).rejects.toBeInstanceOf(LoginRequiredError);
+    await expect(p.getAccessToken({ family: "hub" })).rejects.toBeInstanceOf(LoginRequiredError);
     expect(refresher.calls).toHaveLength(1);
     expect(events).toHaveLength(1);
 
@@ -426,7 +426,7 @@ describe("MachineCredentialProvider — invalid_grant / family death (04 §3 rul
         onWarning: (w) => warnings.push(w),
       });
 
-      await expect(p.getAccessToken()).rejects.toBeInstanceOf(LoginRequiredError);
+      await expect(p.getAccessToken({ family: "hub" })).rejects.toBeInstanceOf(LoginRequiredError);
 
       // ONE structured event carrying the RAW reason — `invalid_target`, never remapped to
       // `invalid_grant`.
@@ -438,7 +438,7 @@ describe("MachineCredentialProvider — invalid_grant / family death (04 §3 rul
       expect(fs.readFileSync(filePath).equals(before)).toBe(true);
 
       // NEVER loops: the dead memo (not the skew window — it is 0 here) blocks attempt 2.
-      await expect(p.getAccessToken()).rejects.toBeInstanceOf(LoginRequiredError);
+      await expect(p.getAccessToken({ family: "hub" })).rejects.toBeInstanceOf(LoginRequiredError);
       expect(refresher.calls).toHaveLength(1);
       expect(events).toHaveLength(1);
 
@@ -635,5 +635,127 @@ describe("MachineCredentialProvider — the store is never corrupted on a failed
       expect(String(call[0])).not.toContain("secret-refresh");
       expect(String(call[0])).not.toContain("old");
     }
+  });
+});
+
+describe("MachineCredentialProvider — which token an engine CLI's HTTP call presents (run-tool 401)", () => {
+  // The shape `commitAgentLogin` leaves on disk after `unity-mcp-cli login`: an agent family
+  // (aud = the /mcp resource — accepted by the MCP server's HTTP routes) and an exchange-derived
+  // plugin family (aud = urn:agd:hub — REFUSED by those routes). Distinct client ids per family
+  // and a third component default make every client-id assertion discriminating.
+  function loggedInStore(overrides: { agentExpiresAt?: string; pluginExpiresAt?: string } = {}) {
+    return freshStore({
+      version: 2,
+      serverTarget: "https://ai-game.dev",
+      subject: "user-1",
+      families: {
+        agent: {
+          accessToken: "agent-at",
+          refreshToken: "agent-rt",
+          expiresAt: overrides.agentExpiresAt ?? iso(30 * 60_000),
+          clientId: "agent-client",
+          scope: "mcp:agent",
+        },
+        plugin: {
+          accessToken: "plugin-at",
+          refreshToken: "plugin-rt",
+          expiresAt: overrides.pluginExpiresAt ?? iso(30 * 60_000),
+          clientId: "plugin-client",
+          scope: "mcp:plugin",
+        },
+      },
+    });
+  }
+
+  it("the plugin plane (default + explicit, as the engine CLIs call it) serves the AGENT token; hub serves the plugin token", async () => {
+    const p = provider(loggedInStore(), scriptedRefresher({ ok: true, accessToken: "unused" }), {
+      defaultClientId: "component-default",
+    });
+
+    expect(await p.getAccessToken()).toBe("agent-at"); // godot-cli: no family argument
+    expect(await p.getAccessToken({ family: "plugin" })).toBe("agent-at"); // unity/unreal CLIs
+    expect(await p.getAccessToken({ family: "agent" })).toBe("agent-at"); // the App
+    expect(await p.getAccessToken({ family: "hub" })).toBe("plugin-at"); // the hub credential
+  });
+
+  it("proactive refresh on the plugin plane rotates the AGENT family, POSTing the agent family's stored client_id", async () => {
+    const store = loggedInStore({ agentExpiresAt: iso(10_000) });
+    const bodies: string[] = [];
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      bodies.push(String(init!.body));
+      return new Response(
+        JSON.stringify({ access_token: "agent-at-2", refresh_token: "agent-rt-2", expires_in: 3600 }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+    const p = provider(store, new HttpTokenRefresher({ defaultServerBaseUrl: "https://ai-game.dev", fetchImpl }), {
+      defaultClientId: "component-default",
+    });
+
+    expect(await p.getAccessToken({ family: "plugin" })).toBe("agent-at-2");
+
+    expect(bodies).toHaveLength(1);
+    const form = new URLSearchParams(bodies[0]!);
+    expect(form.get("refresh_token")).toBe("agent-rt");
+    expect(form.get("client_id")).toBe("agent-client");
+    const stored = store.read();
+    expect(stored?.families?.agent).toMatchObject({ accessToken: "agent-at-2", refreshToken: "agent-rt-2", clientId: "agent-client" });
+    expect(stored?.families?.plugin).toMatchObject({ accessToken: "plugin-at", refreshToken: "plugin-rt" });
+  });
+
+  it("reactive refresh() on the plugin plane rotates the AGENT family and hands back ITS token at top level", async () => {
+    const store = loggedInStore();
+    const refresher = scriptedRefresher({ ok: true, accessToken: "agent-at-2", refreshToken: "agent-rt-2", expiresAt: iso(3_600_000) });
+    const p = provider(store, refresher, { defaultClientId: "component-default" });
+
+    const document = await p.refresh({ family: "plugin" });
+
+    expect(refresher.calls).toHaveLength(1);
+    expect(refresher.calls[0]).toMatchObject({ refreshToken: "agent-rt", clientId: "agent-client" });
+    // unity-mcp-cli's `refreshCloudAccessToken` reads `document.accessToken` FIRST — it must be the
+    // rotated agent token, never the plugin-plane v1 mirror the server would 401 again.
+    expect(document.accessToken).toBe("agent-at-2");
+    expect(document.refreshToken).toBe("agent-rt-2");
+    expect(document.families?.agent?.accessToken).toBe("agent-at-2");
+    // On disk the v1 compat mirror still follows the plugin plane (old readers unchanged).
+    const stored = store.read();
+    expect(stored?.families?.agent?.accessToken).toBe("agent-at-2");
+    expect(stored?.accessToken).toBe("plugin-at");
+  });
+
+  it("falls back to the plugin-plane families when the store holds no agent family", async () => {
+    const toolsOnly = freshStore({
+      version: 2,
+      families: { plugin: { accessToken: "plugin-only-at", refreshToken: "r", clientId: "c", scope: "mcp:plugin" } },
+    });
+    const v1 = freshStore({ accessToken: "legacy-at", refreshToken: "r" });
+    const refresher = scriptedRefresher({ ok: true, accessToken: "unused" });
+
+    expect(await provider(toolsOnly, refresher).getAccessToken({ family: "plugin" })).toBe("plugin-only-at");
+    expect(await provider(v1, refresher).getAccessToken({ family: "plugin" })).toBe("legacy-at");
+    expect(await provider(toolsOnly, refresher).getAccessToken({ family: "agent" }).catch((e) => e)).toBeInstanceOf(
+      LoginRequiredError,
+    );
+    expect(refresher.calls).toHaveLength(0);
+  });
+
+  it("refresh() whose rotation cannot be persisted hands back the IN-MEMORY token, not the stale on-disk one", async () => {
+    const store = freshStore({
+      version: 2,
+      families: { plugin: { accessToken: "stale-at", refreshToken: "r", clientId: "c", scope: "mcp:plugin" } },
+    });
+    const writeFamily = vi.spyOn(store, "writeFamily").mockImplementation(() => {
+      throw new Error("disk full");
+    });
+    const refresher = scriptedRefresher({ ok: true, accessToken: "fresh-at", refreshToken: "r2", expiresAt: iso(3_600_000) });
+    const p = provider(store, refresher, { onWarning: () => {} });
+
+    const document = await p.refresh({ family: "hub" });
+
+    expect(writeFamily).toHaveBeenCalledTimes(1);
+    expect(store.read()?.accessToken).toBe("stale-at"); // nothing was persisted …
+    expect(document.accessToken).toBe("fresh-at"); // … yet the retry gets the rotated token
+    expect(document.refreshToken).toBe("r2");
+    expect(document.families?.plugin?.accessToken).toBe("fresh-at");
   });
 });
