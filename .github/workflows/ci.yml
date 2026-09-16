@@ -1,22 +1,52 @@
 name: CI
 
+# Chain leg (node `cli-core`, the TypeScript ROOT): every job below also runs under
+# `workflow_dispatch` with a chain lock as its input. `.github/scripts/chain_feed.py` (vendored,
+# byte-identical to ai-game-dev-software `.scripts/chain/leg/chain_feed.py`) asserts this run is
+# at the lock's sha and exports `CHAIN_ACTIVE=1` + `CHAIN_WS_VERSION=<ws>`; `build-test` then packs
+# the ws tarball by the script's chain pack recipe and `record` proves that tarball's own
+# `package/package.json` version. A root consumes nothing, so there are no lower layers to
+# self-build. Every chain step is a no-op ("chain: no lock (ordinary run)") unless a lock is
+# supplied: the dispatch input, or the fenced lock block of a `train/`-labelled pull request's body.
+# Do not gate these steps on `workflow_dispatch` — that would silently disable the train path.
 on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      lock:
+        description: the chain lock JSON (<= 60000 characters)
+        required: true
+        type: string
+      lock_hash8:
+        description: first 8 hex characters of the lock hash
+        required: true
+        type: string
 
-# Cancel superseded runs on the same ref (keeps PR feedback fast).
+# Empty on ordinary runs => GitHub's default title. The chain dispatcher captures a dispatched run
+# by this exact title + headSha.
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('chain {0} cli-core', inputs.lock_hash8) || '' }}
+
+# Ordinary runs: cancel superseded runs on the same ref (keeps PR feedback fast) — unchanged.
+# Dispatched chain legs: keyed on the LOCK (+ workflow, so this repo's two dispatched workflows
+# never share one group) and never cancelled, so two different locks run side by side.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.event_name == 'workflow_dispatch' && format('chain-{0}-{1}', inputs.lock_hash8, github.workflow) || format('ci-{0}-{1}', github.workflow, github.ref) }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 permissions:
   contents: read
+
+env:
+  CHAIN_LOCK: ${{ inputs.lock }}
+  CHAIN_LOCK_HASH8: ${{ inputs.lock_hash8 }}
 
 jobs:
   build-test:
     name: typecheck + build + test
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -26,6 +56,24 @@ jobs:
         with:
           node-version: "22.x"
           cache: npm
+
+      - name: chain python (posix)
+        if: runner.os != 'Windows' && env.CHAIN_PY == ''
+        shell: bash
+        run: |
+          for c in python3 python; do
+            exe="$("$c" -c 'import sys, select, zlib, hashlib; sys.version_info >= (3, 9) or sys.exit(1); print(sys.executable.replace(chr(92), chr(47)))' 2>/dev/null)" || continue
+            case "$exe" in /*) ;; *) continue ;; esac
+            case "$exe" in *[[:space:]]*) continue ;; esac
+            [ -f "$exe" ] && [ -x "$exe" ] || continue
+            echo "CHAIN_PY=$exe" >> "$GITHUB_ENV"; exit 0
+          done
+          echo 'chain: no Python 3.9+ on PATH that runs and reports an absolute, space-free sys.executable (tried python3, python)' >&2; exit 2
+
+      # No --edges scope beyond `self`: this job packs, so `record` proves the root's OWN pack.
+      - name: chain feed
+        id: chain
+        run: ${{ env.CHAIN_PY }} .github/scripts/chain_feed.py apply --node cli-core --job build-test --edges self
 
       - name: Install dependencies
         run: npm ci
@@ -38,6 +86,33 @@ jobs:
 
       - name: Test
         run: npm test
+
+      # The root's own pack at the lock's ws version, by the chain pack recipe embedded in
+      # `chain_feed.py` (`RECIPES`, which is `npm pkg set` — not release.yml's `npm version`); there
+      # is no `prepack`, so build before pack.
+      # The tarball is NOT uploaded (artifact quota): `record` reads its package/package.json
+      # version into the leg record's identity[], which is the evidence.
+      - name: chain pack
+        if: env.CHAIN_ACTIVE == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm pkg set version="$CHAIN_WS_VERSION"
+          npm run build
+          npm pack --pack-destination .artifacts/npm
+
+      - name: chain leg record
+        id: chain_record
+        if: always()
+        run: ${{ env.CHAIN_PY }} .github/scripts/chain_feed.py record --node cli-core --job build-test --edges self --job-status ${{ job.status }} --out chain-leg.json
+
+      - name: chain leg artifact
+        if: always() && steps.chain_record.outputs.artifact_name != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.chain_record.outputs.artifact_name }}
+          path: chain-leg.json
+          retention-days: 1
 
   # Cross-platform store legs (unified-machine-auth 04 §5): the credential store must be green on
   # Windows (real DPAPI + AV/handle timing) and macOS (POSIX permission asserts) as well as Linux.
@@ -48,6 +123,7 @@ jobs:
       matrix:
         os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -57,6 +133,40 @@ jobs:
         with:
           node-version: "22.x"
           cache: npm
+
+      - name: chain python (posix)
+        if: runner.os != 'Windows' && env.CHAIN_PY == ''
+        shell: bash
+        run: |
+          for c in python3 python; do
+            exe="$("$c" -c 'import sys, select, zlib, hashlib; sys.version_info >= (3, 9) or sys.exit(1); print(sys.executable.replace(chr(92), chr(47)))' 2>/dev/null)" || continue
+            case "$exe" in /*) ;; *) continue ;; esac
+            case "$exe" in *[[:space:]]*) continue ;; esac
+            [ -f "$exe" ] && [ -x "$exe" ] || continue
+            echo "CHAIN_PY=$exe" >> "$GITHUB_ENV"; exit 0
+          done
+          echo 'chain: no Python 3.9+ on PATH that runs and reports an absolute, space-free sys.executable (tried python3, python)' >&2; exit 2
+
+      - name: chain python (windows)
+        if: runner.os == 'Windows' && env.CHAIN_PY == ''
+        shell: pwsh
+        run: |
+          foreach ($c in 'python', 'python3') {
+            $cmd = Get-Command $c -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $cmd) { continue }
+            $global:LASTEXITCODE = $null
+            try { $out = & $cmd.Source -c 'import sys, select, zlib, hashlib; sys.version_info >= (3, 9) or sys.exit(1); print(sys.executable.replace(chr(92), chr(47)))' 2>$null } catch { continue }
+            if ($LASTEXITCODE -ne 0) { continue }
+            $exe = (@($out) -join ' ').Trim()
+            if ($exe -notmatch '^[A-Za-z]:/\S+\z' -or -not (Test-Path -LiteralPath $exe -PathType Leaf)) { continue }
+            "CHAIN_PY=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8; exit 0
+          }
+          [Console]::Error.WriteLine('chain: no Python 3.9+ on PATH that runs and reports an absolute, space-free sys.executable (tried python, python3; never py)'); exit 2
+
+      # Neither packs nor drives the twin: sha assertion + record only.
+      - name: chain feed
+        id: chain
+        run: ${{ env.CHAIN_PY }} .github/scripts/chain_feed.py apply --node cli-core --job build-test-cross --edges none
 
       - name: Install dependencies
         run: npm ci
@@ -70,12 +180,28 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: chain leg record
+        id: chain_record
+        if: always()
+        run: ${{ env.CHAIN_PY }} .github/scripts/chain_feed.py record --node cli-core --job build-test-cross --edges none --job-status ${{ job.status }} --out chain-leg.json
+
+      - name: chain leg artifact
+        if: always() && steps.chain_record.outputs.artifact_name != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.chain_record.outputs.artifact_name }}
+          path: chain-leg.json
+          retention-days: 1
+
   # Constrained Language Mode leg (unified-machine-auth 04 §1/§4): with powershell.exe locked down
   # (WDAC/AppLocker CLM blocks Add-Type), the DPAPI codec is unusable and the store must degrade to
   # the structured "store unreadable" state — never crash, never delete, never overwrite.
+  # Hosted only: the CLM step mutates MACHINE scope — never move this job (chain leg or not) to a
+  # self-hosted runner.
   store-clm:
     name: store suite under ConstrainedLanguage (windows)
     runs-on: windows-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -85,6 +211,27 @@ jobs:
         with:
           node-version: "22.x"
           cache: npm
+
+      - name: chain python (windows)
+        if: runner.os == 'Windows' && env.CHAIN_PY == ''
+        shell: pwsh
+        run: |
+          foreach ($c in 'python', 'python3') {
+            $cmd = Get-Command $c -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $cmd) { continue }
+            $global:LASTEXITCODE = $null
+            try { $out = & $cmd.Source -c 'import sys, select, zlib, hashlib; sys.version_info >= (3, 9) or sys.exit(1); print(sys.executable.replace(chr(92), chr(47)))' 2>$null } catch { continue }
+            if ($LASTEXITCODE -ne 0) { continue }
+            $exe = (@($out) -join ' ').Trim()
+            if ($exe -notmatch '^[A-Za-z]:/\S+\z' -or -not (Test-Path -LiteralPath $exe -PathType Leaf)) { continue }
+            "CHAIN_PY=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8; exit 0
+          }
+          [Console]::Error.WriteLine('chain: no Python 3.9+ on PATH that runs and reports an absolute, space-free sys.executable (tried python, python3; never py)'); exit 2
+
+      # Neither packs nor drives the twin: sha assertion + record only. Runs BEFORE CLM engages.
+      - name: chain feed
+        id: chain
+        run: ${{ env.CHAIN_PY }} .github/scripts/chain_feed.py apply --node cli-core --job store-clm --edges none
 
       - name: Install dependencies
         run: npm ci
@@ -109,3 +256,18 @@ jobs:
         env:
           AIGD_EXPECT_CLM: "1"
         run: npx vitest run test/machine-credentials.clm.test.ts test/machine-credentials-v2.test.ts test/machine-credentials.test.ts test/atomic-file.test.ts
+
+      - name: chain leg record
+        id: chain_record
+        if: always()
+        # cmd for the same reason as the CLM step above: CLM may already be engaged machine-wide.
+        shell: cmd
+        run: ${{ env.CHAIN_PY }} .github/scripts/chain_feed.py record --node cli-core --job store-clm --edges none --job-status ${{ job.status }} --out chain-leg.json
+
+      - name: chain leg artifact
+        if: always() && steps.chain_record.outputs.artifact_name != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.chain_record.outputs.artifact_name }}
+          path: chain-leg.json
+          retention-days: 1
