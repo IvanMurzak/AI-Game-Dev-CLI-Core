@@ -7,6 +7,35 @@ Versions are set at publish time by the `release.yml` workflow input (`gh workfl
 MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not auto-resolve
 `0.4.0` — adopt deliberately).
 
+## Unreleased
+
+### Fixed
+
+- **Windows login was fatal on a PATH without PowerShell** (`spawnSync powershell.exe ENOENT`).
+  The DPAPI codec resolved its PowerShell host through **PATH** via the bare name
+  `powershell.exe`, so on a machine whose PATH has lost
+  `%SystemRoot%\System32\WindowsPowerShell\v1.0` (edited/truncated PATH, hardened or
+  "debloated" Windows) the spawn failed — and because `MachineCredentialStore.write()` did not
+  map codec failures the way `readState()` does, the raw errno error escaped the credential
+  persist that runs immediately AFTER a successful sign-in. The user could complete OAuth over
+  and over and never get past login. The host is now resolved by **absolute path with
+  fallbacks** (`powerShellHostCandidates`): `$AIGD_DPAPI_POWERSHELL` (only when absolute and
+  existing) → `<SystemRoot>\System32\WindowsPowerShell\v1.0\powershell.exe` →
+  `<SystemRoot>\SysWOW64\...` → `pwsh.exe` → `powershell.exe`, cached per environment
+  fingerprint so the hot `readState()` path does not re-probe the filesystem.
+
+### Added
+
+- **`MachineCredentialStoreUnwritableError`** — the write-side mirror of
+  `MachineCredentialStoreUnreadableError`. `write()` now maps any at-rest codec failure to this
+  structured error, whose message names the remedy (add the PowerShell directory to PATH, or set
+  `AIGD_DPAPI_POWERSHELL`) and never carries the raw error or any token material (the original
+  error rides on `cause`). The encrypt-before-any-file-touch ordering is unchanged, so the throw
+  leaves an existing `credentials.json` byte-identical with no temp sibling behind.
+- **`AIGD_DPAPI_POWERSHELL`** (`DPAPI_POWERSHELL_HOST_ENV`) — a support lever to point the DPAPI
+  codec at a specific PowerShell binary with no release. Honoured ONLY when it is an absolute
+  path that exists; a bare/relative value is ignored rather than resolved through PATH.
+
 ## 0.4.1 — 2026-08-24
 
 ### Fixed

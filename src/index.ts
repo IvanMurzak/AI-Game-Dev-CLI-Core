@@ -63,6 +63,11 @@ export type { ProjectIdentity } from "./project-identity.js";
 export {
   MachineCredentialStore,
   MachineCredentialStoreUnreadableError,
+  MachineCredentialStoreUnwritableError,
+  CODEC_ENCRYPT_FAILURE_REASON,
+  DPAPI_POWERSHELL_HOST_ENV,
+  powerShellHostCandidates,
+  resetPowerShellHostCache,
   MACHINE_STORE_DIR_NAME,
   CREDENTIALS_FILE_NAME,
   CREDENTIALS_SCHEMA_VERSION,
