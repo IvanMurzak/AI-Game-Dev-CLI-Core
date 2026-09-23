@@ -55,8 +55,8 @@ export interface AgentDefinition {
   /**
    * Every candidate config file, when the client reads its config from one of several locations that
    * cannot be predicted (Antigravity). Absent ⇒ just {@link getConfigPath}. Use {@link configPathsOf}.
-   * Semantics (identical in the C# writer): configure writes ALL of them; status is "configured" ⇔ at
-   * least one exists AND every existing one is configured; remove touches only the existing ones.
+   * Semantics (identical in the C# writer): configure writes ALL of them; status is "configured" ⇔
+   * EVERY one exists AND is configured; remove touches only the existing ones.
    */
   getConfigPaths?(projectPath: string): string[];
   /** Build the stdio server-entry props from the resolved server binary path + args vector. */

@@ -20,8 +20,9 @@ import { MemFs } from "./mem-fs.js";
 
 /**
  * Antigravity reads its global MCP config from ONE of two files, and which one differs per machine /
- * install (owner request 2026-09-23): configure writes both, status accepts either but rejects a stale
- * one, remove touches only the existing ones, every displayed path lists both.
+ * install (owner request 2026-09-23): configure writes both, status requires BOTH to exist and carry a
+ * correct entry (a missing or stale one ⇒ not configured), remove touches only the existing ones, every
+ * displayed path lists both.
  */
 
 const PROJECT = path.resolve("/proj/my-game");
@@ -109,6 +110,8 @@ describe("antigravity — two candidate config files", () => {
     expect(res.error.message).toContain(B);
     expect(res.error.message).toContain(`written: ${A}`);
     expect(entry(fs, A)!["serverUrl"]).toBe(URL_PINNED);
+    // The unwritten candidate keeps the agent out of "configured" — we cannot know which file it reads.
+    expect(status(fs).configured).toBe(false);
   });
 
   describe("status", () => {
@@ -121,16 +124,43 @@ describe("antigravity — two candidate config files", () => {
       expect(s.configPaths).toEqual([A, B]);
     });
 
-    it("only A present and correct ⇒ configured (a missing B is ignored)", () => {
-      const s = status(new MemFs({ [A]: foreignFile(good) }));
-      expect(s.configured).toBe(true);
+    it("only A present and correct ⇒ NOT configured, and a Configure creates B", async () => {
+      const fs = new MemFs({ [A]: foreignFile(good) });
+      const s = status(fs);
+      expect(s.configured).toBe(false);
       expect(s.existingPaths).toEqual([A]);
+      expect(s.misconfiguredPaths).toEqual([]);
+      const res = await configure(fs);
+      if (res.kind !== "success") throw res.error;
+      expect(status(fs).configured).toBe(true);
     });
 
-    it("only B present and correct ⇒ configured (a missing A is ignored)", () => {
-      const s = status(new MemFs({ [B]: foreignFile(good) }));
-      expect(s.configured).toBe(true);
+    it("only B present and correct ⇒ NOT configured, and a Configure creates A", async () => {
+      const fs = new MemFs({ [B]: foreignFile(good) });
+      const s = status(fs);
+      expect(s.configured).toBe(false);
       expect(s.existingPaths).toEqual([B]);
+      expect(s.misconfiguredPaths).toEqual([]);
+      const res = await configure(fs);
+      if (res.kind !== "success") throw res.error;
+      expect(status(fs).configured).toBe(true);
+    });
+
+    it("stdio: only one candidate configured ⇒ NOT configured, and a Configure writes both", async () => {
+      const stdio = (fs: MemFs) => {
+        const res = getMcpConfigStatus({ adapter: unityAdapter, agentId: "antigravity", projectPath: PROJECT, transport: "stdio", fs });
+        if (res.kind !== "success") throw res.error;
+        return res;
+      };
+      const seed = new MemFs();
+      const seeded = await configure(seed, { transport: "stdio" });
+      if (seeded.kind !== "success") throw seeded.error;
+      const fs = new MemFs({ [A]: seed.get(A)! });
+      expect(stdio(fs).configured).toBe(false);
+      expect(stdio(fs).existingPaths).toEqual([A]);
+      const res = await configure(fs, { transport: "stdio" });
+      if (res.kind !== "success") throw res.error;
+      expect(stdio(fs).configured).toBe(true);
     });
 
     it("both present and correct ⇒ configured", () => {
@@ -138,7 +168,8 @@ describe("antigravity — two candidate config files", () => {
     });
 
     it("the credential header is not part of the check (a key rotates, a URL-only config is valid)", () => {
-      expect(status(new MemFs({ [A]: foreignFile({ disabled: false, serverUrl: URL_PINNED }) })).configured).toBe(true);
+      const urlOnly = foreignFile({ disabled: false, serverUrl: URL_PINNED });
+      expect(status(new MemFs({ [A]: urlOnly, [B]: urlOnly })).configured).toBe(true);
     });
 
     for (const [label, stale] of [
