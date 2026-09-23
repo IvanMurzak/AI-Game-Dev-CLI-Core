@@ -26,7 +26,10 @@ export interface AgentDefinition {
   readonly name: string;
   /** Relative skills path for this client, or null when it has no skills directory. */
   readonly skillsPath: string | null;
-  /** Display string for the client's config file location. */
+  /**
+   * Display string for the client's config file location(s) — every candidate path, comma-separated,
+   * for a client with several ({@link getConfigPaths}).
+   */
   readonly configPathDisplay: string;
   /** Config file format. */
   readonly configFormat: "json" | "toml";
@@ -44,8 +47,18 @@ export interface AgentDefinition {
    * suppresses the client's native OAuth.
    */
   readonly httpHeadersKey?: string;
-  /** Absolute config-file path for a project root (some clients ignore it — user-global config). */
+  /**
+   * Absolute config-file path for a project root (some clients ignore it — user-global config). For a
+   * client with several candidate files this is the FIRST of {@link getConfigPaths}.
+   */
   getConfigPath(projectPath: string): string;
+  /**
+   * Every candidate config file, when the client reads its config from one of several locations that
+   * cannot be predicted (Antigravity). Absent ⇒ just {@link getConfigPath}. Use {@link configPathsOf}.
+   * Semantics (identical in the C# writer): configure writes ALL of them; status is "configured" ⇔ at
+   * least one exists AND every existing one is configured; remove touches only the existing ones.
+   */
+  getConfigPaths?(projectPath: string): string[];
   /** Build the stdio server-entry props from the resolved server binary path + args vector. */
   getStdioProps(serverPath: string, args: string[]): AgentProps;
   /** Build the http server-entry props from the (pinned) URL + optional auth headers. */
@@ -74,6 +87,19 @@ function isMac(): boolean {
 
 const withHeaders = (headers: Record<string, string> | undefined, key = "headers"): AgentProps =>
   headers ? { [key]: headers } : {};
+
+/** Every candidate config file of `agent` for a project root ({@link AgentDefinition.getConfigPaths}). */
+export function configPathsOf(agent: AgentDefinition, projectPath: string): string[] {
+  return agent.getConfigPaths?.(projectPath) ?? [agent.getConfigPath(projectPath)];
+}
+
+/** Antigravity's two global config locations — which one a given install reads is not predictable. */
+function antigravityConfigPaths(): string[] {
+  return [
+    path.join(home(), ".gemini", "config", "mcp_config.json"),
+    path.join(home(), ".gemini", "antigravity", "mcp_config.json"),
+  ];
+}
 
 /** The server-entry key an agent stores static http headers under ({@link AgentDefinition.httpHeadersKey}). */
 export function httpHeadersKeyOf(agent: AgentDefinition): string {
@@ -196,11 +222,13 @@ export const agentRegistry: readonly AgentDefinition[] = [
     id: "antigravity",
     name: "Antigravity",
     skillsPath: ".agent/skills",
-    configPathDisplay: "~/.gemini/config/mcp_config.json",
+    configPathDisplay: "~/.gemini/config/mcp_config.json, ~/.gemini/antigravity/mcp_config.json",
     configFormat: "json",
     bodyPath: "mcpServers",
-    // Antigravity reads remote servers from `serverUrl` and static headers from `headers`.
-    getConfigPath: () => path.join(home(), ".gemini", "config", "mcp_config.json"),
+    // Antigravity reads remote servers from `serverUrl` and static headers from `headers`, from ONE of
+    // two global files — which one differs per machine/install, so every config op covers both.
+    getConfigPath: () => antigravityConfigPaths()[0]!,
+    getConfigPaths: () => antigravityConfigPaths(),
     getStdioProps: (serverPath, args) => ({ disabled: false, command: serverPath, args }),
     getHttpProps: (url, headers) => ({ disabled: false, serverUrl: url, ...withHeaders(headers) }),
     stdioRemoveKeys: ["url", "serverUrl", "type"],

@@ -368,6 +368,8 @@ describe("getOrMintProjectKey — the §6 get-or-mint rule", () => {
     const res = await regenerateProjectKey({ pin: PIN, engine: "unity", issuer: ISSUER, credentials, store, transport });
     if (res.kind !== "ok") throw new Error(res.reason);
     expect(transport.revokes).toHaveLength(0); // deferred until the caller rewrote the configs
+    // The old raw key travels with it, so setup-mcp can move the other configs off it first.
+    expect(res.previousKey).toBe("agd_pk_cached");
     expect(await res.revokePrevious!()).toBeUndefined();
     expect(transport.revokes).toEqual([{ issuer: ISSUER, accessToken: AGENT_TOKEN, keyId: "k0" }]);
   });
@@ -418,6 +420,7 @@ describe("getOrMintProjectKey — the §6 get-or-mint rule", () => {
     const res = await regenerateProjectKey({ pin: PIN, engine: "unity", issuer: ISSUER, credentials, store, transport: fakeTransport() });
     expect(res.kind).toBe("ok");
     expect(res.kind === "ok" && res.revokePrevious).toBeUndefined();
+    expect(res.kind === "ok" && res.previousKey).toBeUndefined(); // never another account's key
   });
 
   it("regenerate does not revoke the previous key when the new key could not be cached", async () => {

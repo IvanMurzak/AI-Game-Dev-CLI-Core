@@ -9,6 +9,36 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
 
 ## Unreleased
 
+### Added — Antigravity's two config locations; regenerate keeps the other agents working
+
+- **Antigravity is configured in BOTH of its candidate global files** —
+  `~/.gemini/config/mcp_config.json` and `~/.gemini/antigravity/mcp_config.json` (which one an install
+  reads differs per machine). An `AgentDefinition` may now declare several candidate files through the
+  optional `getConfigPaths(projectPath)` (`configPathsOf(agent, projectPath)` resolves either shape;
+  `getConfigPath` stays the first one). `setupMcp` writes every candidate, and a failure writing any of
+  them is now a `failure` result naming the failed path (and the ones that were written) instead of a
+  silent success. The success result gains `configPaths`; `SetupMcpPlan` gains `configPaths`;
+  `writeSetupMcpPlanPaths(plan, io)` reports `{ written, failed }` per file. Antigravity's
+  `configPathDisplay` lists both paths.
+- **`getMcpConfigStatus(opts)`** — configured ⇔ at least one candidate file exists AND every existing
+  one carries a correct entry (a missing file is ignored; a stale one makes the agent "not configured",
+  so Configure repairs both). Reports `configPaths`, `existingPaths`, `misconfiguredPaths`.
+- **`removeMcpConfig(opts)`** — removes the entry from every EXISTING candidate file (never creates or
+  deletes a file); reports `removedPaths` and `failedPaths`.
+- `JsonAiAgentConfig` / `TomlAiAgentConfig` gain a read-only `readServerEntry(configPath, io)`.
+
+### Fixed — `regenerateKey` locked every other agent of the project out
+
+- `setupMcp({ regenerateKey: true })` rewrote only the one agent's config and then revoked the previous
+  key, which every other agent config of the same project still carried. It now moves every other
+  config of the project (project-local and user-global) whose http entry is pinned to this project's pin
+  and carries `Authorization: Bearer <previous key>` (Codex: `http_headers`) to the new key — touching
+  nothing else in the file — and then checks that no existing config still contains the previous key.
+  If any does (a failed write, an unpinned or renamed entry), the revoke is SKIPPED and the paths are
+  reported in `warnings`. The success result gains `rewrittenConfigPaths`; the `ok` `ProjectKeyResult`
+  gains `previousKey` (present exactly when `revokePrevious` is). An injected resolver that returns
+  `revokePrevious` without `previousKey` keeps the old behaviour.
+
 ### Added — project keys (BREAKING: `setupMcp` is now async)
 
 - **Cloud `setup-mcp` writes a per-project, non-expiring credential for EVERY agent.** A Cloud

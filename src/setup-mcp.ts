@@ -4,6 +4,8 @@ import type { EngineAdapter } from "./engine-adapter.js";
 import { derivePinV2, derivePortV2 } from "./project-identity.js";
 import { pinUrl, stripPinFromUrl } from "./routing.js";
 import {
+  agentRegistry,
+  configPathsOf,
   getAgentById,
   getAgentIds,
   httpHeadersKeyOf,
@@ -88,7 +90,13 @@ export type SetupMcpCredential = "token" | "project-key" | "none";
 
 /** The fully-resolved plan a caller can inspect before (or instead of) writing. */
 export interface SetupMcpPlan {
+  /** The primary config file (the first of {@link configPaths}). */
   configPath: string;
+  /**
+   * Every config file the plan writes — one for most clients, several for a client whose config
+   * location cannot be predicted (Antigravity: `~/.gemini/config/` AND `~/.gemini/antigravity/`).
+   */
+  configPaths: string[];
   configFormat: "json" | "toml";
   bodyPath: string;
   serverName: string;
@@ -119,7 +127,7 @@ export function resolveSetupMcpPlan(input: SetupMcpPlanInput): SetupMcpPlan {
   const credential: SetupMcpCredential = input.token ? "token" : secret ? "project-key" : "none";
   const emitAuthHeader = credential !== "none";
 
-  const configPath = agent.getConfigPath(input.projectRoot);
+  const configPaths = configPathsOf(agent, input.projectRoot);
   const pinned = !noPin;
 
   let props: AgentProps;
@@ -155,7 +163,8 @@ export function resolveSetupMcpPlan(input: SetupMcpPlanInput): SetupMcpPlan {
   const requiredKeys = Object.keys(props).filter((k) => REQUIRED_PROP_KEYS.has(k));
 
   return {
-    configPath,
+    configPath: configPaths[0]!,
+    configPaths,
     configFormat: agent.configFormat,
     bodyPath: agent.bodyPath,
     serverName: adapter.serverName,
@@ -171,22 +180,43 @@ export function resolveSetupMcpPlan(input: SetupMcpPlanInput): SetupMcpPlan {
   };
 }
 
-/** Write the plan to disk via the golden-vector-gated config writer. Returns true on success. */
-export function writeSetupMcpPlan(plan: SetupMcpPlan, io: AgentConfigFs = nodeFs): boolean {
-  if (plan.configFormat === "toml") {
-    const writer = new TomlAiAgentConfig({ serverName: plan.serverName, bodyPath: plan.bodyPath });
-    for (const [key, value] of Object.entries(plan.props)) {
-      writer.setProperty(key, toTomlValue(value), plan.requiredKeys.includes(key));
-    }
-    for (const key of plan.removeKeys) writer.setPropertyToRemove(key);
-    return writer.configure(plan.configPath, io);
-  }
-  const writer = new JsonAiAgentConfig({ serverName: plan.serverName, bodyPath: plan.bodyPath });
+/** The golden-vector-gated writer for `plan` (the same instance configures, checks and removes). */
+function planWriter(plan: SetupMcpPlan): JsonAiAgentConfig | TomlAiAgentConfig {
+  const writer =
+    plan.configFormat === "toml"
+      ? new TomlAiAgentConfig({ serverName: plan.serverName, bodyPath: plan.bodyPath })
+      : new JsonAiAgentConfig({ serverName: plan.serverName, bodyPath: plan.bodyPath });
   for (const [key, value] of Object.entries(plan.props)) {
-    writer.setProperty(key, value, plan.requiredKeys.includes(key));
+    const required = plan.requiredKeys.includes(key);
+    if (writer instanceof TomlAiAgentConfig) writer.setProperty(key, toTomlValue(value), required);
+    else writer.setProperty(key, value, required);
   }
   for (const key of plan.removeKeys) writer.setPropertyToRemove(key);
-  return writer.configure(plan.configPath, io);
+  return writer;
+}
+
+/** Which of a plan's config files were written and which failed ({@link writeSetupMcpPlanPaths}). */
+export interface SetupMcpWriteOutcome {
+  written: string[];
+  failed: string[];
+}
+
+/**
+ * Write the plan to EVERY one of its config files (creating missing directories/files, preserving
+ * every other entry) and report per file — one failure never hides another's success or vice versa.
+ */
+export function writeSetupMcpPlanPaths(plan: SetupMcpPlan, io: AgentConfigFs = nodeFs): SetupMcpWriteOutcome {
+  const writer = planWriter(plan);
+  const outcome: SetupMcpWriteOutcome = { written: [], failed: [] };
+  for (const configPath of plan.configPaths) {
+    (writer.configure(configPath, io) ? outcome.written : outcome.failed).push(configPath);
+  }
+  return outcome;
+}
+
+/** Write the plan to all of its config files. Returns true only when EVERY file was written. */
+export function writeSetupMcpPlan(plan: SetupMcpPlan, io: AgentConfigFs = nodeFs): boolean {
+  return writeSetupMcpPlanPaths(plan, io).failed.length === 0;
 }
 
 /** Options for {@link setupMcp}. */
@@ -231,7 +261,15 @@ export type SetupMcpResult =
   | {
       kind: "success";
       agentId: string;
+      /** The primary config file written (the first of {@link configPaths}). */
       configPath: string;
+      /** Every config file written (Antigravity: both of its candidate locations). */
+      configPaths: string[];
+      /**
+       * Regenerate only: the OTHER agent configs of this project that carried the previous project key
+       * and were moved to the new one before the previous key was revoked.
+       */
+      rewrittenConfigPaths?: string[];
       transport: McpTransport;
       pinned: boolean;
       resolvedUrl?: string;
@@ -336,14 +374,36 @@ export async function setupMcp(opts: SetupMcpOptions): Promise<SetupMcpResult> {
       noPin: opts.noPin === true,
     });
 
-    const written = writeSetupMcpPlan(plan, opts.fs ?? nodeFs);
+    const io = opts.fs ?? nodeFs;
+    const { written, failed } = writeSetupMcpPlanPaths(plan, io);
 
-    // Regenerate (§7): only once the new key is cached AND the config rewritten, revoke the old one —
-    // an unwritten config still carries the old key, so revoking it would lock the agent out. A revoke
-    // failure (or a throw from an injected resolver's callback) is reported, never fatal.
+    // Regenerate (§7): the other agent configs of this project still carry the OLD key, and revoking it
+    // would lock every one of them out — so move them to the new key first.
+    let rewrittenConfigPaths: string[] | undefined;
+    let notRewritten: string[] = [];
+    if (key?.revokePrevious && key.previousKey) {
+      const moved = rewritePreviousProjectKey({
+        serverName: plan.serverName,
+        projectRoot,
+        pin,
+        previousKey: key.previousKey,
+        newKey: key.key,
+        skipPaths: plan.configPaths,
+        io,
+      });
+      rewrittenConfigPaths = moved.written;
+      notRewritten = moved.failed;
+    }
+
+    // Revoke the old key only once the new key is cached AND every config that held the old key was
+    // rewritten — an unwritten config still carries the old key, so revoking it would lock the agent
+    // out. A revoke failure (or a throw from an injected resolver's callback) is reported, never fatal.
     if (key?.revokePrevious) {
-      if (!written) {
-        warnings.push(`The config ${plan.configPath} could not be written, so the previous project key was left active.`);
+      if (failed.length > 0 || notRewritten.length > 0) {
+        const stuck = [...failed, ...notRewritten].join(", ");
+        warnings.push(
+          `The config(s) ${stuck} could not be written with the new project key, so the previous project key was left active.`,
+        );
       } else {
         try {
           const revokeWarning = await key.revokePrevious();
@@ -354,12 +414,23 @@ export async function setupMcp(opts: SetupMcpOptions): Promise<SetupMcpResult> {
       }
     }
 
-    emitProgress(opts.onProgress, { phase: "done", message: `${agent.name} configured (${plan.configPath})` });
+    if (failed.length > 0) {
+      const partial = written.length > 0 ? ` (written: ${written.join(", ")})` : "";
+      return {
+        kind: "failure",
+        warnings,
+        error: new Error(`Could not write the ${agent.name} config ${failed.join(", ")}${partial}.`),
+      };
+    }
+
+    emitProgress(opts.onProgress, { phase: "done", message: `${agent.name} configured (${plan.configPaths.join(", ")})` });
 
     return {
       kind: "success",
       agentId: agent.id,
       configPath: plan.configPath,
+      configPaths: plan.configPaths,
+      rewrittenConfigPaths,
       transport,
       pinned: plan.pinned,
       resolvedUrl: plan.resolvedUrl,
@@ -371,6 +442,195 @@ export async function setupMcp(opts: SetupMcpOptions): Promise<SetupMcpResult> {
     };
   } catch (err) {
     return { kind: "failure", warnings, error: err instanceof Error ? err : new Error(String(err)) };
+  }
+}
+
+/** The inputs {@link rewritePreviousProjectKey} needs (all resolved by {@link setupMcp}). */
+interface RewritePreviousKeyInput {
+  serverName: string;
+  projectRoot: string;
+  pin: string;
+  previousKey: string;
+  newKey: string;
+  /** The configs setup-mcp itself just wrote with the new key (not rewritten again). */
+  skipPaths: readonly string[];
+  io: AgentConfigFs;
+}
+
+/**
+ * Regenerate (§7): move every OTHER agent config of this project that still authenticates with the
+ * previous project key — an http entry pinned to this pin whose `Authorization` header (Codex:
+ * `http_headers`) is `Bearer <previous key>` — to the new key, touching nothing else in the file.
+ * Then verify the world: any existing config whose bytes still contain the previous key (a failed
+ * write, an unpinned entry, a renamed server entry, an unparsable file) is reported in `failed`, and
+ * the caller must then NOT revoke the previous key.
+ */
+function rewritePreviousProjectKey(input: RewritePreviousKeyInput): SetupMcpWriteOutcome {
+  const { io, pin } = input;
+  const outcome: SetupMcpWriteOutcome = { written: [], failed: [] };
+  const previousHeader = `Bearer ${input.previousKey}`;
+  const seen = new Set(input.skipPaths);
+  for (const agent of agentRegistry) {
+    for (const configPath of configPathsOf(agent, input.projectRoot)) {
+      if (seen.has(configPath)) continue;
+      seen.add(configPath);
+      if (!io.existsSync(configPath)) continue;
+
+      const options = { serverName: input.serverName, bodyPath: agent.bodyPath };
+      const writer = agent.configFormat === "toml" ? new TomlAiAgentConfig(options) : new JsonAiAgentConfig(options);
+      const entry: Record<string, unknown> | null = writer.readServerEntry(configPath, io);
+      const headersKey = httpHeadersKeyOf(agent);
+      const headers = entry?.[headersKey];
+      const url = entry?.["url"] ?? entry?.["serverUrl"];
+      if (headers && typeof headers === "object" && !Array.isArray(headers) && typeof url === "string" && pinUrl(url, pin) === url) {
+        const record = headers as Record<string, string>;
+        const name = Object.keys(record).find((k) => k.toLowerCase() === "authorization" && record[k] === previousHeader);
+        if (name) {
+          const updated = { ...record, [name]: `Bearer ${input.newKey}` };
+          writer.setProperty(headersKey, updated, false);
+          if (writer.configure(configPath, io)) outcome.written.push(configPath);
+        }
+      }
+
+      let text: string;
+      try {
+        text = io.readFileSync(configPath);
+      } catch {
+        continue; // unreadable now ⇒ it cannot present the previous key either
+      }
+      if (text.includes(input.previousKey)) {
+        outcome.written = outcome.written.filter((p) => p !== configPath);
+        outcome.failed.push(configPath);
+      }
+    }
+  }
+  return outcome;
+}
+
+/** Which agent config to inspect/remove ({@link getMcpConfigStatus}, {@link removeMcpConfig}). */
+export interface McpConfigTargetOptions {
+  adapter: EngineAdapter;
+  /** The AI-agent client id (see {@link getAgentIds}). */
+  agentId: string;
+  /** Transport the config is expected to use; defaults to `http`. Status only. */
+  transport?: McpTransport;
+  /** The project root; defaults to `cwd` / `process.cwd()`. */
+  projectPath?: string;
+  /** An explicit base URL override (hosted or local). Status only. */
+  url?: string;
+  /** `--no-pin`: expect an unpinned URL / no `project=` arg. Status only. */
+  noPin?: boolean;
+  /** The explicit PAT a stdio config carries as `token=`. Status only. */
+  token?: string;
+  /** Timeout (ms) a stdio config carries; defaults to 10000. Status only. */
+  timeoutMs?: number;
+  /** `authorization` mode arg a stdio config carries; defaults to `none`. Status only. */
+  authorization?: string;
+  cwd?: string;
+  fs?: AgentConfigFs;
+}
+
+/** The result of {@link getMcpConfigStatus}. */
+export type McpConfigStatusResult =
+  | {
+      kind: "success";
+      agentId: string;
+      /** Configured ⇔ at least one candidate file exists AND every existing one is configured. */
+      configured: boolean;
+      /** Every candidate config file (for display — all of them, not just the existing ones). */
+      configPaths: string[];
+      /** The candidate files that exist. */
+      existingPaths: string[];
+      /** Existing files without a correctly configured entry (stale / misconfigured / unparsable). */
+      misconfiguredPaths: string[];
+    }
+  | { kind: "failure"; error: Error };
+
+/** The result of {@link removeMcpConfig}. */
+export type RemoveMcpConfigResult =
+  | {
+      kind: "success";
+      agentId: string;
+      configPaths: string[];
+      /** Existing files the entry was removed from. */
+      removedPaths: string[];
+      /** Existing files that still carry the entry after the attempt (unwritable / unparsable). */
+      failedPaths: string[];
+    }
+  | { kind: "failure"; error: Error };
+
+function resolveTarget(opts: McpConfigTargetOptions): { agent: AgentDefinition; projectRoot: string } | Error {
+  const agent = getAgentById(opts.agentId);
+  if (!agent) return new Error(`Unknown agent "${opts.agentId}". Available: ${getAgentIds().join(", ")}`);
+  return { agent, projectRoot: path.resolve(opts.projectPath ?? opts.cwd ?? process.cwd()) };
+}
+
+/**
+ * Is `agentId` configured for the project? The expected entry is what {@link setupMcp} writes for the
+ * same transport / URL / pin (the credential header is not part of the check — a key rotates). For a
+ * client with several candidate files (Antigravity): configured ⇔ at least one exists AND every
+ * existing one carries a correct entry — a missing file is ignored, a stale one makes the agent
+ * "not configured" so a Configure repairs both. Never creates or modifies a file. Never throws.
+ */
+export function getMcpConfigStatus(opts: McpConfigTargetOptions): McpConfigStatusResult {
+  try {
+    const target = resolveTarget(opts);
+    if (target instanceof Error) return { kind: "failure", error: target };
+    const { agent, projectRoot } = target;
+    const plan = resolveSetupMcpPlan({
+      adapter: opts.adapter,
+      agent,
+      transport: opts.transport ?? "http",
+      projectRoot,
+      pin: derivePinV2(projectRoot),
+      port: derivePortV2(projectRoot),
+      timeoutMs: opts.timeoutMs ?? 10000,
+      authorization: opts.authorization ?? "none",
+      token: opts.token,
+      url: opts.url,
+      noPin: opts.noPin === true,
+    });
+    const io = opts.fs ?? nodeFs;
+    const writer = planWriter(plan);
+    const existingPaths = plan.configPaths.filter((p) => io.existsSync(p));
+    const misconfiguredPaths = existingPaths.filter((p) => !writer.isConfigured(p, io));
+    return {
+      kind: "success",
+      agentId: agent.id,
+      configured: existingPaths.length > 0 && misconfiguredPaths.length === 0,
+      configPaths: plan.configPaths,
+      existingPaths,
+      misconfiguredPaths,
+    };
+  } catch (err) {
+    return { kind: "failure", error: err instanceof Error ? err : new Error(String(err)) };
+  }
+}
+
+/**
+ * Remove the server entry (plus deprecated / duplicate entries) from EVERY existing candidate config
+ * file of `agentId`. Never creates a file to remove from it and never deletes a file. A file that still
+ * carries the entry afterwards is reported in `failedPaths`. Never throws.
+ */
+export function removeMcpConfig(opts: McpConfigTargetOptions): RemoveMcpConfigResult {
+  try {
+    const target = resolveTarget(opts);
+    if (target instanceof Error) return { kind: "failure", error: target };
+    const { agent, projectRoot } = target;
+    const io = opts.fs ?? nodeFs;
+    const options = { serverName: opts.adapter.serverName, bodyPath: agent.bodyPath };
+    const writer = agent.configFormat === "toml" ? new TomlAiAgentConfig(options) : new JsonAiAgentConfig(options);
+    const configPaths = configPathsOf(agent, projectRoot);
+    const removedPaths: string[] = [];
+    const failedPaths: string[] = [];
+    for (const configPath of configPaths) {
+      if (!io.existsSync(configPath)) continue;
+      if (writer.unconfigure(configPath, io)) removedPaths.push(configPath);
+      if (writer.isDetected(configPath, io)) failedPaths.push(configPath);
+    }
+    return { kind: "success", agentId: agent.id, configPaths, removedPaths, failedPaths };
+  } catch (err) {
+    return { kind: "failure", error: err instanceof Error ? err : new Error(String(err)) };
   }
 }
 

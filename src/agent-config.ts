@@ -301,6 +301,20 @@ export class JsonAiAgentConfig {
     }
   }
 
+  /** Our server entry as stored on disk, or null when the file / entry is absent or unparsable. */
+  readServerEntry(configPath: string, io: AgentConfigFs = nodeFs): Record<string, JsonNode> | null {
+    if (!configPath || !io.existsSync(configPath)) return null;
+    try {
+      const parsed = JSON.parse(io.readFileSync(configPath));
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+      const target = navigateJsonPath(parsed as Record<string, JsonNode>, bodyPathSegments(this.bodyPath));
+      const entry = target?.[this.serverName];
+      return entry && typeof entry === "object" && !Array.isArray(entry) ? entry : null;
+    } catch {
+      return null;
+    }
+  }
+
   /** True when every required property matches on disk and no property-to-remove is present. */
   isConfigured(configPath: string, io: AgentConfigFs = nodeFs): boolean {
     if (!configPath || !io.existsSync(configPath)) return false;
@@ -586,6 +600,19 @@ export class TomlAiAgentConfig {
       return this.findDuplicateSectionIndices(lines).length > 0;
     } catch {
       return false;
+    }
+  }
+
+  /** Our server section's properties as stored on disk, or null when the file / section is absent. */
+  readServerEntry(configPath: string, io: AgentConfigFs = nodeFs): Record<string, TomlValue> | null {
+    if (!configPath || !io.existsSync(configPath)) return null;
+    try {
+      const lines = splitLines(io.readFileSync(configPath));
+      const idx = findTomlSection(lines, this.sectionName);
+      if (idx < 0) return null;
+      return Object.fromEntries(parseSectionProperties(lines, idx + 1, findSectionEnd(lines, idx)));
+    } catch {
+      return null;
     }
   }
 
