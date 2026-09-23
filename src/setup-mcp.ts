@@ -336,12 +336,23 @@ export async function setupMcp(opts: SetupMcpOptions): Promise<SetupMcpResult> {
       noPin: opts.noPin === true,
     });
 
-    writeSetupMcpPlan(plan, opts.fs ?? nodeFs);
+    const written = writeSetupMcpPlan(plan, opts.fs ?? nodeFs);
 
-    // Regenerate (§7): only once the new key is cached AND the config rewritten, revoke the old one.
-    // A revoke failure is reported, never fatal.
-    const revokeWarning = await key?.revokePrevious?.();
-    if (revokeWarning) warnings.push(revokeWarning);
+    // Regenerate (§7): only once the new key is cached AND the config rewritten, revoke the old one —
+    // an unwritten config still carries the old key, so revoking it would lock the agent out. A revoke
+    // failure (or a throw from an injected resolver's callback) is reported, never fatal.
+    if (key?.revokePrevious) {
+      if (!written) {
+        warnings.push(`The config ${plan.configPath} could not be written, so the previous project key was left active.`);
+      } else {
+        try {
+          const revokeWarning = await key.revokePrevious();
+          if (revokeWarning) warnings.push(revokeWarning);
+        } catch (err) {
+          warnings.push(`Revoking the previous project key failed (${err instanceof Error ? err.message : String(err)}).`);
+        }
+      }
+    }
 
     emitProgress(opts.onProgress, { phase: "done", message: `${agent.name} configured (${plan.configPath})` });
 

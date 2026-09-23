@@ -412,6 +412,28 @@ describe("getOrMintProjectKey — the §6 get-or-mint rule", () => {
     expect(res.kind === "ok" && res.revokePrevious).toBeUndefined();
   });
 
+  it("regenerate never revokes a cached key minted for ANOTHER account", async () => {
+    const { credentials, store } = setup();
+    seedCache(store, "usr_bob");
+    const res = await regenerateProjectKey({ pin: PIN, engine: "unity", issuer: ISSUER, credentials, store, transport: fakeTransport() });
+    expect(res.kind).toBe("ok");
+    expect(res.kind === "ok" && res.revokePrevious).toBeUndefined();
+  });
+
+  it("regenerate does not revoke the previous key when the new key could not be cached", async () => {
+    const { credentials, store } = setup();
+    seedCache(store);
+    const failingPut = Object.assign(Object.create(Object.getPrototypeOf(store) as object) as ProjectKeyStore, store, {
+      put: () => {
+        throw new Error("disk full");
+      },
+    });
+    const res = await regenerateProjectKey({ pin: PIN, engine: "unity", issuer: ISSUER, credentials, store: failingPut, transport: fakeTransport() });
+    expect(res.kind).toBe("ok");
+    if (res.kind === "ok") expect(res.warnings.join(" ")).toMatch(/could not be cached/);
+    expect(res.kind === "ok" && res.revokePrevious).toBeUndefined();
+  });
+
   it("regenerateProjectKey mints even over a valid cached key and overwrites the entry", async () => {
     const { credentials, store } = setup();
     seedCache(store);

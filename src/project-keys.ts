@@ -491,6 +491,7 @@ async function resolveProjectKey(options: GetOrMintProjectKeyOptions, forceMint:
     if (!minted.ok) return { kind: "error", reason: `minting a project key failed: ${minted.reason}` };
 
     const warnings: string[] = [];
+    let cachedNewKey = true;
     try {
       // The read-merge-write runs under the machine store lock (credentials.lock — shared with the
       // C# plugin), so two concurrent writers cannot drop each other's entries.
@@ -504,13 +505,27 @@ async function resolveProjectKey(options: GetOrMintProjectKeyOptions, forceMint:
         createdAt: minted.minted.createdAt,
       }));
     } catch (err) {
+      cachedNewKey = false;
       warnings.push(
         `The project key was minted but could not be cached (${err instanceof Error ? err.message : String(err)}); ` +
           "the next setup will mint another one.",
       );
     }
     const newKeyId = minted.minted.keyId;
-    const previousKeyId = forceMint && cached && cached.keyId !== newKeyId ? cached.keyId : undefined;
+    // Revoke only a key this regenerate actually REPLACED: the new key is cached (else the cache still
+    // points at the old one), and the old entry belongs to the signed-in account (another account's
+    // key is not ours to revoke with our token) and names a real id other than the new one.
+    const previousKeyId =
+      forceMint &&
+      cachedNewKey &&
+      cached &&
+      login.sub !== undefined &&
+      cached.sub === login.sub &&
+      typeof cached.keyId === "string" &&
+      cached.keyId !== "" &&
+      cached.keyId !== newKeyId
+        ? cached.keyId
+        : undefined;
     const revokePrevious =
       previousKeyId === undefined
         ? undefined
