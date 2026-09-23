@@ -36,6 +36,8 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
   `HttpProjectKeyTransport`, `projectKeyCacheKey`, `isCloudUrl`, and
   `AgentDefinition.httpHeadersKey`.
 
+## 0.4.2 — 2026-09-16
+
 ### Fixed
 
 - **Cloud `run-tool` / `run-system-tool` / `status` answered `401 invalid_token` on every call,
