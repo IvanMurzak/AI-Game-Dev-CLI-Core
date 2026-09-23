@@ -174,7 +174,9 @@ describe("ProjectKeyStore — ~/.ai-game-dev/project-keys.json (contract §6)", 
     expect(fs.statSync(store.filePath).mode & 0o777).toBe(0o600);
   });
 
-  it("uses the credential store's platform codec by default (DPAPI on Windows, identity on POSIX)", () => {
+  // On Windows every DPAPI transform is a PowerShell spawn (~1.5–2 s each, four here) — same budget
+  // as the DPAPI cross-implementation suite.
+  it("uses the credential store's platform codec by default (DPAPI on Windows, identity on POSIX)", { timeout: 30_000 }, () => {
     const store = new ProjectKeyStore(freshDir());
     seedCache(store);
     const raw = fs.readFileSync(store.filePath);
