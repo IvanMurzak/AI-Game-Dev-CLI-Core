@@ -26,6 +26,10 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
   (`"token" | "project-key" | "none"`), `projectKeyId` and `projectKeySource`; the options gain
   `oauth`, `regenerateKey`, `machineName` and an injectable `projectKeyResolver`
   (`createProjectKeyResolver(adapter, provider?)` is the default).
+- The project-key cache is gated by the cross-language golden vector
+  `test/golden-vectors/project-keys.golden.json`, vendored byte-identical from MCP-Plugin-dotnet
+  (`McpPlugin/src/AgentConfig/`, commit `2157b6c`): WHATWG-origin entry names, strict 8-hex pins,
+  http(s)-only issuers, and a put that keeps the replaced entry's unknown fields.
 - New public API: `ProjectKeyStore`, `getOrMintProjectKey`, `regenerateProjectKey`,
   `HttpProjectKeyTransport`, `projectKeyCacheKey`, `isCloudUrl`, and
   `AgentDefinition.httpHeadersKey`.

@@ -91,22 +91,30 @@ export type ProjectKeyStoreState =
   | { status: "missing" }
   | { status: "unreadable"; reason: string; cause?: unknown };
 
-/** Normalize a pin for lookup/comparison (lowercase, trimmed). */
+/** Lower-case a v2 pin; throws unless it is exactly 8 hex characters (golden `invalidPins`). */
 function normalizePin(pin: string): string {
-  return pin.trim().toLowerCase();
+  const lower = pin.toLowerCase();
+  if (!PIN_RE.test(lower)) throw new Error(`invalid project pin "${pin}"`);
+  return lower;
 }
 
-/** The origin of an issuer URL (`https://ai-game.dev`), or the trimmed input when it is not a URL. */
+/**
+ * The WHATWG origin of an absolute http(s) issuer URL (`HTTPS://AI-Game.DEV:443/mcp` →
+ * `https://ai-game.dev`). Throws for anything else — empty, relative, scheme-less or non-http(s)
+ * (golden `invalidIssuers`).
+ */
 export function issuerOrigin(issuer: string): string {
-  const raw = issuer.trim();
+  let url: URL;
   try {
-    return new URL(raw).origin;
+    url = new URL(issuer.trim());
   } catch {
-    return raw.replace(/\/+$/, "");
+    throw new Error(`invalid issuer "${issuer}"`);
   }
+  if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error(`invalid issuer "${issuer}"`);
+  return url.origin;
 }
 
-/** The cache key of an entry: `<issuerOrigin>#<pin>` (contract §6). */
+/** The cache entry name: `<issuerOrigin>#<pin>` (contract §6). Throws on an invalid issuer/pin. */
 export function projectKeyCacheKey(issuer: string, pin: string): string {
   return `${issuerOrigin(issuer)}#${normalizePin(pin)}`;
 }
@@ -167,9 +175,15 @@ export class ProjectKeyStore {
 
   /** The cached entry for `(issuer, pin)`, or undefined (missing/unreadable cache, or no entry). */
   get(issuer: string, pin: string): ProjectKeyEntry | undefined {
+    let name: string;
+    try {
+      name = projectKeyCacheKey(issuer, pin);
+    } catch {
+      return undefined;
+    }
     const state = this.readState();
     if (state.status !== "ok") return undefined;
-    const entry = state.document.keys?.[projectKeyCacheKey(issuer, pin)];
+    const entry = state.document.keys?.[name];
     return isUsableEntry(entry) ? entry : undefined;
   }
 
@@ -185,8 +199,11 @@ export class ProjectKeyStore {
       throw new Error(`refusing to overwrite an unreadable project-key cache: ${state.reason}`);
     }
     const current: ProjectKeysDocument = state.status === "ok" ? state.document : {};
+    const name = projectKeyCacheKey(entry.issuer, entry.pin);
     const keys: Record<string, ProjectKeyEntry> = isPlainObject(current.keys) ? { ...current.keys } : {};
-    keys[projectKeyCacheKey(entry.issuer, entry.pin)] = { ...entry, pin: normalizePin(entry.pin) };
+    // Replace the known fields but keep the replaced entry's unknown (forward-compat) fields.
+    const previous = isPlainObject(keys[name]) ? keys[name] : {};
+    keys[name] = { ...previous, ...entry, pin: normalizePin(entry.pin), issuer: issuerOrigin(entry.issuer) };
     const document: ProjectKeysDocument = {
       ...current,
       version: typeof current.version === "number" ? current.version : PROJECT_KEYS_SCHEMA_VERSION,
@@ -290,11 +307,11 @@ export class HttpProjectKeyTransport implements ProjectKeyTransport {
     if (typeof key !== "string" || !key.startsWith(PROJECT_KEY_PREFIX) || (typeof keyId !== "string" && typeof keyId !== "number")) {
       return { ok: false, status: response.status, reason: "malformed mint response" };
     }
-    if (typeof pin !== "string" || normalizePin(pin) !== normalizePin(request.pin)) {
+    if (typeof pin !== "string" || pin.toLowerCase() !== request.pin.toLowerCase()) {
       return { ok: false, status: response.status, reason: "mint response is bound to a different project pin" };
     }
     const createdAt = typeof json?.["created_at"] === "string" ? (json["created_at"] as string) : new Date().toISOString();
-    return { ok: true, minted: { key, keyId: String(keyId), pin: normalizePin(pin), createdAt } };
+    return { ok: true, minted: { key, keyId: String(keyId), pin: pin.toLowerCase(), createdAt } };
   }
 
   async validate(issuer: string, key: string, pin: string): Promise<ProjectKeyValidation> {
@@ -313,7 +330,7 @@ export class HttpProjectKeyTransport implements ProjectKeyTransport {
     const json = await readJson(response);
     if (!json) return "transient";
     if (json["active"] === false) return "invalid";
-    if (typeof json["project_pin"] === "string" && normalizePin(json["project_pin"]) !== normalizePin(pin)) {
+    if (typeof json["project_pin"] === "string" && json["project_pin"].toLowerCase() !== pin.toLowerCase()) {
       return "invalid";
     }
     return "valid";
@@ -376,7 +393,6 @@ export async function regenerateProjectKey(options: GetOrMintProjectKeyOptions):
 async function resolveProjectKey(options: GetOrMintProjectKeyOptions, forceMint: boolean): Promise<ProjectKeyResult> {
   try {
     const pin = normalizePin(options.pin);
-    if (!PIN_RE.test(pin)) return { kind: "error", reason: `invalid project pin "${options.pin}"` };
     const store = options.store ?? new ProjectKeyStore(options.credentials.store.baseDirectory);
     const transport = options.transport ?? new HttpProjectKeyTransport();
 
@@ -459,12 +475,21 @@ function currentLogin(credentials: MachineCredentialProvider, issuer: string): L
   }
   if (!document) return { kind: "no-login", reason: "not signed in" };
   const target = typeof document.serverTarget === "string" && document.serverTarget ? document.serverTarget : DEFAULT_CLOUD_BASE_URL;
-  if (issuerOrigin(target) !== issuerOrigin(issuer)) {
-    return { kind: "no-login", reason: `the machine credential belongs to ${issuerOrigin(target)}, not ${issuerOrigin(issuer)}` };
+  const targetOrigin = safeOrigin(target);
+  if (targetOrigin === undefined || targetOrigin !== issuerOrigin(issuer)) {
+    return { kind: "no-login", reason: `the machine credential belongs to ${targetOrigin ?? "another server"}, not ${issuerOrigin(issuer)}` };
   }
   const families = effectiveFamilies(document);
   const token = (families.agent ?? families.plugin ?? families.legacy)?.accessToken;
   if (!token) return { kind: "no-login", reason: "not signed in" };
   const sub = (typeof document.subject === "string" && document.subject) || decodeJwtSubject(token);
   return { kind: "ok", sub: sub || undefined };
+}
+
+function safeOrigin(url: string): string | undefined {
+  try {
+    return issuerOrigin(url);
+  } catch {
+    return undefined;
+  }
 }
