@@ -257,10 +257,15 @@ export type ProjectKeyMintResult =
 /** A validate outcome (`GET …/current`): `invalid` only on an authoritative rejection. */
 export type ProjectKeyValidation = "valid" | "invalid" | "transient";
 
-/** The HTTP seam for the mint/validate endpoints (injectable for tests). */
+/** A revoke outcome — a value, never a throw. `status` 0 = network/input failure. */
+export type ProjectKeyRevokeResult = { ok: true } | { ok: false; status: number; reason: string };
+
+/** The HTTP seam for the mint/validate/revoke endpoints (injectable for tests). */
 export interface ProjectKeyTransport {
   mint(request: ProjectKeyMintRequest): Promise<ProjectKeyMintResult>;
   validate(issuer: string, key: string, pin: string): Promise<ProjectKeyValidation>;
+  /** `DELETE {issuerOrigin}/api/mcp/project-keys/{keyId}` with the machine access token. */
+  revoke(issuer: string, accessToken: string, keyId: string): Promise<ProjectKeyRevokeResult>;
 }
 
 /** Options for {@link HttpProjectKeyTransport}. */
@@ -327,6 +332,28 @@ export class HttpProjectKeyTransport implements ProjectKeyTransport {
     return { ok: true, minted: { key, keyId: String(keyId), pin: pin.toLowerCase(), createdAt } };
   }
 
+  async revoke(issuer: string, accessToken: string, keyId: string): Promise<ProjectKeyRevokeResult> {
+    let url: string;
+    try {
+      url = `${issuerOrigin(issuer)}${PROJECT_KEYS_API_PATH}/${encodeURIComponent(keyId)}`;
+    } catch (err) {
+      return { ok: false, status: 0, reason: err instanceof Error ? err.message : String(err) };
+    }
+    let response: Response;
+    try {
+      response = await this._fetch(url, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+        signal: AbortSignal.timeout(this._timeoutMs),
+      });
+    } catch (err) {
+      return { ok: false, status: 0, reason: `network error: ${err instanceof Error ? err.name : "unknown"}` };
+    }
+    // 404 = already revoked/unknown — the goal (the old key no longer works) holds either way.
+    if (response.ok || response.status === 404) return { ok: true };
+    return { ok: false, status: response.status, reason: `HTTP ${response.status}` };
+  }
+
   async validate(issuer: string, key: string, pin: string): Promise<ProjectKeyValidation> {
     let response: Response;
     try {
@@ -389,7 +416,20 @@ export interface GetOrMintProjectKeyOptions {
  *  - `error` — minting failed (network, server rejection); fall back to the URL-only config.
  */
 export type ProjectKeyResult =
-  | { kind: "ok"; key: string; keyId: string; pin: string; source: "reused" | "minted"; warnings: string[] }
+  | {
+      kind: "ok";
+      key: string;
+      keyId: string;
+      pin: string;
+      source: "reused" | "minted";
+      warnings: string[];
+      /**
+       * Present only on a regenerate that replaced a cached key: revokes that PREVIOUS key with the
+       * access token used for the mint. Call it after the configs are rewritten (contract §7). It
+       * never throws; a failure is returned as a warning string and must not fail the regenerate.
+       */
+      revokePrevious?: () => Promise<string | undefined>;
+    }
   | { kind: "no-login"; reason: string }
   | { kind: "error"; reason: string };
 
@@ -414,8 +454,8 @@ async function resolveProjectKey(options: GetOrMintProjectKeyOptions, forceMint:
 
     // Reuse needs only the account identity + the key's own validity — never the access token, so
     // a near-expiry machine token does not trigger a refresh round-trip here.
+    const cached = store.get(options.issuer, pin);
     if (!forceMint) {
-      const cached = store.get(options.issuer, pin);
       if (cached && login.sub !== undefined && cached.sub === login.sub) {
         const verdict = await transport.validate(options.issuer, cached.key, pin);
         if (verdict !== "invalid") {
@@ -438,11 +478,15 @@ async function resolveProjectKey(options: GetOrMintProjectKeyOptions, forceMint:
       machineName: options.machineName ?? os.hostname(),
       label: options.label,
     };
+    let mintToken = accessToken;
     let minted = await transport.mint(request);
     if (!minted.ok && minted.status === 401) {
       // Reactive: the access token was rejected — refresh once and retry with the rotated token.
       const refreshed = await options.credentials.refresh({ family: "plugin" }).catch(() => null);
-      if (refreshed?.accessToken) minted = await transport.mint({ ...request, accessToken: refreshed.accessToken });
+      if (refreshed?.accessToken) {
+        mintToken = refreshed.accessToken;
+        minted = await transport.mint({ ...request, accessToken: mintToken });
+      }
     }
     if (!minted.ok) return { kind: "error", reason: `minting a project key failed: ${minted.reason}` };
 
@@ -465,7 +509,20 @@ async function resolveProjectKey(options: GetOrMintProjectKeyOptions, forceMint:
           "the next setup will mint another one.",
       );
     }
-    return { kind: "ok", key: minted.minted.key, keyId: minted.minted.keyId, pin, source: "minted", warnings };
+    const newKeyId = minted.minted.keyId;
+    const previousKeyId = forceMint && cached && cached.keyId !== newKeyId ? cached.keyId : undefined;
+    const revokePrevious =
+      previousKeyId === undefined
+        ? undefined
+        : async (): Promise<string | undefined> => {
+            const revoked = await transport
+              .revoke(options.issuer, mintToken, previousKeyId)
+              .catch((err: unknown) => ({ ok: false as const, status: 0, reason: String(err) }));
+            return revoked.ok
+              ? undefined
+              : `The previous project key (id ${previousKeyId}) could not be revoked (${revoked.reason}) — revoke it from your account page.`;
+          };
+    return { kind: "ok", key: minted.minted.key, keyId: newKeyId, pin, source: "minted", warnings, revokePrevious };
   } catch (err) {
     return { kind: "error", reason: err instanceof Error ? err.message : String(err) };
   }

@@ -338,6 +338,11 @@ export async function setupMcp(opts: SetupMcpOptions): Promise<SetupMcpResult> {
 
     writeSetupMcpPlan(plan, opts.fs ?? nodeFs);
 
+    // Regenerate (§7): only once the new key is cached AND the config rewritten, revoke the old one.
+    // A revoke failure is reported, never fatal.
+    const revokeWarning = await key?.revokePrevious?.();
+    if (revokeWarning) warnings.push(revokeWarning);
+
     emitProgress(opts.onProgress, { phase: "done", message: `${agent.name} configured (${plan.configPath})` });
 
     return {

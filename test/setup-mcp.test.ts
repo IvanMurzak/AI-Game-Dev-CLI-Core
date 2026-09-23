@@ -178,6 +178,32 @@ describe("setup-mcp policy — Cloud project-key header for EVERY client (contra
     expect(calls[0]!.regenerate).toBe(true);
   });
 
+  it("--regenerate-key revokes the previous key only AFTER the config was rewritten", async () => {
+    const fs = new MemFs();
+    let configAtRevoke: string | undefined;
+    const resolver: ProjectKeyResolver = async () => ({
+      kind: "ok", key: KEY, keyId: "k2", pin: PIN, source: "minted", warnings: [],
+      revokePrevious: async () => {
+        configAtRevoke = [...fs.files.values()][0];
+        return undefined;
+      },
+    });
+    const res = await run({ agentId: "claude-code", regenerateKey: true, fs }, resolver);
+    if (res.kind !== "success") throw res.error;
+    expect(configAtRevoke).toContain(`Bearer ${KEY}`);
+    expect(res.warnings).toEqual([]);
+  });
+
+  it("a failed revoke of the previous key is a warning — the regenerate still succeeds", async () => {
+    const resolver: ProjectKeyResolver = async () => ({
+      kind: "ok", key: KEY, keyId: "k2", pin: PIN, source: "minted", warnings: [],
+      revokePrevious: async () => "The previous project key (id k1) could not be revoked (HTTP 500)",
+    });
+    const res = await run({ agentId: "claude-code", regenerateKey: true, fs: new MemFs() }, resolver);
+    expect(res.kind).toBe("success");
+    expect(res.warnings.join(" ")).toMatch(/k1.*could not be revoked/);
+  });
+
   it("--regenerate-key conflicts with --oauth, --token, stdio and a local server", async () => {
     for (const extra of [
       { oauth: true },
