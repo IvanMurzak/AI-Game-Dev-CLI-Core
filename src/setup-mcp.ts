@@ -532,7 +532,7 @@ export type McpConfigStatusResult =
   | {
       kind: "success";
       agentId: string;
-      /** Configured ⇔ at least one candidate file exists AND every existing one is configured. */
+      /** Configured ⇔ EVERY candidate file exists AND is configured. */
       configured: boolean;
       /** Every candidate config file (for display — all of them, not just the existing ones). */
       configPaths: string[];
@@ -591,9 +591,9 @@ function toError(err: unknown): Error {
 /**
  * Is `agentId` configured for the project? The expected entry is what {@link setupMcp} writes for the
  * same transport / URL / pin (the credential header is not part of the check — a key rotates). For a
- * client with several candidate files (Antigravity): configured ⇔ at least one exists AND every
- * existing one carries a correct entry — a missing file is ignored, a stale one makes the agent
- * "not configured" so a Configure repairs both. Never creates or modifies a file. Never throws.
+ * client with several candidate files (Antigravity): configured ⇔ EVERY candidate exists AND carries a
+ * correct entry — we cannot know which file the client reads, so a missing or stale one makes the agent
+ * "not configured" and a Configure creates/repairs both. Never creates or modifies a file. Never throws.
  */
 export function getMcpConfigStatus(opts: McpConfigTargetOptions): McpConfigStatusResult {
   try {
@@ -608,7 +608,7 @@ export function getMcpConfigStatus(opts: McpConfigTargetOptions): McpConfigStatu
     return {
       kind: "success",
       agentId: agent.id,
-      configured: existingPaths.length > 0 && misconfiguredPaths.length === 0,
+      configured: existingPaths.length === plan.configPaths.length && misconfiguredPaths.length === 0,
       configPaths: plan.configPaths,
       existingPaths,
       misconfiguredPaths,

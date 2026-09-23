@@ -121,15 +121,20 @@ describe("antigravity — two candidate config files", () => {
       expect(s.configPaths).toEqual([A, B]);
     });
 
-    it("only A present and correct ⇒ configured (a missing B is ignored)", () => {
-      const s = status(new MemFs({ [A]: foreignFile(good) }));
-      expect(s.configured).toBe(true);
+    it("only A present and correct ⇒ NOT configured, and a Configure creates B", async () => {
+      const fs = new MemFs({ [A]: foreignFile(good) });
+      const s = status(fs);
+      expect(s.configured).toBe(false);
       expect(s.existingPaths).toEqual([A]);
+      expect(s.misconfiguredPaths).toEqual([]);
+      const res = await configure(fs);
+      if (res.kind !== "success") throw res.error;
+      expect(status(fs).configured).toBe(true);
     });
 
-    it("only B present and correct ⇒ configured (a missing A is ignored)", () => {
+    it("only B present and correct ⇒ NOT configured", () => {
       const s = status(new MemFs({ [B]: foreignFile(good) }));
-      expect(s.configured).toBe(true);
+      expect(s.configured).toBe(false);
       expect(s.existingPaths).toEqual([B]);
     });
 
@@ -138,7 +143,8 @@ describe("antigravity — two candidate config files", () => {
     });
 
     it("the credential header is not part of the check (a key rotates, a URL-only config is valid)", () => {
-      expect(status(new MemFs({ [A]: foreignFile({ disabled: false, serverUrl: URL_PINNED }) })).configured).toBe(true);
+      const urlOnly = foreignFile({ disabled: false, serverUrl: URL_PINNED });
+      expect(status(new MemFs({ [A]: urlOnly, [B]: urlOnly })).configured).toBe(true);
     });
 
     for (const [label, stale] of [
