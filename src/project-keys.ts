@@ -59,6 +59,9 @@ export type ProjectKeyEngine = "unity" | "godot" | "unreal" | "unknown";
 
 const PIN_RE = /^[0-9a-f]{8}$/;
 
+/** The {@link ProjectKeyEntry} fields this package owns; `put` replaces them wholesale. */
+const KNOWN_ENTRY_FIELDS = ["key", "keyId", "pin", "issuer", "sub", "engine", "createdAt"] as const;
+
 /** One cached key (contract §6). Unknown fields are preserved on read. */
 export interface ProjectKeyEntry {
   /** The raw key (`agd_pk_…`). Secret. */
@@ -91,22 +94,30 @@ export type ProjectKeyStoreState =
   | { status: "missing" }
   | { status: "unreadable"; reason: string; cause?: unknown };
 
-/** Normalize a pin for lookup/comparison (lowercase, trimmed). */
+/** Lower-case a v2 pin; throws unless it is exactly 8 hex characters (golden `invalidPins`). */
 function normalizePin(pin: string): string {
-  return pin.trim().toLowerCase();
+  const lower = pin.toLowerCase();
+  if (!PIN_RE.test(lower)) throw new Error(`invalid project pin "${pin}"`);
+  return lower;
 }
 
-/** The origin of an issuer URL (`https://ai-game.dev`), or the trimmed input when it is not a URL. */
+/**
+ * The WHATWG origin of an absolute http(s) issuer URL (`HTTPS://AI-Game.DEV:443/mcp` →
+ * `https://ai-game.dev`). Throws for anything else — empty, relative, scheme-less or non-http(s)
+ * (golden `invalidIssuers`).
+ */
 export function issuerOrigin(issuer: string): string {
-  const raw = issuer.trim();
+  let url: URL;
   try {
-    return new URL(raw).origin;
+    url = new URL(issuer.trim());
   } catch {
-    return raw.replace(/\/+$/, "");
+    throw new Error(`invalid issuer "${issuer}"`);
   }
+  if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error(`invalid issuer "${issuer}"`);
+  return url.origin;
 }
 
-/** The cache key of an entry: `<issuerOrigin>#<pin>` (contract §6). */
+/** The cache entry name: `<issuerOrigin>#<pin>` (contract §6). Throws on an invalid issuer/pin. */
 export function projectKeyCacheKey(issuer: string, pin: string): string {
   return `${issuerOrigin(issuer)}#${normalizePin(pin)}`;
 }
@@ -167,9 +178,15 @@ export class ProjectKeyStore {
 
   /** The cached entry for `(issuer, pin)`, or undefined (missing/unreadable cache, or no entry). */
   get(issuer: string, pin: string): ProjectKeyEntry | undefined {
+    let name: string;
+    try {
+      name = projectKeyCacheKey(issuer, pin);
+    } catch {
+      return undefined;
+    }
     const state = this.readState();
     if (state.status !== "ok") return undefined;
-    const entry = state.document.keys?.[projectKeyCacheKey(issuer, pin)];
+    const entry = state.document.keys?.[name];
     return isUsableEntry(entry) ? entry : undefined;
   }
 
@@ -185,8 +202,13 @@ export class ProjectKeyStore {
       throw new Error(`refusing to overwrite an unreadable project-key cache: ${state.reason}`);
     }
     const current: ProjectKeysDocument = state.status === "ok" ? state.document : {};
+    const name = projectKeyCacheKey(entry.issuer, entry.pin);
     const keys: Record<string, ProjectKeyEntry> = isPlainObject(current.keys) ? { ...current.keys } : {};
-    keys[projectKeyCacheKey(entry.issuer, entry.pin)] = { ...entry, pin: normalizePin(entry.pin) };
+    // Replace the known fields but keep the replaced entry's unknown (forward-compat) fields. A known
+    // field is never inherited: an entry put without `sub` must not keep the previous account's `sub`.
+    const previous: Record<string, unknown> = isPlainObject(keys[name]) ? { ...keys[name] } : {};
+    for (const field of KNOWN_ENTRY_FIELDS) delete previous[field];
+    keys[name] = { ...previous, ...entry, pin: normalizePin(entry.pin), issuer: issuerOrigin(entry.issuer) };
     const document: ProjectKeysDocument = {
       ...current,
       version: typeof current.version === "number" ? current.version : PROJECT_KEYS_SCHEMA_VERSION,
@@ -235,10 +257,15 @@ export type ProjectKeyMintResult =
 /** A validate outcome (`GET …/current`): `invalid` only on an authoritative rejection. */
 export type ProjectKeyValidation = "valid" | "invalid" | "transient";
 
-/** The HTTP seam for the mint/validate endpoints (injectable for tests). */
+/** A revoke outcome — a value, never a throw. `status` 0 = network/input failure. */
+export type ProjectKeyRevokeResult = { ok: true } | { ok: false; status: number; reason: string };
+
+/** The HTTP seam for the mint/validate/revoke endpoints (injectable for tests). */
 export interface ProjectKeyTransport {
   mint(request: ProjectKeyMintRequest): Promise<ProjectKeyMintResult>;
   validate(issuer: string, key: string, pin: string): Promise<ProjectKeyValidation>;
+  /** `DELETE {issuerOrigin}/api/mcp/project-keys/{keyId}` with the machine access token. */
+  revoke(issuer: string, accessToken: string, keyId: string): Promise<ProjectKeyRevokeResult>;
 }
 
 /** Options for {@link HttpProjectKeyTransport}. */
@@ -258,15 +285,23 @@ export class HttpProjectKeyTransport implements ProjectKeyTransport {
   }
 
   async mint(request: ProjectKeyMintRequest): Promise<ProjectKeyMintResult> {
+    let url: string;
+    let requestPin: string;
+    try {
+      url = `${issuerOrigin(request.issuer)}${PROJECT_KEYS_API_PATH}`;
+      requestPin = normalizePin(request.pin);
+    } catch (err) {
+      return { ok: false, status: 0, reason: err instanceof Error ? err.message : String(err) };
+    }
     const body: Record<string, string> = {
-      project_pin: normalizePin(request.pin),
+      project_pin: requestPin,
       engine: request.engine,
       machine_name: request.machineName,
     };
     if (request.label) body["label"] = request.label;
     let response: Response;
     try {
-      response = await this._fetch(`${issuerOrigin(request.issuer)}${PROJECT_KEYS_API_PATH}`, {
+      response = await this._fetch(url, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${request.accessToken}`,
@@ -290,11 +325,33 @@ export class HttpProjectKeyTransport implements ProjectKeyTransport {
     if (typeof key !== "string" || !key.startsWith(PROJECT_KEY_PREFIX) || (typeof keyId !== "string" && typeof keyId !== "number")) {
       return { ok: false, status: response.status, reason: "malformed mint response" };
     }
-    if (typeof pin !== "string" || normalizePin(pin) !== normalizePin(request.pin)) {
+    if (typeof pin !== "string" || pin.toLowerCase() !== requestPin) {
       return { ok: false, status: response.status, reason: "mint response is bound to a different project pin" };
     }
     const createdAt = typeof json?.["created_at"] === "string" ? (json["created_at"] as string) : new Date().toISOString();
-    return { ok: true, minted: { key, keyId: String(keyId), pin: normalizePin(pin), createdAt } };
+    return { ok: true, minted: { key, keyId: String(keyId), pin: pin.toLowerCase(), createdAt } };
+  }
+
+  async revoke(issuer: string, accessToken: string, keyId: string): Promise<ProjectKeyRevokeResult> {
+    let url: string;
+    try {
+      url = `${issuerOrigin(issuer)}${PROJECT_KEYS_API_PATH}/${encodeURIComponent(keyId)}`;
+    } catch (err) {
+      return { ok: false, status: 0, reason: err instanceof Error ? err.message : String(err) };
+    }
+    let response: Response;
+    try {
+      response = await this._fetch(url, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+        signal: AbortSignal.timeout(this._timeoutMs),
+      });
+    } catch (err) {
+      return { ok: false, status: 0, reason: `network error: ${err instanceof Error ? err.name : "unknown"}` };
+    }
+    // 404 = already revoked/unknown — the goal (the old key no longer works) holds either way.
+    if (response.ok || response.status === 404) return { ok: true };
+    return { ok: false, status: response.status, reason: `HTTP ${response.status}` };
   }
 
   async validate(issuer: string, key: string, pin: string): Promise<ProjectKeyValidation> {
@@ -313,7 +370,7 @@ export class HttpProjectKeyTransport implements ProjectKeyTransport {
     const json = await readJson(response);
     if (!json) return "transient";
     if (json["active"] === false) return "invalid";
-    if (typeof json["project_pin"] === "string" && normalizePin(json["project_pin"]) !== normalizePin(pin)) {
+    if (typeof json["project_pin"] === "string" && json["project_pin"].toLowerCase() !== pin.toLowerCase()) {
       return "invalid";
     }
     return "valid";
@@ -359,7 +416,20 @@ export interface GetOrMintProjectKeyOptions {
  *  - `error` — minting failed (network, server rejection); fall back to the URL-only config.
  */
 export type ProjectKeyResult =
-  | { kind: "ok"; key: string; keyId: string; pin: string; source: "reused" | "minted"; warnings: string[] }
+  | {
+      kind: "ok";
+      key: string;
+      keyId: string;
+      pin: string;
+      source: "reused" | "minted";
+      warnings: string[];
+      /**
+       * Present only on a regenerate that replaced a cached key: revokes that PREVIOUS key with the
+       * access token used for the mint. Call it after the configs are rewritten (contract §7). It
+       * never throws; a failure is returned as a warning string and must not fail the regenerate.
+       */
+      revokePrevious?: () => Promise<string | undefined>;
+    }
   | { kind: "no-login"; reason: string }
   | { kind: "error"; reason: string };
 
@@ -376,7 +446,6 @@ export async function regenerateProjectKey(options: GetOrMintProjectKeyOptions):
 async function resolveProjectKey(options: GetOrMintProjectKeyOptions, forceMint: boolean): Promise<ProjectKeyResult> {
   try {
     const pin = normalizePin(options.pin);
-    if (!PIN_RE.test(pin)) return { kind: "error", reason: `invalid project pin "${options.pin}"` };
     const store = options.store ?? new ProjectKeyStore(options.credentials.store.baseDirectory);
     const transport = options.transport ?? new HttpProjectKeyTransport();
 
@@ -385,8 +454,8 @@ async function resolveProjectKey(options: GetOrMintProjectKeyOptions, forceMint:
 
     // Reuse needs only the account identity + the key's own validity — never the access token, so
     // a near-expiry machine token does not trigger a refresh round-trip here.
+    const cached = store.get(options.issuer, pin);
     if (!forceMint) {
-      const cached = store.get(options.issuer, pin);
       if (cached && login.sub !== undefined && cached.sub === login.sub) {
         const verdict = await transport.validate(options.issuer, cached.key, pin);
         if (verdict !== "invalid") {
@@ -409,15 +478,20 @@ async function resolveProjectKey(options: GetOrMintProjectKeyOptions, forceMint:
       machineName: options.machineName ?? os.hostname(),
       label: options.label,
     };
+    let mintToken = accessToken;
     let minted = await transport.mint(request);
     if (!minted.ok && minted.status === 401) {
       // Reactive: the access token was rejected — refresh once and retry with the rotated token.
       const refreshed = await options.credentials.refresh({ family: "plugin" }).catch(() => null);
-      if (refreshed?.accessToken) minted = await transport.mint({ ...request, accessToken: refreshed.accessToken });
+      if (refreshed?.accessToken) {
+        mintToken = refreshed.accessToken;
+        minted = await transport.mint({ ...request, accessToken: mintToken });
+      }
     }
     if (!minted.ok) return { kind: "error", reason: `minting a project key failed: ${minted.reason}` };
 
     const warnings: string[] = [];
+    let cachedNewKey = true;
     try {
       // The read-merge-write runs under the machine store lock (credentials.lock — shared with the
       // C# plugin), so two concurrent writers cannot drop each other's entries.
@@ -431,12 +505,39 @@ async function resolveProjectKey(options: GetOrMintProjectKeyOptions, forceMint:
         createdAt: minted.minted.createdAt,
       }));
     } catch (err) {
+      cachedNewKey = false;
       warnings.push(
         `The project key was minted but could not be cached (${err instanceof Error ? err.message : String(err)}); ` +
           "the next setup will mint another one.",
       );
     }
-    return { kind: "ok", key: minted.minted.key, keyId: minted.minted.keyId, pin, source: "minted", warnings };
+    const newKeyId = minted.minted.keyId;
+    // Revoke only a key this regenerate actually REPLACED: the new key is cached (else the cache still
+    // points at the old one), and the old entry belongs to the signed-in account (another account's
+    // key is not ours to revoke with our token) and names a real id other than the new one.
+    const previousKeyId =
+      forceMint &&
+      cachedNewKey &&
+      cached &&
+      login.sub !== undefined &&
+      cached.sub === login.sub &&
+      typeof cached.keyId === "string" &&
+      cached.keyId !== "" &&
+      cached.keyId !== newKeyId
+        ? cached.keyId
+        : undefined;
+    const revokePrevious =
+      previousKeyId === undefined
+        ? undefined
+        : async (): Promise<string | undefined> => {
+            const revoked = await transport
+              .revoke(options.issuer, mintToken, previousKeyId)
+              .catch((err: unknown) => ({ ok: false as const, status: 0, reason: String(err) }));
+            return revoked.ok
+              ? undefined
+              : `The previous project key (id ${previousKeyId}) could not be revoked (${revoked.reason}) — revoke it from your account page.`;
+          };
+    return { kind: "ok", key: minted.minted.key, keyId: newKeyId, pin, source: "minted", warnings, revokePrevious };
   } catch (err) {
     return { kind: "error", reason: err instanceof Error ? err.message : String(err) };
   }
@@ -459,12 +560,22 @@ function currentLogin(credentials: MachineCredentialProvider, issuer: string): L
   }
   if (!document) return { kind: "no-login", reason: "not signed in" };
   const target = typeof document.serverTarget === "string" && document.serverTarget ? document.serverTarget : DEFAULT_CLOUD_BASE_URL;
-  if (issuerOrigin(target) !== issuerOrigin(issuer)) {
-    return { kind: "no-login", reason: `the machine credential belongs to ${issuerOrigin(target)}, not ${issuerOrigin(issuer)}` };
+  const origin = issuerOrigin(issuer);
+  const targetOrigin = safeOrigin(target);
+  if (targetOrigin !== origin) {
+    return { kind: "no-login", reason: `the machine credential belongs to ${targetOrigin ?? "another server"}, not ${origin}` };
   }
   const families = effectiveFamilies(document);
   const token = (families.agent ?? families.plugin ?? families.legacy)?.accessToken;
   if (!token) return { kind: "no-login", reason: "not signed in" };
   const sub = (typeof document.subject === "string" && document.subject) || decodeJwtSubject(token);
   return { kind: "ok", sub: sub || undefined };
+}
+
+function safeOrigin(url: string): string | undefined {
+  try {
+    return issuerOrigin(url);
+  } catch {
+    return undefined;
+  }
 }

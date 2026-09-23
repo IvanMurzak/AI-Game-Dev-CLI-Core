@@ -18,7 +18,9 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
   `GET …/project-keys/current` still accepts it (a transient failure also reuses). Codex gets it
   through its documented `http_headers` table and Antigravity through `headers`, so no client is
   left URL-only. An explicit `token` still wins; `oauth: true` writes the URL-only config (and
-  removes a previously written header); `regenerateKey: true` mints a fresh key. With no machine
+  removes a previously written header); `regenerateKey: true` mints a fresh key and — only after the cache and the config are rewritten —
+  revokes the previously cached key (`DELETE /api/mcp/project-keys/{keyId}` with the mint's access
+  token; a revoke failure is a warning, never fatal). The normal get-or-mint path never revokes. With no machine
   login, or when minting fails, the config falls back to URL-only with a warning. stdio and
   local-server configs are unchanged. The "access token under the project root may be committed"
   warning is gone (owner ruling).
@@ -26,6 +28,10 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
   (`"token" | "project-key" | "none"`), `projectKeyId` and `projectKeySource`; the options gain
   `oauth`, `regenerateKey`, `machineName` and an injectable `projectKeyResolver`
   (`createProjectKeyResolver(adapter, provider?)` is the default).
+- The project-key cache is gated by the cross-language golden vector
+  `test/golden-vectors/project-keys.golden.json`, vendored byte-identical from MCP-Plugin-dotnet
+  (`McpPlugin/src/AgentConfig/`, commit `2157b6c`): WHATWG-origin entry names, strict 8-hex pins,
+  http(s)-only issuers, and a put that keeps the replaced entry's unknown fields.
 - New public API: `ProjectKeyStore`, `getOrMintProjectKey`, `regenerateProjectKey`,
   `HttpProjectKeyTransport`, `projectKeyCacheKey`, `isCloudUrl`, and
   `AgentDefinition.httpHeadersKey`.

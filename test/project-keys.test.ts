@@ -20,6 +20,7 @@ import {
   type MachineCredentials,
   type ProjectKeyMintRequest,
   type ProjectKeyMintResult,
+  type ProjectKeyRevokeResult,
   type ProjectKeyTransport,
   type ProjectKeyValidation,
   type TokenRefresher,
@@ -74,12 +75,23 @@ function provider(doc: MachineCredentials | null, refresher: TokenRefresher = no
 function fakeTransport(opts: {
   validate?: ProjectKeyValidation;
   mint?: (req: ProjectKeyMintRequest, n: number) => ProjectKeyMintResult;
-} = {}): ProjectKeyTransport & { mints: ProjectKeyMintRequest[]; validations: string[] } {
+  revoke?: ProjectKeyRevokeResult;
+} = {}): ProjectKeyTransport & {
+  mints: ProjectKeyMintRequest[];
+  validations: string[];
+  revokes: Array<{ issuer: string; accessToken: string; keyId: string }>;
+} {
   const mints: ProjectKeyMintRequest[] = [];
   const validations: string[] = [];
+  const revokes: Array<{ issuer: string; accessToken: string; keyId: string }> = [];
   return {
     mints,
     validations,
+    revokes,
+    async revoke(issuer, accessToken, keyId) {
+      revokes.push({ issuer, accessToken, keyId });
+      return opts.revoke ?? { ok: true };
+    },
     async mint(req) {
       mints.push(req);
       return opts.mint
@@ -144,6 +156,15 @@ describe("ProjectKeyStore — ~/.ai-game-dev/project-keys.json (contract §6)", 
     expect(doc.keys[`${ISSUER}#${PIN}`].key).toBe("agd_pk_cached");
   });
 
+  it("a replacing put never inherits a KNOWN field (sub/engine/createdAt) from the replaced entry", () => {
+    const dir = freshDir();
+    const store = new ProjectKeyStore(dir, identityCredentialCodec);
+    seedCache(store, "usr_previous_account");
+    store.put({ key: "agd_pk_new", keyId: "k1", pin: PIN, issuer: ISSUER });
+    const doc = JSON.parse(fs.readFileSync(store.filePath, "utf-8"));
+    expect(doc.keys[`${ISSUER}#${PIN}`]).toEqual({ key: "agd_pk_new", keyId: "k1", pin: PIN, issuer: ISSUER });
+  });
+
   it("applies the at-rest codec to the whole document and leaves no temp litter", () => {
     const dir = freshDir();
     const xor: CredentialCodec = {
@@ -165,7 +186,9 @@ describe("ProjectKeyStore — ~/.ai-game-dev/project-keys.json (contract §6)", 
     expect(fs.statSync(store.filePath).mode & 0o777).toBe(0o600);
   });
 
-  it("uses the credential store's platform codec by default (DPAPI on Windows, identity on POSIX)", () => {
+  // On Windows every DPAPI transform is a PowerShell spawn (~1.5–2 s each, four here) — same budget
+  // as the DPAPI cross-implementation suite.
+  it("uses the credential store's platform codec by default (DPAPI on Windows, identity on POSIX)", { timeout: 30_000 }, () => {
     const store = new ProjectKeyStore(freshDir());
     seedCache(store);
     const raw = fs.readFileSync(store.filePath);
@@ -338,6 +361,79 @@ describe("getOrMintProjectKey — the §6 get-or-mint rule", () => {
     expect(transport.mints).toHaveLength(0);
   });
 
+  it("regenerate: revokePrevious revokes the OLD key id with the mint's access token, only when called", async () => {
+    const { credentials, store } = setup();
+    seedCache(store);
+    const transport = fakeTransport();
+    const res = await regenerateProjectKey({ pin: PIN, engine: "unity", issuer: ISSUER, credentials, store, transport });
+    if (res.kind !== "ok") throw new Error(res.reason);
+    expect(transport.revokes).toHaveLength(0); // deferred until the caller rewrote the configs
+    expect(await res.revokePrevious!()).toBeUndefined();
+    expect(transport.revokes).toEqual([{ issuer: ISSUER, accessToken: AGENT_TOKEN, keyId: "k0" }]);
+  });
+
+  it("regenerate: a revoke failure is a warning string, never a throw", async () => {
+    const { credentials, store } = setup();
+    seedCache(store);
+    const transport = fakeTransport({ revoke: { ok: false, status: 500, reason: "HTTP 500" } });
+    const res = await regenerateProjectKey({ pin: PIN, engine: "unity", issuer: ISSUER, credentials, store, transport });
+    if (res.kind !== "ok") throw new Error(res.reason);
+    expect(await res.revokePrevious!()).toMatch(/k0.*HTTP 500/);
+  });
+
+  it("revoke uses the REFRESHED token when the mint needed a 401 retry", async () => {
+    const refresher: TokenRefresher = {
+      refresh: async () => ({ ok: true, accessToken: "fresh-agent", refreshToken: "rt2", expiresAt: FAR }),
+    };
+    const { credentials, store } = setup(signedInDoc(), refresher);
+    seedCache(store);
+    const transport = fakeTransport({
+      mint: (req, n) =>
+        n === 1 ? { ok: false, status: 401, reason: "HTTP 401" } : { ok: true, minted: { key: "agd_pk_r", keyId: "k9", pin: req.pin, createdAt: "t" } },
+    });
+    const res = await regenerateProjectKey({ pin: PIN, engine: "unity", issuer: ISSUER, credentials, store, transport });
+    if (res.kind !== "ok") throw new Error(res.reason);
+    await res.revokePrevious!();
+    expect(transport.revokes[0]!.accessToken).toBe("fresh-agent");
+  });
+
+  it("get-or-mint NEVER revokes, even when it re-mints over a rejected cached key", async () => {
+    const { credentials, store } = setup();
+    seedCache(store);
+    const res = await getOrMintProjectKey({
+      pin: PIN, engine: "unity", issuer: ISSUER, credentials, store, transport: fakeTransport({ validate: "invalid" }),
+    });
+    expect(res.kind === "ok" && res.revokePrevious).toBeUndefined();
+  });
+
+  it("regenerate with nothing cached has nothing to revoke", async () => {
+    const { credentials, store } = setup();
+    const res = await regenerateProjectKey({ pin: PIN, engine: "unity", issuer: ISSUER, credentials, store, transport: fakeTransport() });
+    expect(res.kind === "ok" && res.revokePrevious).toBeUndefined();
+  });
+
+  it("regenerate never revokes a cached key minted for ANOTHER account", async () => {
+    const { credentials, store } = setup();
+    seedCache(store, "usr_bob");
+    const res = await regenerateProjectKey({ pin: PIN, engine: "unity", issuer: ISSUER, credentials, store, transport: fakeTransport() });
+    expect(res.kind).toBe("ok");
+    expect(res.kind === "ok" && res.revokePrevious).toBeUndefined();
+  });
+
+  it("regenerate does not revoke the previous key when the new key could not be cached", async () => {
+    const { credentials, store } = setup();
+    seedCache(store);
+    const failingPut = Object.assign(Object.create(Object.getPrototypeOf(store) as object) as ProjectKeyStore, store, {
+      put: () => {
+        throw new Error("disk full");
+      },
+    });
+    const res = await regenerateProjectKey({ pin: PIN, engine: "unity", issuer: ISSUER, credentials, store: failingPut, transport: fakeTransport() });
+    expect(res.kind).toBe("ok");
+    if (res.kind === "ok") expect(res.warnings.join(" ")).toMatch(/could not be cached/);
+    expect(res.kind === "ok" && res.revokePrevious).toBeUndefined();
+  });
+
   it("regenerateProjectKey mints even over a valid cached key and overwrites the entry", async () => {
     const { credentials, store } = setup();
     seedCache(store);
@@ -390,10 +486,29 @@ describe("HttpProjectKeyTransport — the contract §2 wire shape", () => {
     expect((await other.mint(req)).ok).toBe(false);
   });
 
+  it("an invalid pin or issuer is a status-0 failure — never a throw, never a request", async () => {
+    const calls: Call[] = [];
+    const t = new HttpProjectKeyTransport({ fetchImpl: fetchStub(201, {}, calls) });
+    await expect(t.mint({ ...req, pin: "nothex!!" })).resolves.toMatchObject({ ok: false, status: 0 });
+    await expect(t.mint({ ...req, issuer: "ai-game.dev" })).resolves.toMatchObject({ ok: false, status: 0, reason: expect.stringContaining("invalid issuer") });
+    expect(calls).toHaveLength(0);
+  });
+
   it("a network failure is status 0 (never throws)", async () => {
     const t = new HttpProjectKeyTransport({ fetchImpl: (async () => { throw new TypeError("fetch failed"); }) as typeof fetch });
     expect(await t.mint(req)).toMatchObject({ ok: false, status: 0 });
     expect(await t.validate(ISSUER, "agd_pk_x", PIN)).toBe("transient");
+  });
+
+  it("revokes with DELETE …/project-keys/{keyId} and the access token; 2xx/404 ⇒ ok, else a failure", async () => {
+    const calls: Call[] = [];
+    const t = new HttpProjectKeyTransport({ fetchImpl: fetchStub(204, undefined, calls) });
+    expect(await t.revoke("https://ai-game.dev/mcp", "AT", "pk 7")).toEqual({ ok: true });
+    expect(calls[0]!.url).toBe("https://ai-game.dev/api/mcp/project-keys/pk%207");
+    expect(calls[0]!.init.method).toBe("DELETE");
+    expect((calls[0]!.init.headers as Record<string, string>)["Authorization"]).toBe("Bearer AT");
+    expect(await new HttpProjectKeyTransport({ fetchImpl: fetchStub(404, {}, []) }).revoke(ISSUER, "AT", "x")).toEqual({ ok: true });
+    expect(await new HttpProjectKeyTransport({ fetchImpl: fetchStub(403, {}, []) }).revoke(ISSUER, "AT", "x")).toMatchObject({ ok: false, status: 403 });
   });
 
   it("validates with GET …/current authenticated by the key itself", async () => {

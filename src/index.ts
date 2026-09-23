@@ -379,6 +379,7 @@ export type {
   ProjectKeyMintRequest,
   ProjectKeyMintResult,
   ProjectKeyValidation,
+  ProjectKeyRevokeResult,
   ProjectKeyTransport,
   HttpProjectKeyTransportOptions,
   GetOrMintProjectKeyOptions,
