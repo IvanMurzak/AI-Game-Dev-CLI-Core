@@ -378,7 +378,8 @@ export function isCloudUrl(rawUrl: string): boolean {
   } catch {
     return false;
   }
-  if (host === "localhost" || host.endsWith(".localhost") || host === "0.0.0.0") return false;
+  // Only the engine-local server itself is excluded; a named dev stack (`agd.localhost`) is a Cloud.
+  if (host === "localhost" || host === "0.0.0.0") return false;
   return !isLoopbackHost(host);
 }
 

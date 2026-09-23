@@ -318,6 +318,18 @@ describe("getOrMintProjectKey — the §6 get-or-mint rule", () => {
     expect(fs.readFileSync(store.filePath, "utf-8")).toBe("garbage");
   });
 
+  it("writes the cache entry while holding the machine credential lock", async () => {
+    const { credentials, store } = setup();
+    let heldDuringWrite = false;
+    const originalPut = store.put.bind(store);
+    store.put = (entry) => {
+      heldDuringWrite = fs.existsSync(path.join(credentials.store.baseDirectory, "credentials.lock"));
+      originalPut(entry);
+    };
+    await getOrMintProjectKey({ pin: PIN, engine: "unity", issuer: ISSUER, credentials, store, transport: fakeTransport() });
+    expect(heldDuringWrite).toBe(true);
+  });
+
   it("rejects a malformed pin without any network call", async () => {
     const { credentials, store } = setup();
     const transport = fakeTransport();

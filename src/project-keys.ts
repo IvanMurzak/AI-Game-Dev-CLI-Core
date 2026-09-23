@@ -419,7 +419,9 @@ async function resolveProjectKey(options: GetOrMintProjectKeyOptions, forceMint:
 
     const warnings: string[] = [];
     try {
-      store.put({
+      // The read-merge-write runs under the machine store lock (credentials.lock — shared with the
+      // C# plugin), so two concurrent writers cannot drop each other's entries.
+      await options.credentials.lock.withLock(() => store.put({
         key: minted.minted.key,
         keyId: minted.minted.keyId,
         pin,
@@ -427,7 +429,7 @@ async function resolveProjectKey(options: GetOrMintProjectKeyOptions, forceMint:
         sub: login.sub,
         engine: options.engine,
         createdAt: minted.minted.createdAt,
-      });
+      }));
     } catch (err) {
       warnings.push(
         `The project key was minted but could not be cached (${err instanceof Error ? err.message : String(err)}); ` +

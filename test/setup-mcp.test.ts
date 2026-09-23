@@ -274,6 +274,7 @@ describe("setup-mcp policy — Cloud project-key header for EVERY client (contra
     expect(isCloudUrl("http://localhost:1")).toBe(false);
     expect(isCloudUrl("http://127.0.0.1:1")).toBe(false);
     expect(isCloudUrl("not a url")).toBe(false);
+    expect(isCloudUrl("http://agd.localhost/mcp")).toBe(true);
   });
 
   it("stdio embeds token= only on an explicit --token (a project key never reaches stdio)", () => {
