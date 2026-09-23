@@ -317,20 +317,8 @@ export class JsonAiAgentConfig {
 
   /** True when every required property matches on disk and no property-to-remove is present. */
   isConfigured(configPath: string, io: AgentConfigFs = nodeFs): boolean {
-    if (!configPath || !io.existsSync(configPath)) return false;
-    try {
-      const text = io.readFileSync(configPath);
-      if (!text.trim()) return false;
-      const parsed = JSON.parse(text);
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
-      const target = navigateJsonPath(parsed as Record<string, JsonNode>, bodyPathSegments(this.bodyPath));
-      if (!target) return false;
-      const serverEntry = target[this.serverName];
-      if (serverEntry == null || typeof serverEntry !== "object" || Array.isArray(serverEntry)) return false;
-      return this.requiredPropertiesMatch(serverEntry) && !this.hasPropertiesToRemove(serverEntry);
-    } catch {
-      return false;
-    }
+    const serverEntry = this.readServerEntry(configPath, io);
+    return serverEntry !== null && this.requiredPropertiesMatch(serverEntry) && !this.hasPropertiesToRemove(serverEntry);
   }
 
   private buildServerEntry(): Record<string, JsonNode> {
@@ -605,28 +593,26 @@ export class TomlAiAgentConfig {
 
   /** Our server section's properties as stored on disk, or null when the file / section is absent. */
   readServerEntry(configPath: string, io: AgentConfigFs = nodeFs): Record<string, TomlValue> | null {
+    const section = this.readSection(configPath, io);
+    return section && Object.fromEntries(section);
+  }
+
+  private readSection(configPath: string, io: AgentConfigFs): Map<string, TomlValue> | null {
     if (!configPath || !io.existsSync(configPath)) return null;
     try {
       const lines = splitLines(io.readFileSync(configPath));
       const idx = findTomlSection(lines, this.sectionName);
       if (idx < 0) return null;
-      return Object.fromEntries(parseSectionProperties(lines, idx + 1, findSectionEnd(lines, idx)));
+      return parseSectionProperties(lines, idx + 1, findSectionEnd(lines, idx));
     } catch {
       return null;
     }
   }
 
   isConfigured(configPath: string, io: AgentConfigFs = nodeFs): boolean {
-    if (!configPath || !io.existsSync(configPath)) return false;
-    try {
-      const lines = splitLines(io.readFileSync(configPath));
-      const idx = findTomlSection(lines, this.sectionName);
-      if (idx < 0) return false;
-      const existing = parseSectionProperties(lines, idx + 1, findSectionEnd(lines, idx));
-      return this.requiredPropertiesMatch(existing) && !this.hasPropertiesToRemove(existing);
-    } catch {
-      return false;
-    }
+    const existing = this.readSection(configPath, io);
+    if (existing === null) return false;
+    return this.requiredPropertiesMatch(existing) && !this.hasPropertiesToRemove(existing);
   }
 
   private generateSection(properties: Map<string, TomlValue>): string {

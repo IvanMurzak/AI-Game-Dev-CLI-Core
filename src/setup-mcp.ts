@@ -180,12 +180,14 @@ export function resolveSetupMcpPlan(input: SetupMcpPlanInput): SetupMcpPlan {
   };
 }
 
-/** The golden-vector-gated writer for `plan` (the same instance configures, checks and removes). */
+/** A golden-vector-gated config writer for one client's format / body path. */
+function writerFor(configFormat: "json" | "toml", serverName: string, bodyPath: string): JsonAiAgentConfig | TomlAiAgentConfig {
+  return configFormat === "toml" ? new TomlAiAgentConfig({ serverName, bodyPath }) : new JsonAiAgentConfig({ serverName, bodyPath });
+}
+
+/** The writer for `plan` (the same instance configures, checks and removes). */
 function planWriter(plan: SetupMcpPlan): JsonAiAgentConfig | TomlAiAgentConfig {
-  const writer =
-    plan.configFormat === "toml"
-      ? new TomlAiAgentConfig({ serverName: plan.serverName, bodyPath: plan.bodyPath })
-      : new JsonAiAgentConfig({ serverName: plan.serverName, bodyPath: plan.bodyPath });
+  const writer = writerFor(plan.configFormat, plan.serverName, plan.bodyPath);
   for (const [key, value] of Object.entries(plan.props)) {
     const required = plan.requiredKeys.includes(key);
     if (writer instanceof TomlAiAgentConfig) writer.setProperty(key, toTomlValue(value), required);
@@ -292,13 +294,9 @@ export type SetupMcpResult =
 export async function setupMcp(opts: SetupMcpOptions): Promise<SetupMcpResult> {
   const warnings: string[] = [];
   try {
-    if (!opts.agentId) {
-      return { kind: "failure", warnings, error: new Error(`agentId is required. Available: ${getAgentIds().join(", ")}`) };
-    }
-    const agent = getAgentById(opts.agentId);
-    if (!agent) {
-      return { kind: "failure", warnings, error: new Error(`Unknown agent "${opts.agentId}". Available: ${getAgentIds().join(", ")}`) };
-    }
+    const target = resolveTarget(opts);
+    if (target instanceof Error) return { kind: "failure", warnings, error: target };
+    const { agent, projectRoot } = target;
 
     const transport: McpTransport = opts.transport ?? "http";
     if (transport === "stdio" && !opts.adapter.stdioSupported) {
@@ -309,9 +307,7 @@ export async function setupMcp(opts: SetupMcpOptions): Promise<SetupMcpResult> {
       };
     }
 
-    const projectRoot = path.resolve(opts.projectPath ?? opts.cwd ?? process.cwd());
     const pin = derivePinV2(projectRoot);
-    const port = derivePortV2(projectRoot);
 
     const base = opts.url ?? DEFAULT_HOSTED_MCP_URL;
     const hasToken = typeof opts.token === "string" && opts.token.length > 0;
@@ -357,21 +353,11 @@ export async function setupMcp(opts: SetupMcpOptions): Promise<SetupMcpResult> {
     }
 
     const plan = resolveSetupMcpPlan({
-      adapter: opts.adapter,
-      agent,
-      transport,
-      projectRoot,
-      pin,
-      port,
-      timeoutMs: opts.timeoutMs ?? 10000,
-      authorization: opts.authorization ?? "none",
-      token: opts.token,
+      ...planInput(opts, agent, projectRoot),
       projectKey: key?.key,
       // A Cloud config that ends up URL-only (--oauth, no login, failed mint) must not keep a stale
       // header — it would suppress the client's native OAuth. Local-server configs are untouched.
       clearAuthHeader: cloud,
-      url: opts.url,
-      noPin: opts.noPin === true,
     });
 
     const io = opts.fs ?? nodeFs;
@@ -441,7 +427,7 @@ export async function setupMcp(opts: SetupMcpOptions): Promise<SetupMcpResult> {
       warnings,
     };
   } catch (err) {
-    return { kind: "failure", warnings, error: err instanceof Error ? err : new Error(String(err)) };
+    return { kind: "failure", warnings, error: toError(err) };
   }
 }
 
@@ -470,38 +456,34 @@ function rewritePreviousProjectKey(input: RewritePreviousKeyInput): SetupMcpWrit
   const outcome: SetupMcpWriteOutcome = { written: [], failed: [] };
   const previousHeader = `Bearer ${input.previousKey}`;
   const seen = new Set(input.skipPaths);
+  const holdsPreviousKey = (configPath: string): boolean => {
+    try {
+      return io.readFileSync(configPath).includes(input.previousKey);
+    } catch {
+      return false; // unreadable ⇒ it cannot present the previous key either
+    }
+  };
   for (const agent of agentRegistry) {
+    const headersKey = httpHeadersKeyOf(agent);
     for (const configPath of configPathsOf(agent, input.projectRoot)) {
       if (seen.has(configPath)) continue;
       seen.add(configPath);
-      if (!io.existsSync(configPath)) continue;
+      if (!io.existsSync(configPath) || !holdsPreviousKey(configPath)) continue;
 
-      const options = { serverName: input.serverName, bodyPath: agent.bodyPath };
-      const writer = agent.configFormat === "toml" ? new TomlAiAgentConfig(options) : new JsonAiAgentConfig(options);
+      const writer = writerFor(agent.configFormat, input.serverName, agent.bodyPath);
       const entry: Record<string, unknown> | null = writer.readServerEntry(configPath, io);
-      const headersKey = httpHeadersKeyOf(agent);
       const headers = entry?.[headersKey];
       const url = entry?.["url"] ?? entry?.["serverUrl"];
       if (headers && typeof headers === "object" && !Array.isArray(headers) && typeof url === "string" && pinUrl(url, pin) === url) {
         const record = headers as Record<string, string>;
         const name = Object.keys(record).find((k) => k.toLowerCase() === "authorization" && record[k] === previousHeader);
         if (name) {
-          const updated = { ...record, [name]: `Bearer ${input.newKey}` };
-          writer.setProperty(headersKey, updated, false);
-          if (writer.configure(configPath, io)) outcome.written.push(configPath);
+          writer.setProperty(headersKey, { ...record, [name]: `Bearer ${input.newKey}` }, false);
+          writer.configure(configPath, io);
         }
       }
-
-      let text: string;
-      try {
-        text = io.readFileSync(configPath);
-      } catch {
-        continue; // unreadable now ⇒ it cannot present the previous key either
-      }
-      if (text.includes(input.previousKey)) {
-        outcome.written = outcome.written.filter((p) => p !== configPath);
-        outcome.failed.push(configPath);
-      }
+      // Verify the world, not the writer's return value: the file must no longer hold the old key.
+      (holdsPreviousKey(configPath) ? outcome.failed : outcome.written).push(configPath);
     }
   }
   return outcome;
@@ -559,10 +541,33 @@ export type RemoveMcpConfigResult =
     }
   | { kind: "failure"; error: Error };
 
+/** Resolve the agent + absolute project root shared by setup, status and remove. */
 function resolveTarget(opts: McpConfigTargetOptions): { agent: AgentDefinition; projectRoot: string } | Error {
+  if (!opts.agentId) return new Error(`agentId is required. Available: ${getAgentIds().join(", ")}`);
   const agent = getAgentById(opts.agentId);
   if (!agent) return new Error(`Unknown agent "${opts.agentId}". Available: ${getAgentIds().join(", ")}`);
   return { agent, projectRoot: path.resolve(opts.projectPath ?? opts.cwd ?? process.cwd()) };
+}
+
+/** The credential-free plan input (same defaults for setup and status, so status checks what setup writes). */
+function planInput(opts: McpConfigTargetOptions, agent: AgentDefinition, projectRoot: string): SetupMcpPlanInput {
+  return {
+    adapter: opts.adapter,
+    agent,
+    transport: opts.transport ?? "http",
+    projectRoot,
+    pin: derivePinV2(projectRoot),
+    port: derivePortV2(projectRoot),
+    timeoutMs: opts.timeoutMs ?? 10000,
+    authorization: opts.authorization ?? "none",
+    token: opts.token,
+    url: opts.url,
+    noPin: opts.noPin === true,
+  };
+}
+
+function toError(err: unknown): Error {
+  return err instanceof Error ? err : new Error(String(err));
 }
 
 /**
@@ -577,19 +582,7 @@ export function getMcpConfigStatus(opts: McpConfigTargetOptions): McpConfigStatu
     const target = resolveTarget(opts);
     if (target instanceof Error) return { kind: "failure", error: target };
     const { agent, projectRoot } = target;
-    const plan = resolveSetupMcpPlan({
-      adapter: opts.adapter,
-      agent,
-      transport: opts.transport ?? "http",
-      projectRoot,
-      pin: derivePinV2(projectRoot),
-      port: derivePortV2(projectRoot),
-      timeoutMs: opts.timeoutMs ?? 10000,
-      authorization: opts.authorization ?? "none",
-      token: opts.token,
-      url: opts.url,
-      noPin: opts.noPin === true,
-    });
+    const plan = resolveSetupMcpPlan(planInput(opts, agent, projectRoot));
     const io = opts.fs ?? nodeFs;
     const writer = planWriter(plan);
     const existingPaths = plan.configPaths.filter((p) => io.existsSync(p));
@@ -603,7 +596,7 @@ export function getMcpConfigStatus(opts: McpConfigTargetOptions): McpConfigStatu
       misconfiguredPaths,
     };
   } catch (err) {
-    return { kind: "failure", error: err instanceof Error ? err : new Error(String(err)) };
+    return { kind: "failure", error: toError(err) };
   }
 }
 
@@ -618,8 +611,7 @@ export function removeMcpConfig(opts: McpConfigTargetOptions): RemoveMcpConfigRe
     if (target instanceof Error) return { kind: "failure", error: target };
     const { agent, projectRoot } = target;
     const io = opts.fs ?? nodeFs;
-    const options = { serverName: opts.adapter.serverName, bodyPath: agent.bodyPath };
-    const writer = agent.configFormat === "toml" ? new TomlAiAgentConfig(options) : new JsonAiAgentConfig(options);
+    const writer = writerFor(agent.configFormat, opts.adapter.serverName, agent.bodyPath);
     const configPaths = configPathsOf(agent, projectRoot);
     const removedPaths: string[] = [];
     const failedPaths: string[] = [];
@@ -630,7 +622,7 @@ export function removeMcpConfig(opts: McpConfigTargetOptions): RemoveMcpConfigRe
     }
     return { kind: "success", agentId: agent.id, configPaths, removedPaths, failedPaths };
   } catch (err) {
-    return { kind: "failure", error: err instanceof Error ? err : new Error(String(err)) };
+    return { kind: "failure", error: toError(err) };
   }
 }
 
