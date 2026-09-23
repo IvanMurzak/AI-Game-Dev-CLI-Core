@@ -429,6 +429,11 @@ export type ProjectKeyResult =
        * never throws; a failure is returned as a warning string and must not fail the regenerate.
        */
       revokePrevious?: () => Promise<string | undefined>;
+      /**
+       * The PREVIOUS key's raw value, present exactly when {@link revokePrevious} is: setup-mcp moves
+       * every other config of the project that still carries it to the new key before revoking it.
+       */
+      previousKey?: string;
     }
   | { kind: "no-login"; reason: string }
   | { kind: "error"; reason: string };
@@ -537,7 +542,16 @@ async function resolveProjectKey(options: GetOrMintProjectKeyOptions, forceMint:
               ? undefined
               : `The previous project key (id ${previousKeyId}) could not be revoked (${revoked.reason}) — revoke it from your account page.`;
           };
-    return { kind: "ok", key: minted.minted.key, keyId: newKeyId, pin, source: "minted", warnings, revokePrevious };
+    return {
+      kind: "ok",
+      key: minted.minted.key,
+      keyId: newKeyId,
+      pin,
+      source: "minted",
+      warnings,
+      revokePrevious,
+      previousKey: revokePrevious ? cached?.key : undefined,
+    };
   } catch (err) {
     return { kind: "error", reason: err instanceof Error ? err.message : String(err) };
   }

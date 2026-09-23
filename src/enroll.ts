@@ -13,7 +13,7 @@ import { DEFAULT_PLUGIN_SCOPE } from "./oauth-device-flow.js";
 import { derivePinV2 } from "./project-identity.js";
 import { writeProjectMarker } from "./project-marker.js";
 import { pinUrl } from "./routing.js";
-import { agentRegistry } from "./agents-registry.js";
+import { agentRegistry, configPathsOf } from "./agents-registry.js";
 
 /**
  * Agent-driven enrollment (design 06/09 D13) — the engine-agnostic port of the CLIs' `enroll` flow.
@@ -193,40 +193,41 @@ export function upsertProjectPinIntoConfigs(projectRoot: string, pin: string, se
 
   for (const agent of agentRegistry) {
     if (agent.configFormat !== "json") continue;
-    const configPath = agent.getConfigPath(resolvedProject);
-    const relative = path.relative(resolvedProject, configPath);
-    if (relative.startsWith("..") || path.isAbsolute(relative)) continue; // project-scoped only
-    if (!fs.existsSync(configPath)) continue;
+    for (const configPath of configPathsOf(agent, resolvedProject)) {
+      const relative = path.relative(resolvedProject, configPath);
+      if (relative.startsWith("..") || path.isAbsolute(relative)) continue; // project-scoped only
+      if (!fs.existsSync(configPath)) continue;
 
-    let root: Record<string, unknown>;
-    try {
-      const parsed = JSON.parse(fs.readFileSync(configPath, "utf-8")) as unknown;
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
-      root = parsed as Record<string, unknown>;
-    } catch {
-      continue;
-    }
+      let root: Record<string, unknown>;
+      try {
+        const parsed = JSON.parse(fs.readFileSync(configPath, "utf-8")) as unknown;
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+        root = parsed as Record<string, unknown>;
+      } catch {
+        continue;
+      }
 
-    const body = root[agent.bodyPath];
-    if (!body || typeof body !== "object" || Array.isArray(body)) continue;
-    const entry = (body as Record<string, unknown>)[serverName];
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+      const body = root[agent.bodyPath];
+      if (!body || typeof body !== "object" || Array.isArray(body)) continue;
+      const entry = (body as Record<string, unknown>)[serverName];
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
 
-    const entryRecord = entry as Record<string, unknown>;
-    let changed = false;
-    for (const key of ["url", "serverUrl"]) {
-      const current = entryRecord[key];
-      if (typeof current === "string" && current.length > 0) {
-        const pinned = pinUrl(current, pin);
-        if (pinned !== current) {
-          entryRecord[key] = pinned;
-          changed = true;
+      const entryRecord = entry as Record<string, unknown>;
+      let changed = false;
+      for (const key of ["url", "serverUrl"]) {
+        const current = entryRecord[key];
+        if (typeof current === "string" && current.length > 0) {
+          const pinned = pinUrl(current, pin);
+          if (pinned !== current) {
+            entryRecord[key] = pinned;
+            changed = true;
+          }
         }
       }
-    }
-    if (changed) {
-      fs.writeFileSync(configPath, JSON.stringify(root, null, 2) + "\n");
-      updatedFiles.push(configPath);
+      if (changed) {
+        fs.writeFileSync(configPath, JSON.stringify(root, null, 2) + "\n");
+        updatedFiles.push(configPath);
+      }
     }
   }
 

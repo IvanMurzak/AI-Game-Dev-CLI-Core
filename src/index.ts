@@ -321,7 +321,14 @@ export {
 export type { EngineAdapter, EngineId, ProjectMarkerSpec, StdioArgsParams } from "./engine-adapter.js";
 
 // ── agents registry ─────────────────────────────────────────────────────────────────────────────
-export { agentRegistry, getAgentById, getAgentIds, httpHeadersKeyOf, REQUIRED_PROP_KEYS } from "./agents-registry.js";
+export {
+  agentRegistry,
+  configPathsOf,
+  getAgentById,
+  getAgentIds,
+  httpHeadersKeyOf,
+  REQUIRED_PROP_KEYS,
+} from "./agents-registry.js";
 export type { AgentDefinition, AgentProps, AgentPropValue } from "./agents-registry.js";
 
 // ── project-pin routing URL helpers ─────────────────────────────────────────────────────────────
@@ -346,6 +353,9 @@ export {
   setupMcp,
   resolveSetupMcpPlan,
   writeSetupMcpPlan,
+  writeSetupMcpPlanPaths,
+  getMcpConfigStatus,
+  removeMcpConfig,
   DEFAULT_HOSTED_MCP_URL,
   PROJECT_ARG_NAME,
   isCloudUrl,
@@ -357,6 +367,10 @@ export type {
   SetupMcpPlan,
   SetupMcpPlanInput,
   SetupMcpCredential,
+  SetupMcpWriteOutcome,
+  McpConfigTargetOptions,
+  McpConfigStatusResult,
+  RemoveMcpConfigResult,
   McpTransport,
   ProjectKeyRequest,
   ProjectKeyResolver,
