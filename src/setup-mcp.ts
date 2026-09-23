@@ -137,7 +137,10 @@ export function resolveSetupMcpPlan(input: SetupMcpPlanInput): SetupMcpPlan {
     });
     if (pinned) stdioArgsVec.push(`${PROJECT_ARG_NAME}=${pin}`);
     props = agent.getStdioProps(serverPath, stdioArgsVec);
-    removeKeys = agent.stdioRemoveKeys;
+    // A stdio entry never carries a static http header: drop one a previous Cloud http config wrote
+    // (a live project key would otherwise linger in the file, and Codex rejects `http_headers` on a
+    // stdio server). Mirrors the C# writer's `ApplyStdioAuthorization`, which strips `headers`.
+    removeKeys = [...agent.stdioRemoveKeys, httpHeadersKeyOf(agent)];
   } else {
     const base = input.url ?? DEFAULT_HOSTED_MCP_URL;
     resolvedUrl = pinned ? pinUrl(base, pin) : stripPinFromUrl(base);

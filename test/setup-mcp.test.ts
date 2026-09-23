@@ -255,6 +255,21 @@ describe("setup-mcp policy — Cloud project-key header for EVERY client (contra
     expect(args.some((a) => a.startsWith("token="))).toBe(false);
   });
 
+  it("switching a Cloud http config to stdio drops the previously written project-key header", async () => {
+    for (const agentId of ["claude-code", "codex"]) {
+      const fs = new MemFs();
+      const http = await run({ agentId, fs });
+      if (http.kind !== "success") throw http.error;
+      expect(fs.get(http.configPath.replace(/\\/g, "/"))!).toContain(KEY);
+      const res = await run({ agentId, transport: "stdio", fs });
+      if (res.kind !== "success") throw res.error;
+      const content = fs.get(res.configPath.replace(/\\/g, "/"))!;
+      expect(content).toContain("command");
+      expect(content).not.toContain(KEY);
+      expect(content).not.toMatch(/http_headers|"headers"/);
+    }
+  });
+
   it("the issuer is the AS root of a custom Cloud URL, and the engine comes from the adapter", async () => {
     const { resolver, calls } = fakeResolver();
     await setupMcp({
