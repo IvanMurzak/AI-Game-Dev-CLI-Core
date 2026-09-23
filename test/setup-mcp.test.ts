@@ -12,6 +12,7 @@ import {
   godotAdapter,
   agentRegistry,
   getAgentById,
+  httpHeadersKeyOf,
   derivePinV2,
   type AgentDefinition,
   type JsonNode,
@@ -53,7 +54,7 @@ function writtenAuthorization(fs: MemFs, agent: AgentDefinition, configPath: str
     return m?.[1];
   }
   const e = entry(fs, configPath, agent.bodyPath);
-  const headers = e[agent.httpHeadersKey ?? "headers"] as Record<string, string> | undefined;
+  const headers = e[httpHeadersKeyOf(agent)] as Record<string, string> | undefined;
   return headers?.["Authorization"];
 }
 
@@ -207,6 +208,21 @@ describe("setup-mcp policy — Cloud project-key header for EVERY client (contra
     expect(res.credential).toBe("none");
     expect(entry(fs, res.configPath, "mcpServers")["headers"]).toBeUndefined();
     expect(res.warnings.join(" ")).toMatch(/not signed in.*URL-only/);
+  });
+
+  it("a Cloud URL-only fallback strips a stale header; a local-server config keeps its own", async () => {
+    const fs = new MemFs();
+    await run({ agentId: "claude-code", fs });
+    const { resolver } = fakeResolver({ kind: "no-login", reason: "not signed in" });
+    const res = await run({ agentId: "claude-code", fs }, resolver);
+    if (res.kind !== "success") throw res.error;
+    expect(entry(fs, res.configPath, "mcpServers")["headers"]).toBeUndefined();
+
+    const local = new MemFs();
+    await run({ agentId: "claude-code", url: "http://localhost:23940", token: "PAT", fs: local });
+    const again = await run({ agentId: "claude-code", url: "http://localhost:23940", fs: local });
+    if (again.kind !== "success") throw again.error;
+    expect(entry(local, again.configPath, "mcpServers")["headers"]).toEqual({ Authorization: "Bearer PAT" });
   });
 
   it("a mint error ⇒ URL-only config + warning (setup still succeeds)", async () => {

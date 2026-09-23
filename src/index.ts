@@ -321,7 +321,7 @@ export {
 export type { EngineAdapter, EngineId, ProjectMarkerSpec, StdioArgsParams } from "./engine-adapter.js";
 
 // ── agents registry ─────────────────────────────────────────────────────────────────────────────
-export { agentRegistry, getAgentById, getAgentIds, REQUIRED_PROP_KEYS } from "./agents-registry.js";
+export { agentRegistry, getAgentById, getAgentIds, httpHeadersKeyOf, REQUIRED_PROP_KEYS } from "./agents-registry.js";
 export type { AgentDefinition, AgentProps, AgentPropValue } from "./agents-registry.js";
 
 // ── project-pin routing URL helpers ─────────────────────────────────────────────────────────────
@@ -369,22 +369,15 @@ export {
   getOrMintProjectKey,
   regenerateProjectKey,
   projectKeyCacheKey,
-  issuerOrigin,
   PROJECT_KEYS_FILE_NAME,
-  PROJECT_KEYS_SCHEMA_VERSION,
   PROJECT_KEY_PREFIX,
-  PROJECT_KEYS_API_PATH,
-  PROJECT_KEYS_CURRENT_API_PATH,
-  DEFAULT_PROJECT_KEY_HTTP_TIMEOUT_MS,
 } from "./project-keys.js";
 export type {
   ProjectKeyEntry,
   ProjectKeysDocument,
-  ProjectKeyStoreState,
   ProjectKeyEngine,
   ProjectKeyMintRequest,
   ProjectKeyMintResult,
-  MintedProjectKey,
   ProjectKeyValidation,
   ProjectKeyTransport,
   HttpProjectKeyTransportOptions,

@@ -72,8 +72,13 @@ function isMac(): boolean {
   return process.platform === "darwin";
 }
 
-const withHeaders = (headers: Record<string, string> | undefined): AgentProps =>
-  headers ? { headers } : {};
+const withHeaders = (headers: Record<string, string> | undefined, key = "headers"): AgentProps =>
+  headers ? { [key]: headers } : {};
+
+/** The server-entry key an agent stores static http headers under ({@link AgentDefinition.httpHeadersKey}). */
+export function httpHeadersKeyOf(agent: AgentDefinition): string {
+  return agent.httpHeadersKey ?? "headers";
+}
 
 /**
  * The built-in AI-agent registry (ported from the CLIs; superset across the three). The stdio `args`
@@ -265,7 +270,7 @@ export const agentRegistry: readonly AgentDefinition[] = [
       url,
       tool_timeout_sec: 300,
       startup_timeout_sec: 30,
-      ...(headers ? { http_headers: headers } : {}),
+      ...withHeaders(headers, "http_headers"),
     }),
     stdioRemoveKeys: ["url", "type", "startup_timeout_sec"],
     httpRemoveKeys: ["command", "args", "type"],

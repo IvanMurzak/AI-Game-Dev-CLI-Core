@@ -6,6 +6,7 @@ import { pinUrl, stripPinFromUrl } from "./routing.js";
 import {
   getAgentById,
   getAgentIds,
+  httpHeadersKeyOf,
   REQUIRED_PROP_KEYS,
   type AgentDefinition,
   type AgentProps,
@@ -16,6 +17,7 @@ import { toAuthServerRoot } from "./engine-adapter.js";
 import { MachineCredentialStore } from "./machine-credentials.js";
 import { MachineCredentialProvider } from "./credential-provider.js";
 import { HttpTokenRefresher } from "./token-refresher.js";
+import { isLoopbackHost } from "./oauth-authcode-flow.js";
 import { getOrMintProjectKey, regenerateProjectKey, type ProjectKeyEngine, type ProjectKeyResult } from "./project-keys.js";
 
 /**
@@ -71,7 +73,7 @@ export interface SetupMcpPlanInput {
   token?: string;
   /** The project key (`agd_pk_…`) for a Cloud http config. Ignored for stdio. */
   projectKey?: string;
-  /** Remove any previously written auth header when none is emitted (the `--oauth` opt-out). */
+  /** Remove any previously written auth header when none is emitted (a Cloud URL-only config). */
   clearAuthHeader?: boolean;
   /** An explicit base URL override (hosted or local). Defaults to {@link DEFAULT_HOSTED_MCP_URL}. */
   url?: string;
@@ -113,12 +115,8 @@ export function resolveSetupMcpPlan(input: SetupMcpPlanInput): SetupMcpPlan {
   const { adapter, agent, transport, pin, port, timeoutMs, authorization, noPin } = input;
 
   // An explicit --token wins; a project key applies to the http transport only (stdio unchanged).
-  const credential: SetupMcpCredential = input.token
-    ? "token"
-    : transport === "http" && input.projectKey
-      ? "project-key"
-      : "none";
-  const secret = credential === "token" ? input.token! : credential === "project-key" ? input.projectKey! : "";
+  const secret = input.token || (transport === "http" ? input.projectKey : undefined) || "";
+  const credential: SetupMcpCredential = input.token ? "token" : secret ? "project-key" : "none";
   const emitAuthHeader = credential !== "none";
 
   const configPath = agent.getConfigPath(input.projectRoot);
@@ -147,7 +145,7 @@ export function resolveSetupMcpPlan(input: SetupMcpPlanInput): SetupMcpPlan {
     props = agent.getHttpProps(resolvedUrl, headers);
     removeKeys =
       !emitAuthHeader && input.clearAuthHeader
-        ? [...agent.httpRemoveKeys, agent.httpHeadersKey ?? "headers"]
+        ? [...agent.httpRemoveKeys, httpHeadersKeyOf(agent)]
         : agent.httpRemoveKeys;
   }
 
@@ -293,9 +291,7 @@ export async function setupMcp(opts: SetupMcpOptions): Promise<SetupMcpResult> {
       message: `Configuring ${agent.name} (${transport}) for ${projectRoot}`,
     });
 
-    let projectKey: string | undefined;
-    let projectKeyId: string | undefined;
-    let projectKeySource: "reused" | "minted" | undefined;
+    let key: Extract<ProjectKeyResult, { kind: "ok" }> | undefined;
     if (cloud && !hasToken && !opts.oauth) {
       const resolver = opts.projectKeyResolver ?? createProjectKeyResolver(opts.adapter);
       const outcome = await resolver({
@@ -307,9 +303,7 @@ export async function setupMcp(opts: SetupMcpOptions): Promise<SetupMcpResult> {
         regenerate: opts.regenerateKey === true,
       });
       if (outcome.kind === "ok") {
-        projectKey = outcome.key;
-        projectKeyId = outcome.keyId;
-        projectKeySource = outcome.source;
+        key = outcome;
         warnings.push(...outcome.warnings);
       } else if (opts.regenerateKey) {
         return { kind: "failure", warnings, error: new Error(`Could not regenerate the project key: ${outcome.reason}`) };
@@ -331,8 +325,10 @@ export async function setupMcp(opts: SetupMcpOptions): Promise<SetupMcpResult> {
       timeoutMs: opts.timeoutMs ?? 10000,
       authorization: opts.authorization ?? "none",
       token: opts.token,
-      projectKey,
-      clearAuthHeader: opts.oauth === true,
+      projectKey: key?.key,
+      // A Cloud config that ends up URL-only (--oauth, no login, failed mint) must not keep a stale
+      // header — it would suppress the client's native OAuth. Local-server configs are untouched.
+      clearAuthHeader: cloud,
       url: opts.url,
       noPin: opts.noPin === true,
     });
@@ -350,8 +346,8 @@ export async function setupMcp(opts: SetupMcpOptions): Promise<SetupMcpResult> {
       resolvedUrl: plan.resolvedUrl,
       emitAuthHeader: plan.emitAuthHeader,
       credential: plan.credential,
-      projectKeyId,
-      projectKeySource,
+      projectKeyId: key?.keyId,
+      projectKeySource: key?.source,
       warnings,
     };
   } catch (err) {
@@ -378,12 +374,12 @@ function toTomlValue(value: JsonNode): TomlValue {
 export function isCloudUrl(rawUrl: string): boolean {
   let host: string;
   try {
-    host = new URL(rawUrl).hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    host = new URL(rawUrl).hostname.toLowerCase();
   } catch {
     return false;
   }
-  if (host === "localhost" || host.endsWith(".localhost") || host === "::1" || host === "0.0.0.0") return false;
-  return !/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
+  if (host === "localhost" || host.endsWith(".localhost") || host === "0.0.0.0") return false;
+  return !isLoopbackHost(host);
 }
 
 /** One project-key resolution request (built by {@link setupMcp}). */
@@ -411,7 +407,7 @@ export function createProjectKeyResolver(
   adapter: EngineAdapter,
   credentials?: MachineCredentialProvider,
 ): ProjectKeyResolver {
-  return async (request) => {
+  return async ({ regenerate, ...request }) => {
     const provider =
       credentials ??
       new MachineCredentialProvider(
@@ -419,15 +415,8 @@ export function createProjectKeyResolver(
         new HttpTokenRefresher({ defaultServerBaseUrl: request.issuer }),
         { defaultClientId: adapter.clientId },
       );
-    const options = {
-      pin: request.pin,
-      engine: request.engine,
-      issuer: request.issuer,
-      label: request.label,
-      machineName: request.machineName,
-      credentials: provider,
-    };
-    return request.regenerate ? regenerateProjectKey(options) : getOrMintProjectKey(options);
+    const options = { ...request, credentials: provider };
+    return regenerate ? regenerateProjectKey(options) : getOrMintProjectKey(options);
   };
 }
 

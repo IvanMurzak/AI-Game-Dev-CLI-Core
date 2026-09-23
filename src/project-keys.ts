@@ -3,10 +3,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { writeFileAtomicSync } from "./atomic-file.js";
-import { LoginRequiredError, type MachineCredentialProvider } from "./credential-provider.js";
+import type { MachineCredentialProvider } from "./credential-provider.js";
+import { DEFAULT_CLOUD_BASE_URL } from "./enroll.js";
 import {
   MACHINE_STORE_DIR_NAME,
   defaultCredentialCodec,
+  effectiveFamilies,
   type CredentialCodec,
 } from "./machine-credentials.js";
 import { decodeJwtSubject } from "./oauth-device-flow.js";
@@ -183,7 +185,7 @@ export class ProjectKeyStore {
       throw new Error(`refusing to overwrite an unreadable project-key cache: ${state.reason}`);
     }
     const current: ProjectKeysDocument = state.status === "ok" ? state.document : {};
-    const keys = isPlainObject(current.keys) ? { ...current.keys } : {};
+    const keys: Record<string, ProjectKeyEntry> = isPlainObject(current.keys) ? { ...current.keys } : {};
     keys[projectKeyCacheKey(entry.issuer, entry.pin)] = { ...entry, pin: normalizePin(entry.pin) };
     const document: ProjectKeysDocument = {
       ...current,
@@ -195,7 +197,7 @@ export class ProjectKeyStore {
   }
 }
 
-function isPlainObject(value: unknown): value is Record<string, ProjectKeyEntry> {
+function isPlainObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
@@ -378,9 +380,11 @@ async function resolveProjectKey(options: GetOrMintProjectKeyOptions, forceMint:
     const store = options.store ?? new ProjectKeyStore(options.credentials.store.baseDirectory);
     const transport = options.transport ?? new HttpProjectKeyTransport();
 
-    const login = await currentLogin(options.credentials, options.issuer);
+    const login = currentLogin(options.credentials, options.issuer);
     if (login.kind === "no-login") return login;
 
+    // Reuse needs only the account identity + the key's own validity — never the access token, so
+    // a near-expiry machine token does not trigger a refresh round-trip here.
     if (!forceMint) {
       const cached = store.get(options.issuer, pin);
       if (cached && login.sub !== undefined && cached.sub === login.sub) {
@@ -391,9 +395,15 @@ async function resolveProjectKey(options: GetOrMintProjectKeyOptions, forceMint:
       }
     }
 
+    let accessToken: string;
+    try {
+      accessToken = await options.credentials.getAccessToken({ family: "plugin" });
+    } catch (err) {
+      return { kind: "no-login", reason: err instanceof Error ? err.message : String(err) };
+    }
     const request: ProjectKeyMintRequest = {
       issuer: options.issuer,
-      accessToken: login.accessToken,
+      accessToken,
       pin,
       engine: options.engine,
       machineName: options.machineName ?? os.hostname(),
@@ -401,9 +411,9 @@ async function resolveProjectKey(options: GetOrMintProjectKeyOptions, forceMint:
     };
     let minted = await transport.mint(request);
     if (!minted.ok && minted.status === 401) {
-      // Reactive: the access token was rejected — refresh once and retry.
-      const refreshed = await refreshedAccessToken(options.credentials);
-      if (refreshed) minted = await transport.mint({ ...request, accessToken: refreshed });
+      // Reactive: the access token was rejected — refresh once and retry with the rotated token.
+      const refreshed = await options.credentials.refresh({ family: "plugin" }).catch(() => null);
+      if (refreshed?.accessToken) minted = await transport.mint({ ...request, accessToken: refreshed.accessToken });
     }
     if (!minted.ok) return { kind: "error", reason: `minting a project key failed: ${minted.reason}` };
 
@@ -430,14 +440,15 @@ async function resolveProjectKey(options: GetOrMintProjectKeyOptions, forceMint:
   }
 }
 
-type LoginState = { kind: "ok"; accessToken: string; sub: string | undefined } | { kind: "no-login"; reason: string };
+type LoginState = { kind: "ok"; sub: string | undefined } | { kind: "no-login"; reason: string };
 
 /**
- * The signed-in account for `issuer`. The machine credential must have been issued BY this issuer
- * (its `serverTarget` origin, absent ⇒ the hosted default) — presenting another server's access
- * token here would leak it, so a mismatch is `no-login`.
+ * The signed-in account for `issuer`, from ONE read of the machine store. The credential must have
+ * been issued BY this issuer (its `serverTarget` origin; absent ⇒ the hosted default) — presenting
+ * another server's access token here would leak it, so a mismatch is `no-login`. The account `sub`
+ * is the stored `subject`, else the `sub` claim of the agent/plugin/legacy access token.
  */
-async function currentLogin(credentials: MachineCredentialProvider, issuer: string): Promise<LoginState> {
+function currentLogin(credentials: MachineCredentialProvider, issuer: string): LoginState {
   let document;
   try {
     document = credentials.store.read();
@@ -445,29 +456,13 @@ async function currentLogin(credentials: MachineCredentialProvider, issuer: stri
     return { kind: "no-login", reason: "the machine credential store is unreadable — sign in again" };
   }
   if (!document) return { kind: "no-login", reason: "not signed in" };
-  const target = typeof document.serverTarget === "string" && document.serverTarget ? document.serverTarget : DEFAULT_ISSUER;
+  const target = typeof document.serverTarget === "string" && document.serverTarget ? document.serverTarget : DEFAULT_CLOUD_BASE_URL;
   if (issuerOrigin(target) !== issuerOrigin(issuer)) {
     return { kind: "no-login", reason: `the machine credential belongs to ${issuerOrigin(target)}, not ${issuerOrigin(issuer)}` };
   }
-  let accessToken: string;
-  try {
-    accessToken = await credentials.getAccessToken({ family: "plugin" });
-  } catch (err) {
-    if (err instanceof LoginRequiredError) return { kind: "no-login", reason: err.message };
-    return { kind: "no-login", reason: `no usable machine credential: ${err instanceof Error ? err.message : String(err)}` };
-  }
-  const sub = (typeof document.subject === "string" && document.subject) || decodeJwtSubject(accessToken);
-  return { kind: "ok", accessToken, sub: sub || undefined };
+  const families = effectiveFamilies(document);
+  const token = (families.agent ?? families.plugin ?? families.legacy)?.accessToken;
+  if (!token) return { kind: "no-login", reason: "not signed in" };
+  const sub = (typeof document.subject === "string" && document.subject) || decodeJwtSubject(token);
+  return { kind: "ok", sub: sub || undefined };
 }
-
-async function refreshedAccessToken(credentials: MachineCredentialProvider): Promise<string | undefined> {
-  try {
-    await credentials.refresh({ family: "plugin" });
-    return await credentials.getAccessToken({ family: "plugin" });
-  } catch {
-    return undefined;
-  }
-}
-
-/** The hosted issuer assumed for a credential that records no `serverTarget`. */
-const DEFAULT_ISSUER = "https://ai-game.dev";
