@@ -175,6 +175,53 @@ describe("setup-mcp --regenerate-key rewrites every other config of the project 
     expect(res.rewrittenConfigPaths).toEqual([]);
   });
 
+  it("an existing config that cannot be READ fails closed: the revoke is SKIPPED and the path named", async () => {
+    class LockedCursor extends MemFs {
+      override readFileSync(p: string): string {
+        if (p.replace(/\\/g, "/") === CURSOR.replace(/\\/g, "/")) throw new Error("EBUSY");
+        return super.readFileSync(p);
+      }
+    }
+    const fs = new LockedCursor({
+      [CURSOR]: jsonConfig("mcpServers", { type: "http", url: URL_PINNED, headers: { Authorization: `Bearer ${OLD}` } }),
+    });
+    let revoked = false;
+    const res = await setupMcp({
+      adapter: unityAdapter,
+      agentId: "claude-code",
+      projectPath: PROJECT,
+      regenerateKey: true,
+      fs,
+      projectKeyResolver: regenerating(() => (revoked = true)),
+    });
+    if (res.kind !== "success") throw res.error;
+    expect(revoked).toBe(false);
+    expect(res.warnings.join(" ")).toContain(CURSOR);
+  });
+
+  it("the rewrite leaves another agent's deprecated-name entry alone (only our header changes)", async () => {
+    const legacy = { command: "/old/unity-mcp-server", args: ["port=1"] };
+    const fs = new MemFs({
+      [CURSOR]: jsonConfig(
+        "mcpServers",
+        { type: "http", url: URL_PINNED, headers: { Authorization: `Bearer ${OLD}` } },
+      ).replace('"other":', `"Unity-MCP": ${JSON.stringify(legacy)},\n    "other":`),
+      [CODEX]: `[mcp_servers.Unity-MCP]\ncommand = "/old/unity-mcp-server"\n\n${codexConfig(OLD)}`,
+    });
+    const res = await setupMcp({
+      adapter: unityAdapter,
+      agentId: "claude-code",
+      projectPath: PROJECT,
+      regenerateKey: true,
+      fs,
+      projectKeyResolver: regenerating(),
+    });
+    if (res.kind !== "success") throw res.error;
+    expect(new Set(res.rewrittenConfigPaths)).toEqual(new Set([CURSOR, CODEX]));
+    expect((JSON.parse(fs.get(CURSOR)!)["mcpServers"] as Record<string, JsonNode>)["Unity-MCP"]).toEqual(legacy);
+    expect(fs.get(CODEX)).toContain("[mcp_servers.Unity-MCP]");
+  });
+
   it("regenerating for Antigravity writes the new key into BOTH of its files and rewrites the others", async () => {
     const fs = seeded();
     let revoked = false;

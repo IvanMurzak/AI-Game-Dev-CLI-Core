@@ -180,9 +180,18 @@ export function resolveSetupMcpPlan(input: SetupMcpPlanInput): SetupMcpPlan {
   };
 }
 
-/** A golden-vector-gated config writer for one client's format / body path. */
-function writerFor(configFormat: "json" | "toml", serverName: string, bodyPath: string): JsonAiAgentConfig | TomlAiAgentConfig {
-  return configFormat === "toml" ? new TomlAiAgentConfig({ serverName, bodyPath }) : new JsonAiAgentConfig({ serverName, bodyPath });
+/**
+ * A golden-vector-gated config writer for one client's format / body path. `deprecatedServerNames`
+ * defaults to the writers' own list; pass `[]` for a write that must touch only our entry.
+ */
+function writerFor(
+  configFormat: "json" | "toml",
+  serverName: string,
+  bodyPath: string,
+  deprecatedServerNames?: readonly string[],
+): JsonAiAgentConfig | TomlAiAgentConfig {
+  const options = { serverName, bodyPath, deprecatedServerNames };
+  return configFormat === "toml" ? new TomlAiAgentConfig(options) : new JsonAiAgentConfig(options);
 }
 
 /** The writer for `plan` (the same instance configures, checks and removes). */
@@ -401,6 +410,9 @@ export async function setupMcp(opts: SetupMcpOptions): Promise<SetupMcpResult> {
     }
 
     if (failed.length > 0) {
+      if (rewrittenConfigPaths?.length) {
+        warnings.push(`These other configs were moved to the new project key: ${rewrittenConfigPaths.join(", ")}.`);
+      }
       const partial = written.length > 0 ? ` (written: ${written.join(", ")})` : "";
       return {
         kind: "failure",
@@ -448,7 +460,7 @@ interface RewritePreviousKeyInput {
  * previous project key — an http entry pinned to this pin whose `Authorization` header (Codex:
  * `http_headers`) is `Bearer <previous key>` — to the new key, touching nothing else in the file.
  * Then verify the world: any existing config whose bytes still contain the previous key (a failed
- * write, an unpinned entry, a renamed server entry, an unparsable file) is reported in `failed`, and
+ * write, an unpinned entry, a renamed server entry, an unparsable or unreadable file) is reported in `failed`, and
  * the caller must then NOT revoke the previous key.
  */
 function rewritePreviousProjectKey(input: RewritePreviousKeyInput): SetupMcpWriteOutcome {
@@ -460,7 +472,9 @@ function rewritePreviousProjectKey(input: RewritePreviousKeyInput): SetupMcpWrit
     try {
       return io.readFileSync(configPath).includes(input.previousKey);
     } catch {
-      return false; // unreadable ⇒ it cannot present the previous key either
+      // An existing file WE cannot read (locked, another user's permissions) may still be readable by
+      // its agent — fail closed: count it as holding the key so the revoke is skipped, not a lockout.
+      return true;
     }
   };
   for (const agent of agentRegistry) {
@@ -470,7 +484,8 @@ function rewritePreviousProjectKey(input: RewritePreviousKeyInput): SetupMcpWrit
       seen.add(configPath);
       if (!io.existsSync(configPath) || !holdsPreviousKey(configPath)) continue;
 
-      const writer = writerFor(agent.configFormat, input.serverName, agent.bodyPath);
+      // No deprecated-name cleanup: this is another agent's file, and only our entry's header may change.
+      const writer = writerFor(agent.configFormat, input.serverName, agent.bodyPath, []);
       const entry: Record<string, unknown> | null = writer.readServerEntry(configPath, io);
       const headers = entry?.[headersKey];
       const url = entry?.["url"] ?? entry?.["serverUrl"];
@@ -536,7 +551,10 @@ export type RemoveMcpConfigResult =
       configPaths: string[];
       /** Existing files the entry was removed from. */
       removedPaths: string[];
-      /** Existing files that still carry the entry after the attempt (unwritable / unparsable). */
+      /**
+       * Existing files that still carry the entry after the attempt (e.g. unwritable). An unparsable
+       * file is in neither list — no entry can be read from it, so none is in effect.
+       */
       failedPaths: string[];
     }
   | { kind: "failure"; error: Error };
