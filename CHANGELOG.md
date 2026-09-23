@@ -21,7 +21,8 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
   `writeSetupMcpPlanPaths(plan, io)` reports `{ written, failed }` per file. Antigravity's
   `configPathDisplay` lists both paths.
 - **`getMcpConfigStatus(opts)`** — configured ⇔ EVERY candidate file exists AND carries a correct entry
-  (a missing or stale one makes the agent "not configured", so Configure creates/repairs both). Reports `configPaths`, `existingPaths`, `misconfiguredPaths`.
+  (a missing or stale one makes the agent "not configured", so Configure creates/repairs both). Reports
+  `configPaths`, `existingPaths`, `misconfiguredPaths`.
 - **`removeMcpConfig(opts)`** — removes the entry from every EXISTING candidate file (never creates or
   deletes a file); reports `removedPaths` and `failedPaths`.
 - `JsonAiAgentConfig` / `TomlAiAgentConfig` gain a read-only `readServerEntry(configPath, io)`.
