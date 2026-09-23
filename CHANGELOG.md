@@ -39,6 +39,8 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
   gains `previousKey` (present exactly when `revokePrevious` is). An injected resolver that returns
   `revokePrevious` without `previousKey` keeps the old behaviour.
 
+## 0.5.0 — 2026-09-23
+
 ### Added — project keys (BREAKING: `setupMcp` is now async)
 
 - **Cloud `setup-mcp` writes a per-project, non-expiring credential for EVERY agent.** A Cloud
