@@ -23,10 +23,15 @@ engine-specific adapters over it. The shared modules land here through the `auth
   - **agent-config writers** — `JsonAiAgentConfig` / `TomlAiAgentConfig`, byte-for-byte parity with
     the C# `com.IvanMurzak.McpPlugin.AgentConfig`, gated by `test/golden-vectors/AgentConfig.GoldenVectors.json`,
     plus the engine-neutral `agentRegistry`.
-  - **setup-mcp policy** — `setupMcp` / `resolveSetupMcpPlan`: pins the routing URL by default
-    (`/mcp/p/<pin-v2>` http, `project=<pin>` stdio; B4), with a `--no-pin` escape hatch, and writes a
-    static credential **only** on an explicit `--token` opt-in (M7 — the default config is
-    credential-free; the pin is routing-only, not part of the OAuth resource — M8).
+  - **setup-mcp policy** — `setupMcp` (async) / `resolveSetupMcpPlan`: pins the routing URL by
+    default (`/mcp/p/<pin-v2>` http, `project=<pin>` stdio; B4), with a `--no-pin` escape hatch. A
+    Cloud http config carries `Authorization: Bearer agd_pk_…` — a non-expiring **project key**
+    bound to the pin — for every client (Codex via `http_headers`); an explicit `--token` wins,
+    `oauth: true` writes a URL-only config, `regenerateKey: true` mints a fresh key. stdio and
+    local-server configs are unchanged.
+  - **project keys** — `getOrMintProjectKey` / `regenerateProjectKey` / `ProjectKeyStore`: the
+    `~/.ai-game-dev/project-keys.json` cache (DPAPI on Windows / `0600` on POSIX, atomic, unknown
+    entries preserved) and the `POST /api/mcp/project-keys` + `GET …/current` client.
   - **install-plugin policy** — `resolveInstallTarget`: resolves the project path
     `positional → --path → cwd` (B1) then marker-probes it, failing with a message listing exactly
     what was checked. Ancestor walk-up is out of scope (M5).

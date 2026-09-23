@@ -12,25 +12,35 @@ import {
 } from "./agents-registry.js";
 import { JsonAiAgentConfig, TomlAiAgentConfig, type JsonNode, type TomlValue, type AgentConfigFs, nodeFs } from "./agent-config.js";
 import { emitProgress, type ProgressCallback } from "./progress.js";
+import { toAuthServerRoot } from "./engine-adapter.js";
+import { MachineCredentialStore } from "./machine-credentials.js";
+import { MachineCredentialProvider } from "./credential-provider.js";
+import { HttpTokenRefresher } from "./token-refresher.js";
+import { getOrMintProjectKey, regenerateProjectKey, type ProjectKeyEngine, type ProjectKeyResult } from "./project-keys.js";
 
 /**
- * The **setup-mcp policy** (auth-fixes design 02 §T4 / defects B4+B8, decision M7+M8) — the shared
- * logic that writes a project's AI-agent MCP-client config. It closes B4 by **pinning the URL by
- * default**: the http config points at `<base>/mcp/p/<pin-v2>` and the stdio config carries a
- * `project=<pin>` arg, so the config routes strictly to this project's engine instance even when the
- * account has several. `--no-pin` is the escape hatch (unpinned URL / no `project=` arg).
+ * The **setup-mcp policy** — the shared logic that writes a project's AI-agent MCP-client config.
  *
- * **Credential policy (M7):** the default config is credential-free. A static `Authorization: Bearer`
- * header (http) or a `token=` arg (stdio) is emitted ONLY on an explicit `--token` opt-in (a PAT), or
- * for a client that cannot do native MCP OAuth (`supportsOAuth === false`). It is NEVER written merely
- * because the server requires auth — an OAuth-capable client authorizes natively (RFC 9728), and a
- * static header both fails against the hosted endpoint and suppresses that native flow.
+ * **Routing (B4/M8):** the http config points at `<base>/mcp/p/<pin-v2>` and the stdio config
+ * carries a `project=<pin>` arg, so the config routes strictly to this project's engine instance even
+ * when the account has several. `--no-pin` is the escape hatch. The pin is a routing path segment,
+ * never part of the OAuth resource (the canonical resource stays `https://ai-game.dev/mcp`).
  *
- * **Routing-vs-identity (M8):** the pin is a routing path segment, NOT part of the OAuth resource. The
- * canonical resource stays `https://ai-game.dev/mcp`; the pin lives only in the connection URL.
+ * **Credential policy (project-keys contract §7, owner rulings 2026-09-23):**
+ *   - an explicit `--token` always wins (http `Authorization` header / stdio `token=` arg);
+ *   - otherwise a **Cloud** http config (a non-loopback hub URL) carries `Authorization: Bearer
+ *     agd_pk_…` — a non-expiring **project key** strictly bound to this project's pin, reused from
+ *     `~/.ai-game-dev/project-keys.json` or minted with the machine credential — for EVERY client,
+ *     through each client's own static-header mechanism (`headers`, Codex `http_headers`);
+ *   - `--oauth` opts out: a URL-only config (the client authorizes natively, RFC 9728) and any
+ *     previously written header is removed;
+ *   - `--regenerate-key` mints a fresh key, overwrites the cache entry and rewrites the config;
+ *   - with no machine login (or when minting fails) the config falls back to URL-only, with a warning;
+ *   - stdio configs and local-server (loopback) configs are unchanged.
  *
- * {@link resolveSetupMcpPlan} is the PURE decision (no IO, fully testable); {@link setupMcp} runs the
- * plan and writes the file via the golden-vector-gated {@link JsonAiAgentConfig}/{@link TomlAiAgentConfig}.
+ * {@link resolveSetupMcpPlan} is the PURE decision (no IO, fully testable); {@link setupMcp} resolves
+ * the project key, runs the plan and writes the file via the golden-vector-gated
+ * {@link JsonAiAgentConfig}/{@link TomlAiAgentConfig}.
  */
 
 /** The default hosted MCP hub URL (the canonical OAuth resource — decision M8). */
@@ -57,8 +67,12 @@ export interface SetupMcpPlanInput {
   timeoutMs: number;
   /** The `authorization` mode arg (`none` / `required`). */
   authorization: string;
-  /** An explicit PAT (`--token`); its presence is the ONLY thing that emits a static credential. */
+  /** An explicit PAT (`--token`); wins over {@link projectKey}. */
   token?: string;
+  /** The project key (`agd_pk_…`) for a Cloud http config. Ignored for stdio. */
+  projectKey?: string;
+  /** Remove any previously written auth header when none is emitted (the `--oauth` opt-out). */
+  clearAuthHeader?: boolean;
   /** An explicit base URL override (hosted or local). Defaults to {@link DEFAULT_HOSTED_MCP_URL}. */
   url?: string;
   /** The `--no-pin` escape hatch: write an unpinned URL / omit the `project=` arg. */
@@ -66,6 +80,9 @@ export interface SetupMcpPlanInput {
   /** The resolved server binary path (from the adapter); defaults to `adapter.serverBinaryPath`. */
   serverPath?: string;
 }
+
+/** The credential a written config carries: an explicit PAT, a project key, or none (URL-only). */
+export type SetupMcpCredential = "token" | "project-key" | "none";
 
 /** The fully-resolved plan a caller can inspect before (or instead of) writing. */
 export interface SetupMcpPlan {
@@ -79,8 +96,10 @@ export interface SetupMcpPlan {
   resolvedUrl?: string;
   /** The stdio server-args vector (incl. `project=<pin>` unless `--no-pin`). Only for stdio. */
   stdioArgs?: string[];
-  /** Whether a static `Authorization` header / `token=` arg is emitted (M7). */
+  /** Whether a static `Authorization` header / `token=` arg is emitted. */
   emitAuthHeader: boolean;
+  /** Which credential the config carries. */
+  credential: SetupMcpCredential;
   props: AgentProps;
   removeKeys: string[];
   requiredKeys: string[];
@@ -93,11 +112,14 @@ export interface SetupMcpPlan {
 export function resolveSetupMcpPlan(input: SetupMcpPlanInput): SetupMcpPlan {
   const { adapter, agent, transport, pin, port, timeoutMs, authorization, noPin } = input;
 
-  const supportsOAuth = agent.supportsOAuth !== false;
-  const patOptIn = typeof input.token === "string" && input.token.length > 0;
-  const token = patOptIn ? input.token! : "";
-  // M7: a static credential is emitted ONLY on an explicit --token opt-in, or for a non-OAuth client.
-  const emitAuthHeader = token.length > 0 && (patOptIn || !supportsOAuth);
+  // An explicit --token wins; a project key applies to the http transport only (stdio unchanged).
+  const credential: SetupMcpCredential = input.token
+    ? "token"
+    : transport === "http" && input.projectKey
+      ? "project-key"
+      : "none";
+  const secret = credential === "token" ? input.token! : credential === "project-key" ? input.projectKey! : "";
+  const emitAuthHeader = credential !== "none";
 
   const configPath = agent.getConfigPath(input.projectRoot);
   const pinned = !noPin;
@@ -113,7 +135,7 @@ export function resolveSetupMcpPlan(input: SetupMcpPlanInput): SetupMcpPlan {
       port,
       timeoutMs,
       authorization,
-      token: emitAuthHeader ? token : undefined,
+      token: emitAuthHeader ? secret : undefined,
     });
     if (pinned) stdioArgsVec.push(`${PROJECT_ARG_NAME}=${pin}`);
     props = agent.getStdioProps(serverPath, stdioArgsVec);
@@ -121,9 +143,12 @@ export function resolveSetupMcpPlan(input: SetupMcpPlanInput): SetupMcpPlan {
   } else {
     const base = input.url ?? DEFAULT_HOSTED_MCP_URL;
     resolvedUrl = pinned ? pinUrl(base, pin) : stripPinFromUrl(base);
-    const headers = emitAuthHeader ? { Authorization: `Bearer ${token}` } : undefined;
+    const headers = emitAuthHeader ? { Authorization: `Bearer ${secret}` } : undefined;
     props = agent.getHttpProps(resolvedUrl, headers);
-    removeKeys = agent.httpRemoveKeys;
+    removeKeys =
+      !emitAuthHeader && input.clearAuthHeader
+        ? [...agent.httpRemoveKeys, agent.httpHeadersKey ?? "headers"]
+        : agent.httpRemoveKeys;
   }
 
   const requiredKeys = Object.keys(props).filter((k) => REQUIRED_PROP_KEYS.has(k));
@@ -138,6 +163,7 @@ export function resolveSetupMcpPlan(input: SetupMcpPlanInput): SetupMcpPlan {
     resolvedUrl,
     stdioArgs: stdioArgsVec,
     emitAuthHeader,
+    credential,
     props,
     removeKeys: [...removeKeys],
     requiredKeys,
@@ -171,8 +197,20 @@ export interface SetupMcpOptions {
   transport?: McpTransport;
   /** The project root; defaults to `process.cwd()`. Must exist. */
   projectPath?: string;
-  /** An explicit PAT (`--token`) — the ONLY input that writes a static credential (M7). */
+  /** An explicit PAT (`--token`) — always wins over the project key. */
   token?: string;
+  /** `--oauth`: write a URL-only config (native client OAuth), removing any previous auth header. */
+  oauth?: boolean;
+  /** `--regenerate-key`: mint a fresh project key (overwriting the cached one) and rewrite the config. */
+  regenerateKey?: boolean;
+  /** Display machine name recorded on a minted key; defaults to `os.hostname()`. */
+  machineName?: string;
+  /**
+   * Resolves the project key for a Cloud http config. Defaults to {@link createProjectKeyResolver}
+   * over the machine credential store; injectable for tests and for callers (the App) that own a
+   * credential provider already.
+   */
+  projectKeyResolver?: ProjectKeyResolver;
   /** An explicit base URL override (hosted or local). */
   url?: string;
   /** `--no-pin`: write an unpinned URL / omit the `project=` arg (B4 escape hatch). */
@@ -197,16 +235,22 @@ export type SetupMcpResult =
       pinned: boolean;
       resolvedUrl?: string;
       emitAuthHeader: boolean;
+      /** Which credential the written config carries. */
+      credential: SetupMcpCredential;
+      /** The server-side id of the project key written (credential `project-key` only). */
+      projectKeyId?: string;
+      /** Whether the project key was reused from the cache or freshly minted. */
+      projectKeySource?: "reused" | "minted";
       warnings: string[];
     }
   | { kind: "failure"; error: Error; warnings: string[] };
 
 /**
- * Configure an AI agent's MCP client for a project — resolve the agent + project + pin/port, build the
- * T4 plan, and write it. Library-safe: never throws past the boundary. `projectPath` defaults to cwd
+ * Configure an AI agent's MCP client for a project — resolve the agent + project + pin/port, resolve
+ * the Cloud project key (§7), build the plan, and write it. Library-safe: never throws past the boundary. `projectPath` defaults to cwd
  * (closing the "path required" half of B1 for the config surface too).
  */
-export function setupMcp(opts: SetupMcpOptions): SetupMcpResult {
+export async function setupMcp(opts: SetupMcpOptions): Promise<SetupMcpResult> {
   const warnings: string[] = [];
   try {
     if (!opts.agentId) {
@@ -230,10 +274,52 @@ export function setupMcp(opts: SetupMcpOptions): SetupMcpResult {
     const pin = derivePinV2(projectRoot);
     const port = derivePortV2(projectRoot);
 
+    const base = opts.url ?? DEFAULT_HOSTED_MCP_URL;
+    const hasToken = typeof opts.token === "string" && opts.token.length > 0;
+    const cloud = transport === "http" && isCloudUrl(base);
+    if (opts.regenerateKey && (opts.oauth || hasToken || !cloud)) {
+      return {
+        kind: "failure",
+        warnings,
+        error: new Error(
+          "--regenerate-key applies only to a Cloud http config without --oauth / --token " +
+            "(project keys are not used for stdio or a local server).",
+        ),
+      };
+    }
+
     emitProgress(opts.onProgress, {
       phase: "start",
       message: `Configuring ${agent.name} (${transport}) for ${projectRoot}`,
     });
+
+    let projectKey: string | undefined;
+    let projectKeyId: string | undefined;
+    let projectKeySource: "reused" | "minted" | undefined;
+    if (cloud && !hasToken && !opts.oauth) {
+      const resolver = opts.projectKeyResolver ?? createProjectKeyResolver(opts.adapter);
+      const outcome = await resolver({
+        issuer: toAuthServerRoot(base),
+        pin,
+        engine: opts.adapter.engine,
+        label: projectRoot,
+        machineName: opts.machineName,
+        regenerate: opts.regenerateKey === true,
+      });
+      if (outcome.kind === "ok") {
+        projectKey = outcome.key;
+        projectKeyId = outcome.keyId;
+        projectKeySource = outcome.source;
+        warnings.push(...outcome.warnings);
+      } else if (opts.regenerateKey) {
+        return { kind: "failure", warnings, error: new Error(`Could not regenerate the project key: ${outcome.reason}`) };
+      } else {
+        warnings.push(
+          `No project key written (${outcome.reason}) — the config is URL-only and the agent must sign in with its own OAuth. ` +
+            "Sign in on this machine and run setup-mcp again to write a project key.",
+        );
+      }
+    }
 
     const plan = resolveSetupMcpPlan({
       adapter: opts.adapter,
@@ -245,15 +331,11 @@ export function setupMcp(opts: SetupMcpOptions): SetupMcpResult {
       timeoutMs: opts.timeoutMs ?? 10000,
       authorization: opts.authorization ?? "none",
       token: opts.token,
+      projectKey,
+      clearAuthHeader: opts.oauth === true,
       url: opts.url,
       noPin: opts.noPin === true,
     });
-
-    if (transport === "http" && plan.emitAuthHeader && isProjectScoped(plan.configPath, projectRoot)) {
-      warnings.push(
-        `Wrote an access token into project-scoped config "${plan.configPath}" — it is under the project root and may be committed. Prefer an env-var / user-scope credential (design 03 Flow C).`,
-      );
-    }
 
     writeSetupMcpPlan(plan, opts.fs ?? nodeFs);
 
@@ -267,6 +349,9 @@ export function setupMcp(opts: SetupMcpOptions): SetupMcpResult {
       pinned: plan.pinned,
       resolvedUrl: plan.resolvedUrl,
       emitAuthHeader: plan.emitAuthHeader,
+      credential: plan.credential,
+      projectKeyId,
+      projectKeySource,
       warnings,
     };
   } catch (err) {
@@ -277,18 +362,73 @@ export function setupMcp(opts: SetupMcpOptions): SetupMcpResult {
 /** Convert a registry JSON prop value to a TOML value (codex only produces TOML-representable props). */
 function toTomlValue(value: JsonNode): TomlValue {
   if (typeof value === "string" || typeof value === "boolean" || typeof value === "number") return value;
+  if (value && typeof value === "object" && !Array.isArray(value) && Object.values(value).every((v) => typeof v === "string")) {
+    return value as Record<string, string>; // an inline table — Codex `http_headers`
+  }
   if (Array.isArray(value) && value.every((v) => typeof v === "string")) return value as string[];
   if (Array.isArray(value) && value.every((v) => typeof v === "number")) return value as number[];
   if (Array.isArray(value) && value.every((v) => typeof v === "boolean")) return value as boolean[];
   throw new Error(`Value is not representable in a TOML agent config: ${JSON.stringify(value)}`);
 }
 
-/** True when `configPath` is at/under `projectRoot` (separator/case-insensitive). */
-function isProjectScoped(configPath: string, projectRoot: string): boolean {
-  const norm = (p: string): string => path.resolve(p).replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-  const root = norm(projectRoot);
-  const target = norm(configPath);
-  return target === root || target.startsWith(root + "/");
+/**
+ * True when `rawUrl` addresses a Cloud (hosted) hub — i.e. anything but a loopback / `localhost`
+ * local server. Project keys are minted only for Cloud configs (§7: local-server mode unchanged).
+ */
+export function isCloudUrl(rawUrl: string): boolean {
+  let host: string;
+  try {
+    host = new URL(rawUrl).hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  } catch {
+    return false;
+  }
+  if (host === "localhost" || host.endsWith(".localhost") || host === "::1" || host === "0.0.0.0") return false;
+  return !/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
+}
+
+/** One project-key resolution request (built by {@link setupMcp}). */
+export interface ProjectKeyRequest {
+  /** The issuer (AS root) of the Cloud hub, e.g. `https://ai-game.dev`. */
+  issuer: string;
+  pin: string;
+  engine: ProjectKeyEngine;
+  /** Display label (the project folder path). */
+  label?: string;
+  machineName?: string;
+  /** Force a fresh mint (`--regenerate-key`). */
+  regenerate: boolean;
+}
+
+/** Resolves a project key for setup-mcp — never throws (see {@link ProjectKeyResult}). */
+export type ProjectKeyResolver = (request: ProjectKeyRequest) => Promise<ProjectKeyResult>;
+
+/**
+ * The default {@link ProjectKeyResolver}: the machine credential store + provider (agent → plugin →
+ * legacy family, refreshed under the store lock with the adapter's client id as the legacy default),
+ * the `~/.ai-game-dev/project-keys.json` cache, and the HTTP mint/validate transport.
+ */
+export function createProjectKeyResolver(
+  adapter: EngineAdapter,
+  credentials?: MachineCredentialProvider,
+): ProjectKeyResolver {
+  return async (request) => {
+    const provider =
+      credentials ??
+      new MachineCredentialProvider(
+        new MachineCredentialStore(),
+        new HttpTokenRefresher({ defaultServerBaseUrl: request.issuer }),
+        { defaultClientId: adapter.clientId },
+      );
+    const options = {
+      pin: request.pin,
+      engine: request.engine,
+      issuer: request.issuer,
+      label: request.label,
+      machineName: request.machineName,
+      credentials: provider,
+    };
+    return request.regenerate ? regenerateProjectKey(options) : getOrMintProjectKey(options);
+  };
 }
 
 export { getAgentIds, getAgentById };

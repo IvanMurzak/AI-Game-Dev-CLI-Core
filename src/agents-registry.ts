@@ -33,13 +33,17 @@ export interface AgentDefinition {
   /** The body path the server entry nests under (e.g. `mcpServers`, `servers`, `mcp`, `mcp_servers`). */
   readonly bodyPath: string;
   /**
-   * Whether this client can complete native MCP OAuth (RFC 9728) itself. `undefined`/`true` (the
-   * default) means the config is credential-free — the client authorizes natively, so writing a
-   * static `Authorization` header would both fail (hosted endpoint 401s a plugin token) and suppress
-   * the client's own OAuth. `false` marks a client that cannot do MCP OAuth (it may receive a header
-   * via the explicit PAT fallback). See design 03 Flow A / decision D11 / M7.
+   * Whether this client can complete native MCP OAuth (RFC 9728) itself (`undefined` = yes).
+   * Informational: since project keys (contract §7) a Cloud config carries the project-key header
+   * for EVERY client regardless; `--oauth` writes the URL-only config for the ones that can.
    */
   readonly supportsOAuth?: boolean;
+  /**
+   * The server-entry key {@link getHttpProps} stores static headers under (default `headers`;
+   * Codex: `http_headers`). setup-mcp removes it on the `--oauth` opt-out so a stale header never
+   * suppresses the client's native OAuth.
+   */
+  readonly httpHeadersKey?: string;
   /** Absolute config-file path for a project root (some clients ignore it — user-global config). */
   getConfigPath(projectPath: string): string;
   /** Build the stdio server-entry props from the resolved server binary path + args vector. */
@@ -190,10 +194,10 @@ export const agentRegistry: readonly AgentDefinition[] = [
     configPathDisplay: "~/.gemini/config/mcp_config.json",
     configFormat: "json",
     bodyPath: "mcpServers",
-    // Antigravity does not model an auth header — the `headers` param is intentionally ignored.
+    // Antigravity reads remote servers from `serverUrl` and static headers from `headers`.
     getConfigPath: () => path.join(home(), ".gemini", "config", "mcp_config.json"),
     getStdioProps: (serverPath, args) => ({ disabled: false, command: serverPath, args }),
-    getHttpProps: (url) => ({ disabled: false, serverUrl: url }),
+    getHttpProps: (url, headers) => ({ disabled: false, serverUrl: url, ...withHeaders(headers) }),
     stdioRemoveKeys: ["url", "serverUrl", "type"],
     httpRemoveKeys: ["command", "args", "url", "type"],
   },
@@ -246,7 +250,9 @@ export const agentRegistry: readonly AgentDefinition[] = [
     configPathDisplay: ".codex/config.toml",
     configFormat: "toml",
     bodyPath: "mcp_servers",
-    // Codex TOML http config models no auth header, and its stdio args carry no token (M7).
+    // Codex takes static http headers from the `http_headers` inline table; its stdio args carry no
+    // token (M7).
+    httpHeadersKey: "http_headers",
     getConfigPath: (p) => path.join(p, ".codex", "config.toml"),
     getStdioProps: (serverPath, args) => ({
       enabled: true,
@@ -254,7 +260,13 @@ export const agentRegistry: readonly AgentDefinition[] = [
       args: args.filter((a) => !a.startsWith("token=")),
       tool_timeout_sec: 300,
     }),
-    getHttpProps: (url) => ({ enabled: true, url, tool_timeout_sec: 300, startup_timeout_sec: 30 }),
+    getHttpProps: (url, headers) => ({
+      enabled: true,
+      url,
+      tool_timeout_sec: 300,
+      startup_timeout_sec: 30,
+      ...(headers ? { http_headers: headers } : {}),
+    }),
     stdioRemoveKeys: ["url", "type", "startup_timeout_sec"],
     httpRemoveKeys: ["command", "args", "type"],
   },

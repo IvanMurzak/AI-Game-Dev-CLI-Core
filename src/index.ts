@@ -341,15 +341,56 @@ export type { ProjectMarker } from "./project-marker.js";
 export { requireProjectPath, requireExistingPath, resolveProjectPathLadder } from "./validation.js";
 export type { ValidatedPath } from "./validation.js";
 
-// ── setup-mcp policy (T4/M7/M8) ─────────────────────────────────────────────────────────────────
+// ── setup-mcp policy (T4/M8 + project keys §7) ─────────────────────────────────────────────────────────────────
 export {
   setupMcp,
   resolveSetupMcpPlan,
   writeSetupMcpPlan,
   DEFAULT_HOSTED_MCP_URL,
   PROJECT_ARG_NAME,
+  isCloudUrl,
+  createProjectKeyResolver,
 } from "./setup-mcp.js";
-export type { SetupMcpOptions, SetupMcpResult, SetupMcpPlan, SetupMcpPlanInput, McpTransport } from "./setup-mcp.js";
+export type {
+  SetupMcpOptions,
+  SetupMcpResult,
+  SetupMcpPlan,
+  SetupMcpPlanInput,
+  SetupMcpCredential,
+  McpTransport,
+  ProjectKeyRequest,
+  ProjectKeyResolver,
+} from "./setup-mcp.js";
+
+// ── project keys (per-project, non-expiring agent credential; project-keys contract §6/§7) ──────
+export {
+  ProjectKeyStore,
+  HttpProjectKeyTransport,
+  getOrMintProjectKey,
+  regenerateProjectKey,
+  projectKeyCacheKey,
+  issuerOrigin,
+  PROJECT_KEYS_FILE_NAME,
+  PROJECT_KEYS_SCHEMA_VERSION,
+  PROJECT_KEY_PREFIX,
+  PROJECT_KEYS_API_PATH,
+  PROJECT_KEYS_CURRENT_API_PATH,
+  DEFAULT_PROJECT_KEY_HTTP_TIMEOUT_MS,
+} from "./project-keys.js";
+export type {
+  ProjectKeyEntry,
+  ProjectKeysDocument,
+  ProjectKeyStoreState,
+  ProjectKeyEngine,
+  ProjectKeyMintRequest,
+  ProjectKeyMintResult,
+  MintedProjectKey,
+  ProjectKeyValidation,
+  ProjectKeyTransport,
+  HttpProjectKeyTransportOptions,
+  GetOrMintProjectKeyOptions,
+  ProjectKeyResult,
+} from "./project-keys.js";
 
 // ── install-plugin resolution policy (T5/B1) ────────────────────────────────────────────────────
 export { resolveInstallTarget, probeProjectMarkers } from "./install-plugin.js";

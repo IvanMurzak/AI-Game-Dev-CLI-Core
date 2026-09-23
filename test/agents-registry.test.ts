@@ -41,10 +41,18 @@ describe("agents-registry", () => {
     expect((stdio["args"] as string[]).some((a) => a.startsWith("token="))).toBe(false);
   });
 
-  it("antigravity ignores auth headers (uses serverUrl)", () => {
+  it("antigravity uses serverUrl + its documented `headers` map", () => {
     const anti = getAgentById("antigravity")!;
     const http = anti.getHttpProps("https://x", { Authorization: "Bearer T" });
-    expect(http["headers"]).toBeUndefined();
+    expect(http["headers"]).toEqual({ Authorization: "Bearer T" });
     expect(http["serverUrl"]).toBe("https://x");
+    expect(anti.getHttpProps("https://x", undefined)["headers"]).toBeUndefined();
+  });
+
+  it("codex puts static headers in its documented `http_headers` table", () => {
+    const codex = getAgentById("codex")!;
+    expect(codex.httpHeadersKey).toBe("http_headers");
+    expect(codex.getHttpProps("https://x", { Authorization: "Bearer T" })["http_headers"]).toEqual({ Authorization: "Bearer T" });
+    expect(codex.getHttpProps("https://x", undefined)["http_headers"]).toBeUndefined();
   });
 });
