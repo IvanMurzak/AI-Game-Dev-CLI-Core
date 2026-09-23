@@ -59,6 +59,9 @@ export type ProjectKeyEngine = "unity" | "godot" | "unreal" | "unknown";
 
 const PIN_RE = /^[0-9a-f]{8}$/;
 
+/** The {@link ProjectKeyEntry} fields this package owns; `put` replaces them wholesale. */
+const KNOWN_ENTRY_FIELDS = ["key", "keyId", "pin", "issuer", "sub", "engine", "createdAt"] as const;
+
 /** One cached key (contract §6). Unknown fields are preserved on read. */
 export interface ProjectKeyEntry {
   /** The raw key (`agd_pk_…`). Secret. */
@@ -201,8 +204,10 @@ export class ProjectKeyStore {
     const current: ProjectKeysDocument = state.status === "ok" ? state.document : {};
     const name = projectKeyCacheKey(entry.issuer, entry.pin);
     const keys: Record<string, ProjectKeyEntry> = isPlainObject(current.keys) ? { ...current.keys } : {};
-    // Replace the known fields but keep the replaced entry's unknown (forward-compat) fields.
-    const previous = isPlainObject(keys[name]) ? keys[name] : {};
+    // Replace the known fields but keep the replaced entry's unknown (forward-compat) fields. A known
+    // field is never inherited: an entry put without `sub` must not keep the previous account's `sub`.
+    const previous: Record<string, unknown> = isPlainObject(keys[name]) ? { ...keys[name] } : {};
+    for (const field of KNOWN_ENTRY_FIELDS) delete previous[field];
     keys[name] = { ...previous, ...entry, pin: normalizePin(entry.pin), issuer: issuerOrigin(entry.issuer) };
     const document: ProjectKeysDocument = {
       ...current,
@@ -275,15 +280,23 @@ export class HttpProjectKeyTransport implements ProjectKeyTransport {
   }
 
   async mint(request: ProjectKeyMintRequest): Promise<ProjectKeyMintResult> {
+    let url: string;
+    let requestPin: string;
+    try {
+      url = `${issuerOrigin(request.issuer)}${PROJECT_KEYS_API_PATH}`;
+      requestPin = normalizePin(request.pin);
+    } catch (err) {
+      return { ok: false, status: 0, reason: err instanceof Error ? err.message : String(err) };
+    }
     const body: Record<string, string> = {
-      project_pin: normalizePin(request.pin),
+      project_pin: requestPin,
       engine: request.engine,
       machine_name: request.machineName,
     };
     if (request.label) body["label"] = request.label;
     let response: Response;
     try {
-      response = await this._fetch(`${issuerOrigin(request.issuer)}${PROJECT_KEYS_API_PATH}`, {
+      response = await this._fetch(url, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${request.accessToken}`,
@@ -307,7 +320,7 @@ export class HttpProjectKeyTransport implements ProjectKeyTransport {
     if (typeof key !== "string" || !key.startsWith(PROJECT_KEY_PREFIX) || (typeof keyId !== "string" && typeof keyId !== "number")) {
       return { ok: false, status: response.status, reason: "malformed mint response" };
     }
-    if (typeof pin !== "string" || pin.toLowerCase() !== request.pin.toLowerCase()) {
+    if (typeof pin !== "string" || pin.toLowerCase() !== requestPin) {
       return { ok: false, status: response.status, reason: "mint response is bound to a different project pin" };
     }
     const createdAt = typeof json?.["created_at"] === "string" ? (json["created_at"] as string) : new Date().toISOString();
@@ -475,9 +488,10 @@ function currentLogin(credentials: MachineCredentialProvider, issuer: string): L
   }
   if (!document) return { kind: "no-login", reason: "not signed in" };
   const target = typeof document.serverTarget === "string" && document.serverTarget ? document.serverTarget : DEFAULT_CLOUD_BASE_URL;
+  const origin = issuerOrigin(issuer);
   const targetOrigin = safeOrigin(target);
-  if (targetOrigin === undefined || targetOrigin !== issuerOrigin(issuer)) {
-    return { kind: "no-login", reason: `the machine credential belongs to ${targetOrigin ?? "another server"}, not ${issuerOrigin(issuer)}` };
+  if (targetOrigin !== origin) {
+    return { kind: "no-login", reason: `the machine credential belongs to ${targetOrigin ?? "another server"}, not ${origin}` };
   }
   const families = effectiveFamilies(document);
   const token = (families.agent ?? families.plugin ?? families.legacy)?.accessToken;

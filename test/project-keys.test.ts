@@ -144,6 +144,15 @@ describe("ProjectKeyStore — ~/.ai-game-dev/project-keys.json (contract §6)", 
     expect(doc.keys[`${ISSUER}#${PIN}`].key).toBe("agd_pk_cached");
   });
 
+  it("a replacing put never inherits a KNOWN field (sub/engine/createdAt) from the replaced entry", () => {
+    const dir = freshDir();
+    const store = new ProjectKeyStore(dir, identityCredentialCodec);
+    seedCache(store, "usr_previous_account");
+    store.put({ key: "agd_pk_new", keyId: "k1", pin: PIN, issuer: ISSUER });
+    const doc = JSON.parse(fs.readFileSync(store.filePath, "utf-8"));
+    expect(doc.keys[`${ISSUER}#${PIN}`]).toEqual({ key: "agd_pk_new", keyId: "k1", pin: PIN, issuer: ISSUER });
+  });
+
   it("applies the at-rest codec to the whole document and leaves no temp litter", () => {
     const dir = freshDir();
     const xor: CredentialCodec = {
@@ -388,6 +397,14 @@ describe("HttpProjectKeyTransport — the contract §2 wire shape", () => {
     expect((await bad.mint(req)).ok).toBe(false);
     const other = new HttpProjectKeyTransport({ fetchImpl: fetchStub(201, { key: "agd_pk_x", key_id: "1", project_pin: "ffffffff" }, []) });
     expect((await other.mint(req)).ok).toBe(false);
+  });
+
+  it("an invalid pin or issuer is a status-0 failure — never a throw, never a request", async () => {
+    const calls: Call[] = [];
+    const t = new HttpProjectKeyTransport({ fetchImpl: fetchStub(201, {}, calls) });
+    await expect(t.mint({ ...req, pin: "nothex!!" })).resolves.toMatchObject({ ok: false, status: 0 });
+    await expect(t.mint({ ...req, issuer: "ai-game.dev" })).resolves.toMatchObject({ ok: false, status: 0, reason: expect.stringContaining("invalid issuer") });
+    expect(calls).toHaveLength(0);
   });
 
   it("a network failure is status 0 (never throws)", async () => {
