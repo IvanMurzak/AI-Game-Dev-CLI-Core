@@ -9,6 +9,16 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
 
 ## Unreleased
 
+## 0.6.0 — 2026-09-24
+
+> **Upgrading from 0.5.x:** consumers on `^0.5.0` do not receive 0.6.0 (0.x MINOR); widen the
+> range to `^0.6.0` to get the `regenerateKey` fix below. Changes a consumer can observe:
+> `SetupMcpPlan.configPaths` and the success result's `configPaths` are new REQUIRED fields, and
+> `writeSetupMcpPlan` now writes `plan.configPaths` (not `plan.configPath`), so a hand-built plan
+> must carry them. `setupMcp` now returns `failure` when a config file cannot be written, for EVERY
+> agent (0.5.x reported `success`). An Antigravity install configured by 0.5.x in only one of its two
+> files now reports "not configured" until Configure is re-run.
+
 ### Added — Antigravity's two config locations; regenerate keeps the other agents working
 
 - **Antigravity is configured in BOTH of its candidate global files** —
@@ -44,7 +54,7 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
 > **Upgrading from 0.4.x:** breaking on the 0.x line — consumers on `^0.4.x` do not receive
 > 0.5.0; widen the range to `^0.5.0` and `await setupMcp(...)`.
 >
-> **Known issue (fixed under Unreleased):** `setupMcp({ regenerateKey: true })` rewrites only the one
+> **Known issue (fixed in 0.6.0 — widen to `^0.6.0`):** `setupMcp({ regenerateKey: true })` rewrites only the one
 > agent's config and then revokes the previous key, which the project's other agent configs still
 > carry — they start getting 401 until re-run. The previous key is revoked only when the new key was
 > cached for the same signed-in account (`sub`) and its `keyId` differs; otherwise it stays live.
