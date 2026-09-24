@@ -9,6 +9,8 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
 
 ## Unreleased
 
+## 0.6.0 — 2026-09-24
+
 ### Added — Antigravity's two config locations; regenerate keeps the other agents working
 
 - **Antigravity is configured in BOTH of its candidate global files** —
