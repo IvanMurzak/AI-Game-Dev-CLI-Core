@@ -46,7 +46,7 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
 > **Upgrading from 0.4.x:** breaking on the 0.x line — consumers on `^0.4.x` do not receive
 > 0.5.0; widen the range to `^0.5.0` and `await setupMcp(...)`.
 >
-> **Known issue (fixed under Unreleased):** `setupMcp({ regenerateKey: true })` rewrites only the one
+> **Known issue (fixed in 0.6.0):** `setupMcp({ regenerateKey: true })` rewrites only the one
 > agent's config and then revokes the previous key, which the project's other agent configs still
 > carry — they start getting 401 until re-run. The previous key is revoked only when the new key was
 > cached for the same signed-in account (`sub`) and its `keyId` differs; otherwise it stays live.
