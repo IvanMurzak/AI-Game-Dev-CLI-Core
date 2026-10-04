@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   ClientRegistrationError,
+  HttpTokenExchangeClient,
   HttpTokenRefresher,
   MCP_AGENT_SCOPE,
   authCodeLogin,
@@ -114,6 +115,32 @@ describe("the sign-in path keeps the transport cause (GlitchTip #364)", () => {
     expect((error as Error).message).toContain("ENETUNREACH");
   });
 
+  it("a token exchange that cannot connect AFTER the browser approved keeps the cause", async () => {
+    // The browser approves: redirect to the loopback with a code, as the AS would.
+    const openBrowser = (url: string) => {
+      const authorize = new URL(url);
+      const redirect = new URL(authorize.searchParams.get("redirect_uri")!);
+      redirect.searchParams.set("state", authorize.searchParams.get("state")!);
+      redirect.searchParams.set("code", "auth-code-xyz");
+      void fetch(redirect.toString()).catch(() => {});
+    };
+    const result = await authCodeLogin({
+      serverBaseUrl: "https://ai-game.dev",
+      clientId: "unity-mcp-cli", // static id: no discovery / registration, straight to the browser
+      transport: {
+        exchangeCode: async () => {
+          throw happyEyeballsFetchFailure();
+        },
+      },
+      openBrowser,
+      timeoutMs: 4000,
+    });
+
+    expect(result).toMatchObject({ ok: false, reason: "error" });
+    if (result.ok) return;
+    expect(result.message).toMatch(/^Cannot reach the authorization server: fetch failed \(cause: AggregateError ETIMEDOUT/);
+  });
+
   it("deviceLogin keeps the cause too", async () => {
     const transport: DeviceAuthTransport = {
       requestDeviceCode: async () => {
@@ -138,6 +165,17 @@ describe("the sign-in path keeps the transport cause (GlitchTip #364)", () => {
       fetchImpl: rejectingFetch,
     });
     const result = await refresher.refresh({ refreshToken: "rt", clientId: "agd_client_x" });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toContain("connect ETIMEDOUT 51.81.222.213:443");
+  });
+
+  it("a token exchange (plugin plane) that cannot connect reports the cause", async () => {
+    const client = new HttpTokenExchangeClient({
+      defaultServerBaseUrl: "https://ai-game.dev",
+      fetchImpl: rejectingFetch,
+    });
+    const result = await client.exchange({ subjectToken: "at", clientId: "agd_client_x" });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toContain("connect ETIMEDOUT 51.81.222.213:443");
