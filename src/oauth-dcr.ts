@@ -749,4 +749,3 @@ function stringArrayOrUndefined(value: unknown): string[] | undefined {
   const strings = value.filter((entry): entry is string => typeof entry === "string");
   return strings.length > 0 ? strings : undefined;
 }
-

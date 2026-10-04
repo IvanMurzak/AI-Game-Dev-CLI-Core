@@ -78,6 +78,18 @@ describe("describeErrorWithCause", () => {
     (a as { cause?: unknown }).cause = b;
     expect(describeErrorWithCause(a)).toBe("a (cause: Error: b)");
   });
+
+  it("never throws on an unstringifiable cause, and names a plain-object cause's code/message", () => {
+    const nullProto = Object.create(null) as object;
+    expect(() => String(nullProto)).toThrow(); // the hazard this pins
+    expect(describeErrorWithCause(new Error("outer", { cause: nullProto }))).toBe(
+      "outer (cause: [object Object])",
+    );
+    expect(describeErrorWithCause(Object.create(null))).toBe("[object Object]");
+    expect(
+      describeErrorWithCause(new Error("outer", { cause: { code: "ECONNRESET", message: "socket hang up" } })),
+    ).toBe("outer (cause: ECONNRESET: socket hang up)");
+  });
 });
 
 describe("the sign-in path keeps the transport cause (GlitchTip #364)", () => {

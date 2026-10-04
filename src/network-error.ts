@@ -25,6 +25,18 @@ export function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/**
+ * `String(value)` that cannot throw: a null-prototype object or a throwing `toString` would
+ * otherwise escape from the catch blocks this module is called from (which promise "never throws").
+ */
+function safeString(value: unknown): string {
+  try {
+    return String(value);
+  } catch {
+    return Object.prototype.toString.call(value);
+  }
+}
+
 /** How many `cause` links to follow — undici nests at most two; the cap guards a cycle. */
 const MAX_CAUSE_DEPTH = 4;
 
@@ -34,7 +46,16 @@ const MAX_CAUSE_LENGTH = 500;
 /** One link of the chain: `Name CODE: message [inner; inner]`, without repeating the code. */
 function describeLink(value: unknown): string {
   if (!(value instanceof Error)) {
-    return String(value);
+    // A non-Error cause (e.g. a plain `{ code, message }` object) would render as
+    // `[object Object]`; surface its message/code when it has them.
+    if (typeof value === "object" && value !== null) {
+      const { code, message } = value as { code?: unknown; message?: unknown };
+      const parts = [code, message].filter((part): part is string => typeof part === "string" && part !== "");
+      if (parts.length > 0) {
+        return parts.join(": ");
+      }
+    }
+    return safeString(value);
   }
   const code = (value as { code?: unknown }).code;
   let text = value.name || "Error";
@@ -48,7 +69,7 @@ function describeLink(value: unknown): string {
   // per-address attempts are the whole story, so they are listed rather than dropped.
   const inner = (value as { errors?: unknown }).errors;
   if (Array.isArray(inner) && inner.length > 0) {
-    text += ` [${inner.map((e) => (e instanceof Error ? e.message || e.name : String(e))).join("; ")}]`;
+    text += ` [${inner.map((e) => (e instanceof Error ? e.message || e.name : safeString(e))).join("; ")}]`;
   }
   return text;
 }
@@ -58,7 +79,15 @@ function describeLink(value: unknown): string {
  * there is no cause. Never throws.
  */
 export function describeErrorWithCause(err: unknown): string {
-  const message = errorMessage(err);
+  try {
+    return describeErrorWithCauseUnsafe(err);
+  } catch {
+    return err instanceof Error ? err.message : safeString(err);
+  }
+}
+
+function describeErrorWithCauseUnsafe(err: unknown): string {
+  const message = err instanceof Error ? err.message : safeString(err);
   const links: string[] = [];
   const seen = new Set<unknown>([err]);
   let current: unknown = err instanceof Error ? err.cause : undefined;

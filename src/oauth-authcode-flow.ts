@@ -885,8 +885,6 @@ function isAbortError(err: unknown): boolean {
   return err instanceof Error && err.name === "AbortError";
 }
 
-
-
 async function parseTokenResponse(response: Response): Promise<AuthCodeTokenResponse> {
   const text = await safeText(response);
   if (!text) {

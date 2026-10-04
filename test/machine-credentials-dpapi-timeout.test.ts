@@ -82,7 +82,9 @@ afterEach(() => {
   while (dirs.length > 0) fs.rmSync(dirs.pop()!, { recursive: true, force: true });
 });
 
-describe.skipIf(isWindows)("DPAPI codec — a host that times out once (GlitchTip #1260)", () => {
+// Explicit budget: the fail-closed case spends two real 2 s timeouts (~4 s) synchronously, which is
+// within a loaded runner's noise of vitest's 5 s default.
+describe.skipIf(isWindows)("DPAPI codec — a host that times out once (GlitchTip #1260)", { timeout: 30_000 }, () => {
   it("retries the timed-out host once and the login-commit write succeeds", () => {
     const dir = freshDir();
     process.env[DPAPI_POWERSHELL_HOST_ENV] = fakeHost(dir, 1);
