@@ -117,4 +117,20 @@ describe.skipIf(isWindows)("DPAPI codec — a host that times out once (GlitchTi
     expect(calls(dir)).toBe(2); // exactly one retry — never a loop
     expect(fs.readdirSync(baseDir)).toEqual([]); // nothing written
   });
+
+  it("does NOT retry a READ: readState sits on hot paths, so one budget then `unreadable`", () => {
+    // TD ruling: `readState()` runs on the connectivity probe and every tool call; a synchronous
+    // retry there could stall the event loop for the sum of the budgets. A cold read stays the
+    // pre-#1260 single attempt and degrades to the structured, recoverable `unreadable` state.
+    const dir = freshDir();
+    process.env[DPAPI_POWERSHELL_HOST_ENV] = fakeHost(dir, 1);
+    const baseDir = freshDir();
+    const store = new MachineCredentialStore(baseDir, dpapiCredentialCodec);
+    fs.writeFileSync(store.credentialsPath, Buffer.from("not-really-a-dpapi-blob"));
+
+    const state = store.readState();
+
+    expect(state.status).toBe("unreadable");
+    expect(calls(dir)).toBe(1); // no second, longer attempt on the read path
+  });
 });

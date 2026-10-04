@@ -48,6 +48,11 @@ export const OWNER_ONLY_DIRECTORY_MODE = 0o700;
  * Create `directory` (recursively, no-op when it exists) and restrict it to the owner on POSIX.
  * Windows relies on the user-profile ACL instead — `chmod` there is a no-op that would only mislead.
  */
+/** True when `err` is a Node errno-style error carrying `code` (e.g. `"ENOENT"`, `"ETIMEDOUT"`). */
+export function isErrno(err: unknown, code: string): boolean {
+  return typeof err === "object" && err !== null && (err as NodeJS.ErrnoException).code === code;
+}
+
 export function ensureOwnerOnlyDirectory(directory: string): void {
   fs.mkdirSync(directory, { recursive: true });
   if (!isWindows) {

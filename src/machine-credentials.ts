@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { writeFileAtomicSync } from "./atomic-file.js";
+import { isErrno, writeFileAtomicSync } from "./atomic-file.js";
 
 /**
  * TypeScript client of the shared machine credential store — the same on-disk contract the plugin's
@@ -694,8 +694,13 @@ function isHostStartFailure(err: unknown): boolean {
  * Only a TIMEOUT is retried. A host that ran and refused (non-zero exit, Constrained Language Mode)
  * has given a real answer and is surfaced at once, exactly as before.
  *
- * ⚠ The call is synchronous (the codec interface is), so a pathological host can block the calling
- * thread for the sum of these budgets. That is the existing contract made longer, not a new one.
+ * **Only `Protect` (the write) is retried.** The call is synchronous (the codec interface is), so a
+ * retry can block the calling thread for the sum of these budgets. That is acceptable on the write —
+ * the login commit, which the user is waiting on and which otherwise FAILS — but not on `Unprotect`:
+ * `readState()` runs on the connectivity probe, the cold-connect watcher and every tool call, where
+ * an 80 s event-loop stall is worse than the unreadable state it would avoid (which is already a
+ * structured, recoverable outcome). `Unprotect` keeps the single first budget — the pre-#1260
+ * contract, unchanged.
  */
 export const DPAPI_ATTEMPT_TIMEOUTS_MS: readonly number[] = [20_000, 60_000];
 
@@ -707,11 +712,6 @@ let dpapiAttemptTimeoutsMs: readonly number[] = DPAPI_ATTEMPT_TIMEOUTS_MS;
  */
 export function setDpapiAttemptTimeoutsForTests(timeoutsMs: readonly number[] | undefined): void {
   dpapiAttemptTimeoutsMs = timeoutsMs ?? DPAPI_ATTEMPT_TIMEOUTS_MS;
-}
-
-/** True when `execFileSync` killed the child for overrunning its `timeout`. */
-function isTimeout(err: unknown): boolean {
-  return (err as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT";
 }
 
 /**
@@ -743,19 +743,21 @@ function dpapiTransform(action: "Protect" | "Unprotect", input: Buffer): Buffer 
 
   const args = ["-NoProfile", "-NonInteractive", "-Command", script];
   const env = { ...process.env, AIGD_DPAPI_IN: input.toString("base64") };
+  // A cold start can overrun the first budget (see DPAPI_ATTEMPT_TIMEOUTS_MS); the kill leaves the
+  // machine warmer, so a timed-out WRITE retries the SAME host once with a longer budget. A read
+  // never retries — it sits on hot paths (see the constant's docblock).
+  const budgets = action === "Protect" ? dpapiAttemptTimeoutsMs : dpapiAttemptTimeoutsMs.slice(0, 1);
   const run = (host: string): string => {
-    // A cold start can overrun the first budget (see DPAPI_ATTEMPT_TIMEOUTS_MS); the kill leaves the
-    // machine warmer, so the SAME host is retried once with a longer budget before giving up.
     for (let attempt = 0; ; attempt++) {
       try {
         return execFileSync(host, args, {
           encoding: "utf-8",
           env,
-          timeout: dpapiAttemptTimeoutsMs[attempt],
+          timeout: budgets[attempt],
           windowsHide: true,
         });
       } catch (err) {
-        if (!isTimeout(err) || attempt + 1 >= dpapiAttemptTimeoutsMs.length) {
+        if (!isErrno(err, "ETIMEDOUT") || attempt + 1 >= budgets.length) {
           throw err;
         }
       }
