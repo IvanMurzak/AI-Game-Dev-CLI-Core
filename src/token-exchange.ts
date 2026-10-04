@@ -1,4 +1,5 @@
 import { REFRESH_HTTP_TIMEOUT } from "./credential-lock.js";
+import { describeErrorWithCause } from "./network-error.js";
 import { DEFAULT_PLUGIN_SCOPE, tokenUrl } from "./oauth-device-flow.js";
 import { normalizeServerBase } from "./token-refresher.js";
 
@@ -226,8 +227,8 @@ export class HttpTokenExchangeClient implements TokenExchangeClient {
       return buildTokenExchangeResult(response.ok, response.status, parsed, this._now);
     } catch (err) {
       // Fail closed on any network/abort error — the store is never touched here.
-      const message = err instanceof Error ? err.message : String(err);
-      return { ok: false, reason: message };
+      // WITH the cause chain: undici's `fetch failed` keeps the errno and address on `cause`.
+      return { ok: false, reason: describeErrorWithCause(err) };
     } finally {
       clearTimeout(timer);
       if (signal) signal.removeEventListener("abort", onAbort);

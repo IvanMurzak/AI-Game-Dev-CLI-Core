@@ -1,0 +1,120 @@
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
+import {
+  DPAPI_ATTEMPT_TIMEOUTS_MS,
+  DPAPI_POWERSHELL_HOST_ENV,
+  MachineCredentialStore,
+  MachineCredentialStoreUnwritableError,
+  dpapiCredentialCodec,
+  resetPowerShellHostCache,
+  setDpapiAttemptTimeoutsForTests,
+} from "../src/index.js";
+
+/**
+ * GlitchTip desktop #1260: a sign-in the user had just APPROVED failed with
+ * `MachineCredentialStoreUnwritableError` caused by `spawnSync …\powershell.exe ETIMEDOUT` — the
+ * DPAPI codec's cold PowerShell start overran its single 20 s budget on an old laptop, and the
+ * login commit gave up.
+ *
+ * The spawn here is REAL (`execFileSync` with a real `timeout` kill) — only the host is a stand-in,
+ * selected through the documented `AIGD_DPAPI_POWERSHELL` override: a script that is slow the FIRST
+ * time it runs (a cold start) and fast afterwards, echoing its input back so the "encryption" is the
+ * identity. POSIX-only because the stand-in is a shell script; the budgets are shrunk through the
+ * test hook because a real-spawn test cannot wait 20 s.
+ */
+
+const isWindows = process.platform === "win32";
+const dirs: string[] = [];
+
+function freshDir(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clicore-dpapi-timeout-"));
+  dirs.push(dir);
+  return dir;
+}
+
+/**
+ * A stand-in PowerShell host. `coldRuns` = how many leading invocations hang (each one `exec`s
+ * `sleep`, so the timeout kill hits the sleeping process itself and spawnSync returns at once).
+ * Every invocation appends a line to `<dir>/calls`.
+ */
+function fakeHost(dir: string, coldRuns: number): string {
+  const host = path.join(dir, "fake-powershell.sh");
+  fs.writeFileSync(
+    host,
+    [
+      "#!/bin/sh",
+      `echo run >> "${dir}/calls"`,
+      `n=$(wc -l < "${dir}/calls")`,
+      `if [ "$n" -le ${coldRuns} ]; then exec sleep 30; fi`,
+      'printf "%s" "$AIGD_DPAPI_IN"',
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  return host;
+}
+
+function calls(dir: string): number {
+  const file = path.join(dir, "calls");
+  return fs.existsSync(file) ? fs.readFileSync(file, "utf-8").trim().split("\n").length : 0;
+}
+
+let savedOverride: string | undefined;
+
+beforeEach(() => {
+  savedOverride = process.env[DPAPI_POWERSHELL_HOST_ENV];
+  resetPowerShellHostCache();
+  setDpapiAttemptTimeoutsForTests([300, 3000]);
+});
+
+afterEach(() => {
+  if (savedOverride === undefined) delete process.env[DPAPI_POWERSHELL_HOST_ENV];
+  else process.env[DPAPI_POWERSHELL_HOST_ENV] = savedOverride;
+  setDpapiAttemptTimeoutsForTests(undefined);
+  resetPowerShellHostCache();
+  while (dirs.length > 0) fs.rmSync(dirs.pop()!, { recursive: true, force: true });
+});
+
+describe("DPAPI codec budgets", () => {
+  it("gives a cold start a second, LONGER attempt", () => {
+    expect(DPAPI_ATTEMPT_TIMEOUTS_MS.length).toBe(2);
+    expect(DPAPI_ATTEMPT_TIMEOUTS_MS[1]!).toBeGreaterThan(DPAPI_ATTEMPT_TIMEOUTS_MS[0]!);
+  });
+});
+
+describe.skipIf(isWindows)("DPAPI codec — a host that times out once (GlitchTip #1260)", () => {
+  it("retries the timed-out host once and the login-commit write succeeds", () => {
+    const dir = freshDir();
+    process.env[DPAPI_POWERSHELL_HOST_ENV] = fakeHost(dir, 1);
+    const store = new MachineCredentialStore(freshDir(), dpapiCredentialCodec);
+
+    store.write({ accessToken: "at", refreshToken: "rt", serverTarget: "https://ai-game.dev" } as never);
+
+    expect(calls(dir)).toBe(2); // the killed cold start + the warm retry
+    expect(store.read()).toMatchObject({ accessToken: "at", refreshToken: "rt" });
+  });
+
+  it("still fails CLOSED with the structured error when every attempt times out", () => {
+    const dir = freshDir();
+    process.env[DPAPI_POWERSHELL_HOST_ENV] = fakeHost(dir, 99);
+    setDpapiAttemptTimeoutsForTests([200, 300]);
+    const baseDir = freshDir();
+    const store = new MachineCredentialStore(baseDir, dpapiCredentialCodec);
+
+    let thrown: unknown;
+    try {
+      store.write({ accessToken: "at" } as never);
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(MachineCredentialStoreUnwritableError);
+    expect(((thrown as Error).cause as NodeJS.ErrnoException).code).toBe("ETIMEDOUT");
+    expect(calls(dir)).toBe(2); // exactly one retry — never a loop
+    expect(fs.readdirSync(baseDir)).toEqual([]); // nothing written
+  });
+});

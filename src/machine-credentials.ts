@@ -184,7 +184,8 @@ export class MachineCredentialStoreUnreadableError extends Error {
 export const CODEC_ENCRYPT_FAILURE_REASON =
   "encrypting the credential document failed, so nothing was written (an existing credential file " +
   "is untouched). On Windows this means the DPAPI codec could not run: no PowerShell host could be " +
-  "started, or PowerShell is locked down by Constrained Language Mode. Remedy: add " +
+  "started, PowerShell did not finish in time even after a retry (a very slow cold start), or " +
+  "PowerShell is locked down by Constrained Language Mode. Remedy: add " +
   "%SystemRoot%\\System32\\WindowsPowerShell\\v1.0 to PATH, or set AIGD_DPAPI_POWERSHELL to the " +
   "absolute path of powershell.exe (or pwsh.exe), then sign in again";
 
@@ -679,6 +680,41 @@ function isHostStartFailure(err: unknown): boolean {
 }
 
 /**
+ * Per-attempt time budgets (ms) for one DPAPI PowerShell round trip; the length is the attempt count.
+ *
+ * Why there is a second, longer attempt (GlitchTip desktop #1260): a warm round trip costs
+ * 165–365 ms, but a COLD Windows PowerShell 5.1 start — first launch after boot, an old laptop on a
+ * spinning disk, Defender scanning the .NET assemblies `Add-Type` loads — was measured in the field
+ * to overrun the whole 20 s budget. The write path is the login commit, so that overrun surfaced as
+ * `MachineCredentialStoreUnwritableError` (`spawnSync … powershell.exe ETIMEDOUT`) immediately
+ * after the user had APPROVED the sign-in in the browser: the sign-in failed outright. The killed
+ * first attempt has already paged the host and its assemblies in (and the scanner has seen them), so
+ * one retry of the same host with a longer budget is what turns that into a success.
+ *
+ * Only a TIMEOUT is retried. A host that ran and refused (non-zero exit, Constrained Language Mode)
+ * has given a real answer and is surfaced at once, exactly as before.
+ *
+ * ⚠ The call is synchronous (the codec interface is), so a pathological host can block the calling
+ * thread for the sum of these budgets. That is the existing contract made longer, not a new one.
+ */
+export const DPAPI_ATTEMPT_TIMEOUTS_MS: readonly number[] = [20_000, 60_000];
+
+let dpapiAttemptTimeoutsMs: readonly number[] = DPAPI_ATTEMPT_TIMEOUTS_MS;
+
+/**
+ * Override {@link DPAPI_ATTEMPT_TIMEOUTS_MS} — exported for TESTS only (a real-spawn test cannot
+ * wait 20 s for a timeout). Pass `undefined` to restore the production budgets.
+ */
+export function setDpapiAttemptTimeoutsForTests(timeoutsMs: readonly number[] | undefined): void {
+  dpapiAttemptTimeoutsMs = timeoutsMs ?? DPAPI_ATTEMPT_TIMEOUTS_MS;
+}
+
+/** True when `execFileSync` killed the child for overrunning its `timeout`. */
+function isTimeout(err: unknown): boolean {
+  return (err as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT";
+}
+
+/**
  * Run a Windows DPAPI Protect/Unprotect round trip through PowerShell's
  * `System.Security.Cryptography.ProtectedData` (CurrentUser scope, no entropy) — interoperable with
  * the C# store's `CryptProtectData`/`CryptUnprotectData`. Input and output are passed as base64
@@ -706,11 +742,24 @@ function dpapiTransform(action: "Protect" | "Unprotect", input: Buffer): Buffer 
     "[Convert]::ToBase64String($out)";
 
   const args = ["-NoProfile", "-NonInteractive", "-Command", script];
-  const options = {
-    encoding: "utf-8" as const,
-    env: { ...process.env, AIGD_DPAPI_IN: input.toString("base64") },
-    timeout: 20000,
-    windowsHide: true,
+  const env = { ...process.env, AIGD_DPAPI_IN: input.toString("base64") };
+  const run = (host: string): string => {
+    // A cold start can overrun the first budget (see DPAPI_ATTEMPT_TIMEOUTS_MS); the kill leaves the
+    // machine warmer, so the SAME host is retried once with a longer budget before giving up.
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return execFileSync(host, args, {
+          encoding: "utf-8",
+          env,
+          timeout: dpapiAttemptTimeoutsMs[attempt],
+          windowsHide: true,
+        });
+      } catch (err) {
+        if (!isTimeout(err) || attempt + 1 >= dpapiAttemptTimeoutsMs.length) {
+          throw err;
+        }
+      }
+    }
   };
 
   const resolution = resolvePowerShellHosts();
@@ -724,7 +773,7 @@ function dpapiTransform(action: "Protect" | "Unprotect", input: Buffer): Buffer 
   for (const host of attempts) {
     let stdout: string;
     try {
-      stdout = execFileSync(host, args, options);
+      stdout = run(host);
     } catch (err) {
       if (isHostStartFailure(err)) {
         unstartable.push(host);

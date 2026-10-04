@@ -4,6 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo, Socket } from "node:net";
 
 import type { MachineCredentials } from "./machine-credentials.js";
+import { describeErrorWithCause, UNREACHABLE_PATTERN } from "./network-error.js";
 import {
   ClientRegistrationStore,
   DEFAULT_DCR_TIMEOUT_MS,
@@ -889,8 +890,9 @@ function describeError(err: unknown): string {
 }
 
 function describeNetworkError(err: unknown): string {
-  const message = describeError(err);
-  if (/ECONNREFUSED|ENOTFOUND|EAI_AGAIN|fetch failed|ECONNRESET|ETIMEDOUT/i.test(message)) {
+  // WITH the cause chain: undici's `fetch failed` keeps the errno and address only on `cause`.
+  const message = describeErrorWithCause(err);
+  if (UNREACHABLE_PATTERN.test(message)) {
     return `Cannot reach the authorization server: ${message}`;
   }
   return `Authentication failed: ${message}`;

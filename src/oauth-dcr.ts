@@ -4,6 +4,7 @@ import * as path from "node:path";
 
 import { writeFileAtomicSync } from "./atomic-file.js";
 import { MACHINE_STORE_DIR_NAME } from "./machine-credentials.js";
+import { describeErrorWithCause } from "./network-error.js";
 import { OAUTH_DEVICE_AUTHORIZATION_PATH, OAUTH_TOKEN_PATH } from "./oauth-device-flow.js";
 import { normalizeServerBase } from "./token-refresher.js";
 
@@ -335,7 +336,7 @@ export async function registerClient(options: RegisterClientOptions): Promise<Cl
     );
   } catch (err) {
     throw new ClientRegistrationError(
-      `Could not reach the client registration endpoint: ${describeError(err)}`,
+      `Could not reach the client registration endpoint: ${describeErrorWithCause(err)}`,
     );
   }
 
@@ -749,6 +750,3 @@ function stringArrayOrUndefined(value: unknown): string[] | undefined {
   return strings.length > 0 ? strings : undefined;
 }
 
-function describeError(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
