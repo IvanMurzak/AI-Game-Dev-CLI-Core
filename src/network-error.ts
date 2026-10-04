@@ -20,6 +20,11 @@
  * route an error that can quote a request or response body through this helper.
  */
 
+/** `err.message` for an Error, `String(err)` for anything else. */
+export function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 /** How many `cause` links to follow — undici nests at most two; the cap guards a cycle. */
 const MAX_CAUSE_DEPTH = 4;
 
@@ -32,10 +37,9 @@ function describeLink(value: unknown): string {
     return String(value);
   }
   const code = (value as { code?: unknown }).code;
-  const codeText = typeof code === "string" && code.length > 0 ? code : undefined;
   let text = value.name || "Error";
-  if (codeText !== undefined && !value.message.includes(codeText)) {
-    text += ` ${codeText}`;
+  if (typeof code === "string" && code && !value.message.includes(code)) {
+    text += ` ${code}`;
   }
   if (value.message) {
     text += `: ${value.message}`;
@@ -54,11 +58,11 @@ function describeLink(value: unknown): string {
  * there is no cause. Never throws.
  */
 export function describeErrorWithCause(err: unknown): string {
-  const message = err instanceof Error ? err.message : String(err);
+  const message = errorMessage(err);
   const links: string[] = [];
   const seen = new Set<unknown>([err]);
   let current: unknown = err instanceof Error ? err.cause : undefined;
-  while (current !== undefined && current !== null && links.length < MAX_CAUSE_DEPTH && !seen.has(current)) {
+  while (current != null && links.length < MAX_CAUSE_DEPTH && !seen.has(current)) {
     seen.add(current);
     links.push(describeLink(current));
     current = current instanceof Error ? current.cause : undefined;
@@ -78,5 +82,18 @@ export function describeErrorWithCause(err: unknown): string {
  * answered and refused". Matched against {@link describeErrorWithCause}'s output, so a code that
  * only appears on the cause (where undici puts it) still classifies.
  */
-export const UNREACHABLE_PATTERN =
+const UNREACHABLE_PATTERN =
   /ECONNREFUSED|ENOTFOUND|EAI_AGAIN|fetch failed|ECONNRESET|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH|UND_ERR_CONNECT_TIMEOUT|UND_ERR_SOCKET/i;
+
+/**
+ * The user-facing message for a transport failure in an OAuth flow (auth-code and device): prefixed
+ * `Cannot reach the authorization server:` when it is an unreachable-server failure, else
+ * `Authentication failed:` — always WITH the cause chain.
+ */
+export function describeAuthNetworkError(err: unknown): string {
+  const message = describeErrorWithCause(err);
+  if (UNREACHABLE_PATTERN.test(message)) {
+    return `Cannot reach the authorization server: ${message}`;
+  }
+  return `Authentication failed: ${message}`;
+}

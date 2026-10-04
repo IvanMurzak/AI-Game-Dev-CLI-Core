@@ -185,7 +185,6 @@ export class HttpTokenRefresher implements TokenRefresher {
       return buildRefreshResult(response.ok, response.status, parsed, this._now);
     } catch (err) {
       // Fail closed on any network/abort error — the store is never touched here.
-      // WITH the cause chain: undici's `fetch failed` keeps the errno and address on `cause`.
       return { ok: false, reason: describeErrorWithCause(err) };
     } finally {
       clearTimeout(timer);

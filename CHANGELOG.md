@@ -22,9 +22,9 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
 - **The Windows DPAPI codec retries a timed-out PowerShell once.** A cold PowerShell 5.1 start on a
   slow machine overran the single 20 s budget and the post-approval credential write threw
   `MachineCredentialStoreUnwritableError` (`spawnSync … powershell.exe ETIMEDOUT`, GlitchTip desktop
-  #1260). A timeout now retries the SAME host once with a 60 s budget
-  (`DPAPI_ATTEMPT_TIMEOUTS_MS`); a host that ran and refused is still surfaced at once. The call
-  stays synchronous, so the worst case blocks the caller for the sum of the budgets.
+  #1260). A timed-out WRITE (`Protect`) now retries the SAME host once with a 60 s budget; a host
+  that ran and refused is still surfaced at once. Reads (`Unprotect`, i.e. `readState()`) are NOT
+  retried — they run on hot paths, and the call is synchronous.
 
 ## 0.6.0 — 2026-09-24
 

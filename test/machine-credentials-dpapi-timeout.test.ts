@@ -5,14 +5,14 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
-  DPAPI_ATTEMPT_TIMEOUTS_MS,
   DPAPI_POWERSHELL_HOST_ENV,
   MachineCredentialStore,
   MachineCredentialStoreUnwritableError,
   dpapiCredentialCodec,
   resetPowerShellHostCache,
-  setDpapiAttemptTimeoutsForTests,
 } from "../src/index.js";
+// Internal test hook — deliberately not part of the package's public API.
+import { setDpapiTimeoutsForTests } from "../src/machine-credentials.js";
 
 /**
  * GlitchTip desktop #1260: a sign-in the user had just APPROVED failed with
@@ -68,22 +68,18 @@ let savedOverride: string | undefined;
 beforeEach(() => {
   savedOverride = process.env[DPAPI_POWERSHELL_HOST_ENV];
   resetPowerShellHostCache();
-  setDpapiAttemptTimeoutsForTests([300, 3000]);
+  // Generous on purpose. Under a loaded full-suite run a shell can take longer than 300 ms just to
+  // START — the kill then lands before the stand-in has recorded its run, and the "warm" retry
+  // looks cold. The first budget must comfortably cover shell start-up; `sleep 30` is what overruns it.
+  setDpapiTimeoutsForTests({ first: 2000, writeRetry: 15_000 });
 });
 
 afterEach(() => {
   if (savedOverride === undefined) delete process.env[DPAPI_POWERSHELL_HOST_ENV];
   else process.env[DPAPI_POWERSHELL_HOST_ENV] = savedOverride;
-  setDpapiAttemptTimeoutsForTests(undefined);
+  setDpapiTimeoutsForTests(undefined);
   resetPowerShellHostCache();
   while (dirs.length > 0) fs.rmSync(dirs.pop()!, { recursive: true, force: true });
-});
-
-describe("DPAPI codec budgets", () => {
-  it("gives a cold start a second, LONGER attempt", () => {
-    expect(DPAPI_ATTEMPT_TIMEOUTS_MS.length).toBe(2);
-    expect(DPAPI_ATTEMPT_TIMEOUTS_MS[1]!).toBeGreaterThan(DPAPI_ATTEMPT_TIMEOUTS_MS[0]!);
-  });
 });
 
 describe.skipIf(isWindows)("DPAPI codec — a host that times out once (GlitchTip #1260)", () => {
@@ -101,7 +97,7 @@ describe.skipIf(isWindows)("DPAPI codec — a host that times out once (GlitchTi
   it("still fails CLOSED with the structured error when every attempt times out", () => {
     const dir = freshDir();
     process.env[DPAPI_POWERSHELL_HOST_ENV] = fakeHost(dir, 99);
-    setDpapiAttemptTimeoutsForTests([200, 300]);
+    setDpapiTimeoutsForTests({ first: 2000, writeRetry: 2000 });
     const baseDir = freshDir();
     const store = new MachineCredentialStore(baseDir, dpapiCredentialCodec);
 

@@ -14,6 +14,7 @@ import { derivePinV2 } from "./project-identity.js";
 import { writeProjectMarker } from "./project-marker.js";
 import { pinUrl } from "./routing.js";
 import { agentRegistry, configPathsOf } from "./agents-registry.js";
+import { describeErrorWithCause } from "./network-error.js";
 
 /**
  * Agent-driven enrollment (design 06/09 D13) — the engine-agnostic port of the CLIs' `enroll` flow.
@@ -127,7 +128,7 @@ export async function redeemEnrollmentCode(code: string, opts: RedeemOptions = {
     });
   } catch (err) {
     throw new EnrollmentError(
-      `Could not reach the enrollment server at ${url}: ${err instanceof Error ? err.message : String(err)}`,
+      `Could not reach the enrollment server at ${url}: ${describeErrorWithCause(err)}`,
     );
   } finally {
     clearTimeout(timer);

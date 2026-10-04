@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { isErrno, writeFileAtomicSync } from "./atomic-file.js";
+import { errorMessage } from "./network-error.js";
 
 /**
  * TypeScript client of the shared machine credential store — the same on-disk contract the plugin's
@@ -547,10 +548,6 @@ function undefinedOmittingReplacer(_key: string, value: unknown): unknown {
   return value === undefined ? undefined : value;
 }
 
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
 /**
  * Environment variable that overrides which PowerShell binary the DPAPI codec shells out to.
  *
@@ -680,7 +677,8 @@ function isHostStartFailure(err: unknown): boolean {
 }
 
 /**
- * Per-attempt time budgets (ms) for one DPAPI PowerShell round trip; the length is the attempt count.
+ * Time budgets (ms) for one DPAPI PowerShell round trip: the first attempt, and the single retry a
+ * timed-out WRITE gets.
  *
  * Why there is a second, longer attempt (GlitchTip desktop #1260): a warm round trip costs
  * 165–365 ms, but a COLD Windows PowerShell 5.1 start — first launch after boot, an old laptop on a
@@ -702,16 +700,16 @@ function isHostStartFailure(err: unknown): boolean {
  * structured, recoverable outcome). `Unprotect` keeps the single first budget — the pre-#1260
  * contract, unchanged.
  */
-export const DPAPI_ATTEMPT_TIMEOUTS_MS: readonly number[] = [20_000, 60_000];
+const DPAPI_TIMEOUTS_MS = { first: 20_000, writeRetry: 60_000 };
 
-let dpapiAttemptTimeoutsMs: readonly number[] = DPAPI_ATTEMPT_TIMEOUTS_MS;
+let dpapiTimeoutsMs = DPAPI_TIMEOUTS_MS;
 
 /**
- * Override {@link DPAPI_ATTEMPT_TIMEOUTS_MS} — exported for TESTS only (a real-spawn test cannot
- * wait 20 s for a timeout). Pass `undefined` to restore the production budgets.
+ * @internal Shrink the DPAPI budgets — for this package's own tests only (a real-spawn test cannot
+ * wait 20 s for a timeout); deliberately NOT exported from the package index. `undefined` restores.
  */
-export function setDpapiAttemptTimeoutsForTests(timeoutsMs: readonly number[] | undefined): void {
-  dpapiAttemptTimeoutsMs = timeoutsMs ?? DPAPI_ATTEMPT_TIMEOUTS_MS;
+export function setDpapiTimeoutsForTests(timeoutsMs: typeof DPAPI_TIMEOUTS_MS | undefined): void {
+  dpapiTimeoutsMs = timeoutsMs ?? DPAPI_TIMEOUTS_MS;
 }
 
 /**
@@ -743,24 +741,17 @@ function dpapiTransform(action: "Protect" | "Unprotect", input: Buffer): Buffer 
 
   const args = ["-NoProfile", "-NonInteractive", "-Command", script];
   const env = { ...process.env, AIGD_DPAPI_IN: input.toString("base64") };
-  // A cold start can overrun the first budget (see DPAPI_ATTEMPT_TIMEOUTS_MS); the kill leaves the
-  // machine warmer, so a timed-out WRITE retries the SAME host once with a longer budget. A read
-  // never retries — it sits on hot paths (see the constant's docblock).
-  const budgets = action === "Protect" ? dpapiAttemptTimeoutsMs : dpapiAttemptTimeoutsMs.slice(0, 1);
+  const exec = (host: string, timeout: number): string =>
+    execFileSync(host, args, { encoding: "utf-8", env, timeout, windowsHide: true });
   const run = (host: string): string => {
-    for (let attempt = 0; ; attempt++) {
-      try {
-        return execFileSync(host, args, {
-          encoding: "utf-8",
-          env,
-          timeout: budgets[attempt],
-          windowsHide: true,
-        });
-      } catch (err) {
-        if (!isErrno(err, "ETIMEDOUT") || attempt + 1 >= budgets.length) {
-          throw err;
-        }
-      }
+    try {
+      return exec(host, dpapiTimeoutsMs.first);
+    } catch (err) {
+      // A cold start can overrun the first budget (see DPAPI_TIMEOUTS_MS); the kill leaves the
+      // machine warmer, so a timed-out WRITE retries the SAME host once with a longer budget. A
+      // read never retries — it sits on hot paths.
+      if (action !== "Protect" || !isErrno(err, "ETIMEDOUT")) throw err;
+      return exec(host, dpapiTimeoutsMs.writeRetry);
     }
   };
 

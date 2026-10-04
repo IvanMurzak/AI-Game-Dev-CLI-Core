@@ -4,7 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo, Socket } from "node:net";
 
 import type { MachineCredentials } from "./machine-credentials.js";
-import { describeErrorWithCause, UNREACHABLE_PATTERN } from "./network-error.js";
+import { describeAuthNetworkError, errorMessage } from "./network-error.js";
 import {
   ClientRegistrationStore,
   DEFAULT_DCR_TIMEOUT_MS,
@@ -677,7 +677,7 @@ export async function authCodeLogin(options: AuthCodeLoginOptions): Promise<Auth
       return {
         ok: false,
         reason: "no_browser",
-        message: `Cannot open a browser for sign-in (${describeError(err)}). Try device-code login instead.`,
+        message: `Cannot open a browser for sign-in (${errorMessage(err)}). Try device-code login instead.`,
       };
     }
 
@@ -750,7 +750,7 @@ export async function authCodeLogin(options: AuthCodeLoginOptions): Promise<Auth
     if (err instanceof LoopbackTimeoutError) {
       return { ok: false, reason: "timeout", message: err.message };
     }
-    return { ok: false, reason: "error", message: describeNetworkError(err) };
+    return { ok: false, reason: "error", message: describeAuthNetworkError(err) };
   } finally {
     listener?.close();
   }
@@ -885,18 +885,7 @@ function isAbortError(err: unknown): boolean {
   return err instanceof Error && err.name === "AbortError";
 }
 
-function describeError(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
-function describeNetworkError(err: unknown): string {
-  // WITH the cause chain: undici's `fetch failed` keeps the errno and address only on `cause`.
-  const message = describeErrorWithCause(err);
-  if (UNREACHABLE_PATTERN.test(message)) {
-    return `Cannot reach the authorization server: ${message}`;
-  }
-  return `Authentication failed: ${message}`;
-}
 
 async function parseTokenResponse(response: Response): Promise<AuthCodeTokenResponse> {
   const text = await safeText(response);

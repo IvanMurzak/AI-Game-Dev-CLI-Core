@@ -69,8 +69,6 @@ export {
   DPAPI_POWERSHELL_HOST_ENV,
   powerShellHostCandidates,
   resetPowerShellHostCache,
-  DPAPI_ATTEMPT_TIMEOUTS_MS,
-  setDpapiAttemptTimeoutsForTests,
   MACHINE_STORE_DIR_NAME,
   CREDENTIALS_FILE_NAME,
   CREDENTIALS_SCHEMA_VERSION,

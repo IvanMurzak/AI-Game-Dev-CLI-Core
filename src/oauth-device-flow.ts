@@ -1,5 +1,5 @@
 import type { MachineCredentials } from "./machine-credentials.js";
-import { describeErrorWithCause, UNREACHABLE_PATTERN } from "./network-error.js";
+import { describeAuthNetworkError } from "./network-error.js";
 
 /**
  * OAuth 2.1 Device Authorization Grant (RFC 8628) client for the ai-game.dev authorization server —
@@ -346,7 +346,7 @@ export async function deviceLogin(options: DeviceLoginOptions): Promise<DeviceLo
     if (isAbortError(err) || signal?.aborted) {
       return { ok: false, reason: "cancelled", message: "Sign-in cancelled." };
     }
-    return { ok: false, reason: "error", message: describeNetworkError(err) };
+    return { ok: false, reason: "error", message: describeAuthNetworkError(err) };
   }
 }
 
@@ -429,14 +429,6 @@ function isAbortError(err: unknown): boolean {
   return err instanceof Error && err.name === "AbortError";
 }
 
-function describeNetworkError(err: unknown): string {
-  // WITH the cause chain: undici's `fetch failed` keeps the errno and address only on `cause`.
-  const message = describeErrorWithCause(err);
-  if (UNREACHABLE_PATTERN.test(message)) {
-    return `Cannot reach the authorization server: ${message}`;
-  }
-  return `Authentication failed: ${message}`;
-}
 
 async function parseTokenResponse(response: Response): Promise<DeviceTokenResponse> {
   const text = await safeText(response);
