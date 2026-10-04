@@ -19,12 +19,14 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
   `describeErrorWithCause` — e.g. `fetch failed (cause: AggregateError ETIMEDOUT [connect ETIMEDOUT
   51.81.222.213:443; connect ENETUNREACH 2604:…:443])`. Messages that previously ended in `fetch
   failed` are now longer; nothing else about the result shapes changes.
-- **The Windows DPAPI codec retries a timed-out PowerShell once.** A cold PowerShell 5.1 start on a
-  slow machine overran the single 20 s budget and the post-approval credential write threw
+- **A cold DPAPI PowerShell start no longer fails the login commit.** A cold PowerShell 5.1 start on
+  a slow machine overran the 20 s budget and the post-approval credential write threw
   `MachineCredentialStoreUnwritableError` (`spawnSync … powershell.exe ETIMEDOUT`, GlitchTip desktop
-  #1260). A timed-out WRITE (`Protect`) now retries the SAME host once with a 60 s budget; a host
-  that ran and refused is still surfaced at once. Reads (`Unprotect`, i.e. `readState()`) are NOT
-  retried — they run on hot paths, and the call is synchronous.
+  #1260). `commitAgentLogin` / `commitToolsOnlyLogin` now first `await store.warmUpCodec()` — an
+  ASYNC, lock-free throwaway round trip with a 60 s budget (no-op off Windows and once warm) — so the
+  synchronous calls under the lock run warm. No synchronous call is retried or lengthened: the event
+  loop is never blocked longer than before, and the lock's stale-ordering contract
+  (readState + Protect + HTTP < `LOCK_STALE_MS`) still holds. New: `MachineCredentialStore.warmUpCodec()`.
 
 ## 0.6.0 — 2026-09-24
 

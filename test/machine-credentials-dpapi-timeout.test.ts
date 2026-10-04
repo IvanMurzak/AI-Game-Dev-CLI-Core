@@ -8,23 +8,27 @@ import {
   DPAPI_POWERSHELL_HOST_ENV,
   MachineCredentialStore,
   MachineCredentialStoreUnwritableError,
+  commitAgentLogin,
   dpapiCredentialCodec,
   resetPowerShellHostCache,
+  type MachineCredentials,
+  type TokenExchangeClient,
 } from "../src/index.js";
 // Internal test hook — deliberately not part of the package's public API.
 import { setDpapiTimeoutsForTests } from "../src/machine-credentials.js";
 
 /**
  * GlitchTip desktop #1260: a sign-in the user had just APPROVED failed with
- * `MachineCredentialStoreUnwritableError` caused by `spawnSync …\powershell.exe ETIMEDOUT` — the
- * DPAPI codec's cold PowerShell start overran its single 20 s budget on an old laptop, and the
- * login commit gave up.
+ * `MachineCredentialStoreUnwritableError` ← `spawnSync …\powershell.exe ETIMEDOUT` — the DPAPI
+ * codec's cold PowerShell start overran its 20 s budget on an old laptop, inside the login commit.
  *
- * The spawn here is REAL (`execFileSync` with a real `timeout` kill) — only the host is a stand-in,
- * selected through the documented `AIGD_DPAPI_POWERSHELL` override: a script that is slow the FIRST
- * time it runs (a cold start) and fast afterwards, echoing its input back so the "encryption" is the
- * identity. POSIX-only because the stand-in is a shell script; the budgets are shrunk through the
- * test hook because a real-spawn test cannot wait 20 s.
+ * The fix pays the cold start in an ASYNC, LOCK-FREE warm-up before the commit takes the lock, so
+ * the synchronous in-lock calls keep their single budget (a sync retry would stall the event loop
+ * and break the lock's stale-ordering contract). The spawns here are REAL (`execFile` /
+ * `execFileSync` with real timeout kills) — only the host is a stand-in, selected through the
+ * documented `AIGD_DPAPI_POWERSHELL` override: a shell script that is SLOW on its first run (a cold
+ * start) and fast afterwards, echoing its input so the "encryption" is the identity. POSIX-only
+ * because the stand-in is a shell script; budgets are shrunk through the internal test hook.
  */
 
 const isWindows = process.platform === "win32";
@@ -37,11 +41,11 @@ function freshDir(): string {
 }
 
 /**
- * A stand-in PowerShell host. `coldRuns` = how many leading invocations hang (each one `exec`s
- * `sleep`, so the timeout kill hits the sleeping process itself and spawnSync returns at once).
- * Every invocation appends a line to `<dir>/calls`.
+ * A stand-in PowerShell host. The first `coldRuns` invocations sleep `coldSeconds` before answering
+ * (a cold start); later ones answer at once. Every invocation appends a line to `<dir>/calls` FIRST,
+ * so a run that is killed mid-sleep is still counted.
  */
-function fakeHost(dir: string, coldRuns: number): string {
+function fakeHost(dir: string, coldRuns: number, coldSeconds: number): string {
   const host = path.join(dir, "fake-powershell.sh");
   fs.writeFileSync(
     host,
@@ -49,7 +53,8 @@ function fakeHost(dir: string, coldRuns: number): string {
       "#!/bin/sh",
       `echo run >> "${dir}/calls"`,
       `n=$(wc -l < "${dir}/calls")`,
-      `if [ "$n" -le ${coldRuns} ]; then exec sleep 30; fi`,
+      // sleep's stdio goes to /dev/null so a timeout kill of the shell closes the pipe at once.
+      `if [ "$n" -le ${coldRuns} ]; then sleep ${coldSeconds} >/dev/null 2>&1; fi`,
       'printf "%s" "$AIGD_DPAPI_IN"',
       "",
     ].join("\n"),
@@ -63,15 +68,25 @@ function calls(dir: string): number {
   return fs.existsSync(file) ? fs.readFileSync(file, "utf-8").trim().split("\n").length : 0;
 }
 
+const AGENT_CREDS: MachineCredentials = {
+  accessToken: "agent-a",
+  refreshToken: "agent-r",
+  expiresAt: "2030-01-01T00:00:00.000Z",
+  serverTarget: "https://ai-game.dev",
+  subject: "usr_A",
+};
+
+/** Hold 1 (the agent family) is what #1260 failed on; a failing exchange stops right after it. */
+const exchangeDown: TokenExchangeClient = { exchange: async () => ({ ok: false, reason: "down" }) };
+
 let savedOverride: string | undefined;
 
 beforeEach(() => {
   savedOverride = process.env[DPAPI_POWERSHELL_HOST_ENV];
   resetPowerShellHostCache();
-  // Generous on purpose. Under a loaded full-suite run a shell can take longer than 300 ms just to
-  // START — the kill then lands before the stand-in has recorded its run, and the "warm" retry
-  // looks cold. The first budget must comfortably cover shell start-up; `sleep 30` is what overruns it.
-  setDpapiTimeoutsForTests({ first: 2000, writeRetry: 15_000 });
+  // The in-lock budget must comfortably cover a WARM shell start under a loaded full-suite run;
+  // the cold run (3 s) is what overruns it.
+  setDpapiTimeoutsForTests({ call: 1500, warmUp: 15_000 });
 });
 
 afterEach(() => {
@@ -82,53 +97,70 @@ afterEach(() => {
   while (dirs.length > 0) fs.rmSync(dirs.pop()!, { recursive: true, force: true });
 });
 
-// Explicit budget: the fail-closed case spends two real 2 s timeouts (~4 s) synchronously, which is
-// within a loaded runner's noise of vitest's 5 s default.
-describe.skipIf(isWindows)("DPAPI codec — a host that times out once (GlitchTip #1260)", { timeout: 30_000 }, () => {
-  it("retries the timed-out host once and the login-commit write succeeds", () => {
+describe.skipIf(isWindows)("DPAPI codec cold start (GlitchTip #1260)", { timeout: 30_000 }, () => {
+  it("a login commit after a COLD start succeeds: the warm-up pays it before the lock", async () => {
     const dir = freshDir();
-    process.env[DPAPI_POWERSHELL_HOST_ENV] = fakeHost(dir, 1);
+    process.env[DPAPI_POWERSHELL_HOST_ENV] = fakeHost(dir, 1, 3);
     const store = new MachineCredentialStore(freshDir(), dpapiCredentialCodec);
 
-    store.write({ accessToken: "at", refreshToken: "rt", serverTarget: "https://ai-game.dev" } as never);
+    const result = await commitAgentLogin({
+      store,
+      exchangeClient: exchangeDown,
+      clientId: "agd_client_x",
+      credentials: AGENT_CREDS,
+    });
 
-    expect(calls(dir)).toBe(2); // the killed cold start + the warm retry
-    expect(store.read()).toMatchObject({ accessToken: "at", refreshToken: "rt" });
+    expect(result.status).toBe("partial"); // hold 1 committed; only the (scripted) exchange failed
+    expect(store.read()?.families?.agent?.accessToken).toBe("agent-a");
   });
 
-  it("still fails CLOSED with the structured error when every attempt times out", () => {
+  it("the warm-up never blocks the event loop and is a no-op once warm", async () => {
     const dir = freshDir();
-    process.env[DPAPI_POWERSHELL_HOST_ENV] = fakeHost(dir, 99);
-    setDpapiTimeoutsForTests({ first: 2000, writeRetry: 2000 });
+    process.env[DPAPI_POWERSHELL_HOST_ENV] = fakeHost(dir, 1, 1);
+    const store = new MachineCredentialStore(freshDir(), dpapiCredentialCodec);
+
+    let ticked = false;
+    const tick = new Promise<void>((resolve) =>
+      setTimeout(() => {
+        ticked = true;
+        resolve();
+      }, 50),
+    );
+    const warm = store.warmUpCodec().then(() => ticked);
+    await tick;
+    expect(await warm).toBe(true); // a timer fired DURING the 1 s cold run
+    expect(calls(dir)).toBe(1);
+
+    await store.warmUpCodec();
+    expect(calls(dir)).toBe(1); // already warm: no second spawn
+  });
+
+  it("an in-lock write NEVER retries: one budget, then fail CLOSED with nothing written", () => {
+    const dir = freshDir();
+    process.env[DPAPI_POWERSHELL_HOST_ENV] = fakeHost(dir, 99, 30);
     const baseDir = freshDir();
     const store = new MachineCredentialStore(baseDir, dpapiCredentialCodec);
 
     let thrown: unknown;
     try {
-      store.write({ accessToken: "at" } as never);
+      store.write({ accessToken: "at" });
     } catch (err) {
       thrown = err;
     }
 
     expect(thrown).toBeInstanceOf(MachineCredentialStoreUnwritableError);
     expect(((thrown as Error).cause as NodeJS.ErrnoException).code).toBe("ETIMEDOUT");
-    expect(calls(dir)).toBe(2); // exactly one retry — never a loop
-    expect(fs.readdirSync(baseDir)).toEqual([]); // nothing written
+    expect(calls(dir)).toBe(1);
+    expect(fs.readdirSync(baseDir)).toEqual([]);
   });
 
-  it("does NOT retry a READ: readState sits on hot paths, so one budget then `unreadable`", () => {
-    // TD ruling: `readState()` runs on the connectivity probe and every tool call; a synchronous
-    // retry there could stall the event loop for the sum of the budgets. A cold read stays the
-    // pre-#1260 single attempt and degrades to the structured, recoverable `unreadable` state.
+  it("a READ never retries either: one budget, then the structured `unreadable` state", () => {
     const dir = freshDir();
-    process.env[DPAPI_POWERSHELL_HOST_ENV] = fakeHost(dir, 1);
-    const baseDir = freshDir();
-    const store = new MachineCredentialStore(baseDir, dpapiCredentialCodec);
+    process.env[DPAPI_POWERSHELL_HOST_ENV] = fakeHost(dir, 99, 30);
+    const store = new MachineCredentialStore(freshDir(), dpapiCredentialCodec);
     fs.writeFileSync(store.credentialsPath, Buffer.from("not-really-a-dpapi-blob"));
 
-    const state = store.readState();
-
-    expect(state.status).toBe("unreadable");
-    expect(calls(dir)).toBe(1); // no second, longer attempt on the read path
+    expect(store.readState().status).toBe("unreadable");
+    expect(calls(dir)).toBe(1);
   });
 });
