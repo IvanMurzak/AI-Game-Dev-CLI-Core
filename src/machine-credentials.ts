@@ -1,9 +1,10 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
 import { writeFileAtomicSync } from "./atomic-file.js";
+import { errorMessage } from "./network-error.js";
 
 /**
  * TypeScript client of the shared machine credential store — the same on-disk contract the plugin's
@@ -184,7 +185,8 @@ export class MachineCredentialStoreUnreadableError extends Error {
 export const CODEC_ENCRYPT_FAILURE_REASON =
   "encrypting the credential document failed, so nothing was written (an existing credential file " +
   "is untouched). On Windows this means the DPAPI codec could not run: no PowerShell host could be " +
-  "started, or PowerShell is locked down by Constrained Language Mode. Remedy: add " +
+  "started, PowerShell did not finish in time even after a retry (a very slow cold start), or " +
+  "PowerShell is locked down by Constrained Language Mode. Remedy: add " +
   "%SystemRoot%\\System32\\WindowsPowerShell\\v1.0 to PATH, or set AIGD_DPAPI_POWERSHELL to the " +
   "absolute path of powershell.exe (or pwsh.exe), then sign in again";
 
@@ -388,6 +390,18 @@ export class MachineCredentialStore {
   }
 
   /**
+   * Pay a cold at-rest-codec start BEFORE a write that will run under the credential lock (the
+   * Windows DPAPI PowerShell host — see {@link DPAPI_TIMEOUTS_MS}). Asynchronous, never throws, and
+   * a no-op for any other codec or once the codec has run in this process. Login-commit paths call
+   * it before taking the lock; nothing else needs to.
+   */
+  async warmUpCodec(): Promise<void> {
+    if (this._codec === dpapiCredentialCodec) {
+      await warmUpDpapi();
+    }
+  }
+
+  /**
    * Read the store into its structured state (04 §1): `ok` with the parsed document, `missing`
    * when no credential file exists (or it is empty), or `unreadable` when a file exists but
    * cannot be decrypted/parsed — DPAPI unprotect failure, the PowerShell codec blocked by
@@ -546,10 +560,6 @@ function undefinedOmittingReplacer(_key: string, value: unknown): unknown {
   return value === undefined ? undefined : value;
 }
 
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
 /**
  * Environment variable that overrides which PowerShell binary the DPAPI codec shells out to.
  *
@@ -662,6 +672,7 @@ function resolvePowerShellHosts(): PowerShellHostResolution {
  */
 export function resetPowerShellHostCache(): void {
   powerShellHostResolution = undefined;
+  dpapiWarm = false;
 }
 
 /**
@@ -676,6 +687,87 @@ export function resetPowerShellHostCache(): void {
 function isHostStartFailure(err: unknown): boolean {
   const code = (err as NodeJS.ErrnoException | undefined)?.code;
   return typeof code === "string" && (code === "ENOENT" || code === "ENOTDIR" || code === "EACCES");
+}
+
+/**
+ * Time budgets (ms) for the DPAPI PowerShell codec: every synchronous round trip, and the one
+ * ASYNCHRONOUS warm-up a login commit runs before it takes the credential lock.
+ *
+ * Why a warm-up (GlitchTip desktop #1260): a warm round trip costs 165–365 ms, but a COLD Windows
+ * PowerShell 5.1 start — first launch after boot, an old laptop on a spinning disk, Defender
+ * scanning the .NET assemblies `Add-Type` loads — was measured in the field to overrun the whole
+ * 20 s budget. On the login commit that surfaced as `MachineCredentialStoreUnwritableError`
+ * (`spawnSync … powershell.exe ETIMEDOUT`) right after the user APPROVED the sign-in.
+ *
+ * Why not simply retry the sync call with a longer budget: (1) the call is synchronous, so a retry
+ * blocks the event loop — unacceptable on `readState()`, which runs on the connectivity probe and
+ * every tool call; and (2) the write runs INSIDE the credential lock, whose ordering contract
+ * (`credential-lock.ts`: readState + Protect + HTTP < `LOCK_STALE_MS` = 60 s) a 20 s + 60 s write
+ * would break, letting another process take the lock over mid-write. The warm-up pays the cold
+ * start ASYNCHRONOUSLY and OUTSIDE the lock, so every in-lock call keeps its single 20 s budget.
+ */
+const DPAPI_TIMEOUTS_MS = { call: 20_000, warmUp: 60_000 };
+
+let dpapiTimeoutsMs = DPAPI_TIMEOUTS_MS;
+
+/**
+ * @internal Shrink the DPAPI budgets — for this package's own tests only (a real-spawn test cannot
+ * wait 20 s for a timeout); deliberately NOT exported from the package index. `undefined` restores.
+ */
+export function setDpapiTimeoutsForTests(timeoutsMs: typeof DPAPI_TIMEOUTS_MS | undefined): void {
+  dpapiTimeoutsMs = timeoutsMs ?? DPAPI_TIMEOUTS_MS;
+}
+
+/**
+ * True once a DPAPI round trip has succeeded in this process: the host and its assemblies are then
+ * paged in, and a warm-up would only cost a spawn.
+ */
+let dpapiWarm = false;
+
+/** The PowerShell argv + env for one DPAPI round trip. Input/output travel base64 via env. */
+function dpapiInvocation(action: "Protect" | "Unprotect", input: Buffer): { args: string[]; env: NodeJS.ProcessEnv } {
+  const script =
+    "$ErrorActionPreference='Stop';" +
+    "Add-Type -AssemblyName System.Security;" +
+    "$in=[Convert]::FromBase64String($env:AIGD_DPAPI_IN);" +
+    `$out=[System.Security.Cryptography.ProtectedData]::${action}($in,$null,[System.Security.Cryptography.DataProtectionScope]::CurrentUser);` +
+    "[Convert]::ToBase64String($out)";
+  return {
+    args: ["-NoProfile", "-NonInteractive", "-Command", script],
+    env: { ...process.env, AIGD_DPAPI_IN: input.toString("base64") },
+  };
+}
+
+/** Hosts in try-order: the known-startable one first (it may have been uninstalled since). */
+function orderedHosts(resolution: PowerShellHostResolution): string[] {
+  return resolution.spawnable === undefined
+    ? resolution.candidates
+    : [resolution.spawnable, ...resolution.candidates.filter((c) => c !== resolution.spawnable)];
+}
+
+/**
+ * Pay a cold PowerShell start ASYNCHRONOUSLY (a throwaway `Protect` of one byte, generous budget),
+ * so the synchronous codec calls that follow — inside the credential lock — run warm. Never throws
+ * and never blocks the event loop; a no-op once a round trip has succeeded in this process. On
+ * failure nothing is lost: the real call then fails exactly as it would have without the warm-up.
+ */
+async function warmUpDpapi(): Promise<void> {
+  if (dpapiWarm) return;
+  const { args, env } = dpapiInvocation("Protect", Buffer.from([0]));
+  const resolution = resolvePowerShellHosts();
+  for (const host of orderedHosts(resolution)) {
+    const err = await new Promise<Error | null>((resolve) => {
+      execFile(host, args, { env, timeout: dpapiTimeoutsMs.warmUp, windowsHide: true }, (error) =>
+        resolve(error),
+      );
+    });
+    if (err && isHostStartFailure(err)) continue;
+    if (!err) {
+      resolution.spawnable = host;
+      dpapiWarm = true;
+    }
+    return;
+  }
 }
 
 /**
@@ -698,33 +790,20 @@ function isHostStartFailure(err: unknown): boolean {
  * maps it to the structured `"unreadable"` (read) / `"unwritable"` (write) outcome (04 §1/§4).
  */
 function dpapiTransform(action: "Protect" | "Unprotect", input: Buffer): Buffer {
-  const script =
-    "$ErrorActionPreference='Stop';" +
-    "Add-Type -AssemblyName System.Security;" +
-    "$in=[Convert]::FromBase64String($env:AIGD_DPAPI_IN);" +
-    `$out=[System.Security.Cryptography.ProtectedData]::${action}($in,$null,[System.Security.Cryptography.DataProtectionScope]::CurrentUser);` +
-    "[Convert]::ToBase64String($out)";
-
-  const args = ["-NoProfile", "-NonInteractive", "-Command", script];
-  const options = {
-    encoding: "utf-8" as const,
-    env: { ...process.env, AIGD_DPAPI_IN: input.toString("base64") },
-    timeout: 20000,
-    windowsHide: true,
-  };
-
+  const { args, env } = dpapiInvocation(action, input);
   const resolution = resolvePowerShellHosts();
-  // Try the known-startable host first, then everything else (it may have been uninstalled).
-  const attempts =
-    resolution.spawnable === undefined
-      ? resolution.candidates
-      : [resolution.spawnable, ...resolution.candidates.filter((c) => c !== resolution.spawnable)];
+  const attempts = orderedHosts(resolution);
 
   const unstartable: string[] = [];
   for (const host of attempts) {
     let stdout: string;
     try {
-      stdout = execFileSync(host, args, options);
+      stdout = execFileSync(host, args, {
+        encoding: "utf-8",
+        env,
+        timeout: dpapiTimeoutsMs.call,
+        windowsHide: true,
+      });
     } catch (err) {
       if (isHostStartFailure(err)) {
         unstartable.push(host);
@@ -738,6 +817,7 @@ function dpapiTransform(action: "Protect" | "Unprotect", input: Buffer): Buffer 
       throw err;
     }
     resolution.spawnable = host;
+    dpapiWarm = true;
     return Buffer.from(stdout.trim(), "base64");
   }
 

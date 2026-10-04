@@ -1,4 +1,5 @@
 import { REFRESH_HTTP_TIMEOUT } from "./credential-lock.js";
+import { describeErrorWithCause } from "./network-error.js";
 import { tokenUrl, type DeviceTokenResponse } from "./oauth-device-flow.js";
 
 /**
@@ -184,8 +185,7 @@ export class HttpTokenRefresher implements TokenRefresher {
       return buildRefreshResult(response.ok, response.status, parsed, this._now);
     } catch (err) {
       // Fail closed on any network/abort error — the store is never touched here.
-      const message = err instanceof Error ? err.message : String(err);
-      return { ok: false, reason: message };
+      return { ok: false, reason: describeErrorWithCause(err) };
     } finally {
       clearTimeout(timer);
       if (signal) signal.removeEventListener("abort", onAbort);

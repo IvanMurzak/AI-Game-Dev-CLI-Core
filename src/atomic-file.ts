@@ -44,6 +44,11 @@ export const OWNER_ONLY_FILE_MODE = 0o600;
 /** Owner-only directory mode (`rwx------`) applied to the store directory on POSIX. */
 export const OWNER_ONLY_DIRECTORY_MODE = 0o700;
 
+/** True when `err` is a Node errno-style error carrying `code` (e.g. `"ENOENT"`, `"ETIMEDOUT"`). */
+export function isErrno(err: unknown, code: string): boolean {
+  return typeof err === "object" && err !== null && (err as NodeJS.ErrnoException).code === code;
+}
+
 /**
  * Create `directory` (recursively, no-op when it exists) and restrict it to the owner on POSIX.
  * Windows relies on the user-profile ACL instead — `chmod` there is a no-op that would only mislead.

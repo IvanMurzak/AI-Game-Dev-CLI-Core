@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { isErrno } from "./atomic-file.js";
 import { MACHINE_STORE_DIR_NAME } from "./machine-credentials.js";
 
 /**
@@ -670,14 +671,6 @@ export function parseLockContent(bytes: Buffer): CredentialLockContent | undefin
     // Optional on read (fix-round amendment): documents from pre-nonce writers stay parseable.
     ...(typeof nonce === "string" ? { nonce } : {}),
   };
-}
-
-function isErrno(err: unknown, code: string): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    (err as NodeJS.ErrnoException).code === code
-  );
 }
 
 function sleep(ms: number): Promise<void> {

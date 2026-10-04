@@ -422,6 +422,9 @@ export async function commitAgentLogin(
   if (!credentials.accessToken) {
     throw new Error("agent credentials carry no access token");
   }
+  // GlitchTip #1260: pay a cold DPAPI PowerShell start now — async and lock-free — so the guard's
+  // read and the writes under the lock run warm within their 20 s budget.
+  await store.warmUpCodec();
   const lock = options.lock ?? new MachineCredentialLock(store.baseDirectory);
 
   const guard = await runAccountSwitchGuard({ ...options, revokeToken: options.revokeToken });
@@ -659,6 +662,9 @@ export async function commitToolsOnlyLogin(
   if (!credentials.accessToken) {
     throw new Error("plugin credentials carry no access token");
   }
+  // GlitchTip #1260: pay a cold DPAPI PowerShell start now — async and lock-free — so the guard's
+  // read and the writes under the lock run warm within their 20 s budget.
+  await store.warmUpCodec();
   const lock = options.lock ?? new MachineCredentialLock(store.baseDirectory);
 
   const guard = await runAccountSwitchGuard(options);

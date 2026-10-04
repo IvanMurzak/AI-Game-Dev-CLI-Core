@@ -1,4 +1,5 @@
 import type { MachineCredentials } from "./machine-credentials.js";
+import { describeAuthNetworkError } from "./network-error.js";
 
 /**
  * OAuth 2.1 Device Authorization Grant (RFC 8628) client for the ai-game.dev authorization server —
@@ -345,7 +346,7 @@ export async function deviceLogin(options: DeviceLoginOptions): Promise<DeviceLo
     if (isAbortError(err) || signal?.aborted) {
       return { ok: false, reason: "cancelled", message: "Sign-in cancelled." };
     }
-    return { ok: false, reason: "error", message: describeNetworkError(err) };
+    return { ok: false, reason: "error", message: describeAuthNetworkError(err) };
   }
 }
 
@@ -426,14 +427,6 @@ function abortError(): Error {
 
 function isAbortError(err: unknown): boolean {
   return err instanceof Error && err.name === "AbortError";
-}
-
-function describeNetworkError(err: unknown): string {
-  const message = err instanceof Error ? err.message : String(err);
-  if (/ECONNREFUSED|ENOTFOUND|EAI_AGAIN|fetch failed|ECONNRESET|ETIMEDOUT/i.test(message)) {
-    return `Cannot reach the authorization server: ${message}`;
-  }
-  return `Authentication failed: ${message}`;
 }
 
 async function parseTokenResponse(response: Response): Promise<DeviceTokenResponse> {

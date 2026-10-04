@@ -4,6 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo, Socket } from "node:net";
 
 import type { MachineCredentials } from "./machine-credentials.js";
+import { describeAuthNetworkError, errorMessage } from "./network-error.js";
 import {
   ClientRegistrationStore,
   DEFAULT_DCR_TIMEOUT_MS,
@@ -676,7 +677,7 @@ export async function authCodeLogin(options: AuthCodeLoginOptions): Promise<Auth
       return {
         ok: false,
         reason: "no_browser",
-        message: `Cannot open a browser for sign-in (${describeError(err)}). Try device-code login instead.`,
+        message: `Cannot open a browser for sign-in (${errorMessage(err)}). Try device-code login instead.`,
       };
     }
 
@@ -749,7 +750,7 @@ export async function authCodeLogin(options: AuthCodeLoginOptions): Promise<Auth
     if (err instanceof LoopbackTimeoutError) {
       return { ok: false, reason: "timeout", message: err.message };
     }
-    return { ok: false, reason: "error", message: describeNetworkError(err) };
+    return { ok: false, reason: "error", message: describeAuthNetworkError(err) };
   } finally {
     listener?.close();
   }
@@ -882,18 +883,6 @@ function abortError(): Error {
 
 function isAbortError(err: unknown): boolean {
   return err instanceof Error && err.name === "AbortError";
-}
-
-function describeError(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
-function describeNetworkError(err: unknown): string {
-  const message = describeError(err);
-  if (/ECONNREFUSED|ENOTFOUND|EAI_AGAIN|fetch failed|ECONNRESET|ETIMEDOUT/i.test(message)) {
-    return `Cannot reach the authorization server: ${message}`;
-  }
-  return `Authentication failed: ${message}`;
 }
 
 async function parseTokenResponse(response: Response): Promise<AuthCodeTokenResponse> {

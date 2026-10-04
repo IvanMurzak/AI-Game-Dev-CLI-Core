@@ -9,6 +9,25 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
 
 ## Unreleased
 
+### Fixed — sign-in failures are diagnosable; a cold DPAPI start no longer fails the login commit
+
+- **Network failures keep their cause.** undici reports every transport failure as `TypeError:
+  fetch failed` and keeps the errno and address only on `err.cause`; the OAuth flows read
+  `err.message` alone, so the desktop's `Could not reach the client registration endpoint: fetch
+  failed` (GlitchTip desktop #364) said nothing about WHY. Registration, the auth-code and device
+  flows, token refresh and token exchange now append the cause chain via the new exported
+  `describeErrorWithCause` — e.g. `fetch failed (cause: AggregateError ETIMEDOUT [connect ETIMEDOUT
+  51.81.222.213:443; connect ENETUNREACH 2604:…:443])`. Messages that previously ended in `fetch
+  failed` are now longer; nothing else about the result shapes changes.
+- **A cold DPAPI PowerShell start no longer fails the login commit.** A cold PowerShell 5.1 start on
+  a slow machine overran the 20 s budget and the post-approval credential write threw
+  `MachineCredentialStoreUnwritableError` (`spawnSync … powershell.exe ETIMEDOUT`, GlitchTip desktop
+  #1260). `commitAgentLogin` / `commitToolsOnlyLogin` now first `await store.warmUpCodec()` — an
+  ASYNC, lock-free throwaway round trip with a 60 s budget (no-op off Windows and once warm) — so the
+  synchronous calls under the lock run warm. No synchronous call is retried or lengthened: the event
+  loop is never blocked longer than before, and the lock's stale-ordering contract
+  (readState + Protect + HTTP < `LOCK_STALE_MS`) still holds. New: `MachineCredentialStore.warmUpCodec()`.
+
 ## 0.6.0 — 2026-09-24
 
 > **Upgrading from 0.5.x:** consumers on `^0.5.0` do not receive 0.6.0 (0.x MINOR); widen the

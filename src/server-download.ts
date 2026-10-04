@@ -17,6 +17,7 @@ import {
   checksumFailureReason,
   SHA256SUMS_ASSET_NAME,
 } from "./server-checksum.js";
+import { describeErrorWithCause } from "./network-error.js";
 import { parseZip } from "./unzip.js";
 import { emitProgress, type ProgressCallback } from "./progress.js";
 
@@ -224,7 +225,7 @@ async function fetchSha256SumsText(url: string, fetchImpl: typeof fetch, warning
       warnings.push(`${SHA256SUMS_ASSET_NAME} fetch attempt ${attempt}/${SHA256SUMS_FETCH_ATTEMPTS}: HTTP ${response.status}.`);
     } catch (err) {
       warnings.push(
-        `${SHA256SUMS_ASSET_NAME} fetch attempt ${attempt}/${SHA256SUMS_FETCH_ATTEMPTS}: ${err instanceof Error ? err.message : String(err)}.`,
+        `${SHA256SUMS_ASSET_NAME} fetch attempt ${attempt}/${SHA256SUMS_FETCH_ATTEMPTS}: ${describeErrorWithCause(err)}.`,
       );
     }
   }
