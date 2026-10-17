@@ -132,13 +132,21 @@ function existsFile(candidate: string): boolean {
   }
 }
 
-function dirHasFileWithExt(dir: string, ext: string): boolean {
+/** Names of the files directly in `dir` whose name ends with `ext` (case-insensitive); [] when unreadable. */
+function filesWithExt(dir: string, ext: string): string[] {
   try {
     const lower = ext.toLowerCase();
-    return fs.readdirSync(dir, { withFileTypes: true }).some((e) => e.isFile() && e.name.toLowerCase().endsWith(lower));
+    return fs
+      .readdirSync(dir, { withFileTypes: true })
+      .filter((e) => e.isFile() && e.name.toLowerCase().endsWith(lower))
+      .map((e) => e.name);
   } catch {
-    return false;
+    return [];
   }
+}
+
+function dirHasFileWithExt(dir: string, ext: string): boolean {
+  return filesWithExt(dir, ext).length > 0;
 }
 
 function escapeRegExp(text: string): string {
@@ -152,19 +160,11 @@ function escapeRegExp(text: string): string {
  */
 function rootCsprojReferences(dir: string, packagePrefix: string): boolean {
   const pattern = new RegExp(`\\bInclude\\s*=\\s*["']\\s*${escapeRegExp(packagePrefix)}`, "i");
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return false;
-  }
-  for (const e of entries) {
-    if (!e.isFile() || !e.name.toLowerCase().endsWith(".csproj")) continue;
+  return filesWithExt(dir, ".csproj").some((name) => {
     try {
-      if (pattern.test(fs.readFileSync(path.join(dir, e.name), "utf8"))) return true;
+      return pattern.test(fs.readFileSync(path.join(dir, name), "utf8"));
     } catch {
-      // unreadable csproj — a miss; keep scanning the rest
+      return false; // unreadable csproj — a miss; keep scanning the rest
     }
-  }
-  return false;
+  });
 }
