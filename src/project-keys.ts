@@ -55,7 +55,7 @@ export const PROJECT_KEYS_CURRENT_API_PATH = `${PROJECT_KEYS_API_PATH}/current`;
 export const DEFAULT_PROJECT_KEY_HTTP_TIMEOUT_MS = 15_000;
 
 /** The engines a key may be minted for (contract §2 body `engine`). */
-export type ProjectKeyEngine = "unity" | "godot" | "unreal" | "unknown";
+export type ProjectKeyEngine = "unity" | "godot" | "unreal" | "brutal" | "unknown";
 
 const PIN_RE = /^[0-9a-f]{8}$/;
 

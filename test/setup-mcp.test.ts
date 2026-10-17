@@ -10,6 +10,7 @@ import {
   unityAdapter,
   unrealAdapter,
   godotAdapter,
+  brutalAdapter,
   agentRegistry,
   getAgentById,
   httpHeadersKeyOf,
@@ -369,6 +370,12 @@ describe("setup-mcp policy — Cloud project-key header for EVERY client (contra
 describe("setup-mcp policy — guards + engine parameterization", () => {
   it("rejects stdio for an http-only engine (Godot, M6)", async () => {
     const res = await run({ adapter: godotAdapter, agentId: "claude-code", transport: "stdio", fs: new MemFs() });
+    expect(res.kind).toBe("failure");
+    if (res.kind === "failure") expect(res.error.message).toMatch(/stdio/);
+  });
+
+  it("rejects stdio for an http-only engine (Brutal)", async () => {
+    const res = await run({ adapter: brutalAdapter, agentId: "claude-code", transport: "stdio", fs: new MemFs() });
     expect(res.kind).toBe("failure");
     if (res.kind === "failure") expect(res.error.message).toMatch(/stdio/);
   });

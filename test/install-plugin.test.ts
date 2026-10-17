@@ -4,7 +4,7 @@ import * as path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { resolveInstallTarget, probeProjectMarkers, unityAdapter, unrealAdapter, godotAdapter } from "../src/index.js";
+import { resolveInstallTarget, probeProjectMarkers, unityAdapter, unrealAdapter, godotAdapter, brutalAdapter } from "../src/index.js";
 
 let tmp: string;
 beforeEach(() => {
@@ -30,6 +30,38 @@ describe("install-plugin — marker probe", () => {
   it("finds a Godot project by project.godot", () => {
     fs.writeFileSync(path.join(tmp, "project.godot"), "");
     expect(probeProjectMarkers(tmp, godotAdapter.markers).found).toBe(true);
+  });
+
+  it("finds a Brutal project by a root *.csproj referencing Ahwoo.BRUTAL.*", () => {
+    fs.writeFileSync(
+      path.join(tmp, "MyGame.csproj"),
+      `<Project Sdk="Microsoft.NET.Sdk">\n  <ItemGroup>\n    <PackageReference Include="Ahwoo.BRUTAL.Core" Version="1.0.0" />\n  </ItemGroup>\n</Project>\n`,
+    );
+    const probe = probeProjectMarkers(tmp, brutalAdapter.markers);
+    expect(probe.found).toBe(true);
+    expect(probe.matched).toEqual({ kind: "csproj-ref", packagePrefix: "Ahwoo.BRUTAL." });
+  });
+
+  it("brutal marker tolerates single quotes, whitespace and prefix case", () => {
+    fs.writeFileSync(path.join(tmp, "Game.csproj"), `<PackageReference Include = ' ahwoo.brutal.Engine' Version='2.0.0'/>`);
+    expect(probeProjectMarkers(tmp, brutalAdapter.markers).found).toBe(true);
+  });
+
+  it("brutal marker ignores a Godot C# csproj without a BRUTAL reference", () => {
+    fs.writeFileSync(
+      path.join(tmp, "MyGodotGame.csproj"),
+      `<Project Sdk="Godot.NET.Sdk/4.3.0">\n  <ItemGroup>\n    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />\n  </ItemGroup>\n</Project>\n`,
+    );
+    fs.writeFileSync(path.join(tmp, "project.godot"), "");
+    const probe = probeProjectMarkers(tmp, brutalAdapter.markers);
+    expect(probe.found).toBe(false);
+    expect(probe.checked.some((c) => c.includes("*.csproj") && c.includes("Ahwoo.BRUTAL."))).toBe(true);
+  });
+
+  it("brutal marker ignores a BRUTAL csproj nested below the root (non-recursive)", () => {
+    fs.mkdirSync(path.join(tmp, "src", "Game"), { recursive: true });
+    fs.writeFileSync(path.join(tmp, "src", "Game", "Game.csproj"), `<PackageReference Include="Ahwoo.BRUTAL.Core" />`);
+    expect(probeProjectMarkers(tmp, brutalAdapter.markers).found).toBe(false);
   });
 
   it("misses when no marker is present, listing what was checked", () => {

@@ -1,7 +1,8 @@
 /**
- * @baizor/gamedev-cli-core — shared CLI core for the AI Game Dev engine CLIs (Unity/Unreal/Godot).
+ * @baizor/gamedev-cli-core — shared CLI core for the AI Game Dev engine CLIs (Unity/Unreal/Godot)
+ * and the App's Brutal integration.
  *
- * The security- and correctness-critical modules the three CLIs consume as thin adapters over ONE
+ * The security- and correctness-critical modules the engine CLIs consume as thin adapters over ONE
  * source of truth, so every engine derives identical pins, writes identical config bytes, and follows
  * the same auth model (auth-fixes design D1/D4/T7):
  *
@@ -316,6 +317,7 @@ export {
   unityAdapter,
   unrealAdapter,
   godotAdapter,
+  brutalAdapter,
   SERVER_BINARY_BASENAME,
   SERVER_ARG_NAMES,
 } from "./engine-adapter.js";
