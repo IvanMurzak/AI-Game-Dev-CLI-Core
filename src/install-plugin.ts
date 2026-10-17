@@ -30,14 +30,29 @@ export interface MarkerProbeResult {
 export function probeProjectMarkers(projectRoot: string, markers: readonly ProjectMarkerSpec[]): MarkerProbeResult {
   const checked: string[] = [];
   for (const marker of markers) {
-    if (marker.kind === "file") {
-      const candidate = path.join(projectRoot, marker.relativePath);
-      checked.push(candidate);
-      if (existsFile(candidate)) return { found: true, matched: marker, checked };
-    } else {
-      const dir = marker.dir ? path.join(projectRoot, marker.dir) : projectRoot;
-      checked.push(path.join(dir, `*${marker.ext}`));
-      if (dirHasFileWithExt(dir, marker.ext)) return { found: true, matched: marker, checked };
+    switch (marker.kind) {
+      case "file": {
+        const candidate = path.join(projectRoot, marker.relativePath);
+        checked.push(candidate);
+        if (existsFile(candidate)) return { found: true, matched: marker, checked };
+        break;
+      }
+      case "ext": {
+        const dir = marker.dir ? path.join(projectRoot, marker.dir) : projectRoot;
+        checked.push(path.join(dir, `*${marker.ext}`));
+        if (dirHasFileWithExt(dir, marker.ext)) return { found: true, matched: marker, checked };
+        break;
+      }
+      case "csproj-ref": {
+        checked.push(`${path.join(projectRoot, "*.csproj")} (referencing ${marker.packagePrefix}*)`);
+        if (rootCsprojReferences(projectRoot, marker.packagePrefix)) return { found: true, matched: marker, checked };
+        break;
+      }
+      default: {
+        // Exhaustiveness guard: a new ProjectMarkerSpec kind must be handled explicitly above.
+        const unhandled: never = marker;
+        throw new Error(`Unhandled project marker kind: ${JSON.stringify(unhandled)}`);
+      }
     }
   }
   return { found: false, checked };
@@ -117,11 +132,42 @@ function existsFile(candidate: string): boolean {
   }
 }
 
-function dirHasFileWithExt(dir: string, ext: string): boolean {
+/** Names of the files directly in `dir` whose name ends with `ext` (case-insensitive); [] when unreadable. */
+function filesWithExt(dir: string, ext: string): string[] {
   try {
     const lower = ext.toLowerCase();
-    return fs.readdirSync(dir, { withFileTypes: true }).some((e) => e.isFile() && e.name.toLowerCase().endsWith(lower));
+    return fs
+      .readdirSync(dir, { withFileTypes: true })
+      .filter((e) => e.isFile() && e.name.toLowerCase().endsWith(lower))
+      .map((e) => e.name);
   } catch {
-    return false;
+    return [];
   }
+}
+
+function dirHasFileWithExt(dir: string, ext: string): boolean {
+  return filesWithExt(dir, ext).length > 0;
+}
+
+const XML_COMMENT_RE = /<!--[\s\S]*?-->/g;
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * True when any `*.csproj` directly in `dir` (non-recursive) contains an `Include="<prefix>…"`
+ * attribute — the prefix matched case-insensitively, tolerant of single or double quotes and of
+ * whitespace around `=`. XML comments are ignored, so a commented-out reference is not a match.
+ * Unreadable dirs/files count as a miss (never throws).
+ */
+function rootCsprojReferences(dir: string, packagePrefix: string): boolean {
+  const pattern = new RegExp(`\\bInclude\\s*=\\s*["']\\s*${escapeRegExp(packagePrefix)}`, "i");
+  return filesWithExt(dir, ".csproj").some((name) => {
+    try {
+      return pattern.test(fs.readFileSync(path.join(dir, name), "utf8").replace(XML_COMMENT_RE, ""));
+    } catch {
+      return false; // unreadable csproj — a miss; keep scanning the rest
+    }
+  });
 }

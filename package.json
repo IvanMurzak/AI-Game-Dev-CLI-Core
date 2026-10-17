@@ -1,7 +1,7 @@
 {
   "name": "@baizor/gamedev-cli-core",
   "version": "0.0.0",
-  "description": "Shared TypeScript CLI core for the AI Game Dev engine CLIs (Unity/Unreal/Godot): project identity/pin, OAuth device login, machine credential store, and setup-mcp/install-plugin logic. Consumed as thin adapters by the three engine CLIs.",
+  "description": "Shared TypeScript CLI core for the AI Game Dev engine CLIs (Unity/Unreal/Godot) and the App's Brutal integration: project identity/pin, OAuth device login, machine credential store, and setup-mcp/install-plugin logic. Consumed as thin adapters by the engine CLIs and the AI Game Developer App.",
   "license": "MIT",
   "author": "Ivan Murzak",
   "type": "module",

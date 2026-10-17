@@ -246,6 +246,15 @@ describe("getOrMintProjectKey — the §6 get-or-mint rule", () => {
     expect(transport.mints[0]!.accessToken).toBe(PLUGIN_TOKEN);
   });
 
+  it("mints a key for a Brutal project with engine=brutal", async () => {
+    const { credentials, store } = setup();
+    const transport = fakeTransport();
+    const res = await getOrMintProjectKey({ pin: PIN, engine: "brutal", issuer: ISSUER, credentials, store, transport });
+    expect(transport.mints[0]!.engine).toBe("brutal");
+    expect(res.kind).toBe("ok");
+    expect(store.get(ISSUER, PIN)).toMatchObject({ engine: "brutal" });
+  });
+
   it("reuses a cached key of the same account that the server still accepts — no mint", async () => {
     const { credentials, store } = setup();
     seedCache(store);

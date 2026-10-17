@@ -4,6 +4,7 @@ import {
   unityAdapter,
   unrealAdapter,
   godotAdapter,
+  brutalAdapter,
   getEngineAdapter,
   engineAdapters,
   ridForPlatform,
@@ -25,6 +26,19 @@ describe("engine-adapter contract", () => {
     expect(unityAdapter.clientId).toBe("unity-mcp-cli");
     expect(unrealAdapter.clientId).toBe("unreal-mcp-cli");
     expect(godotAdapter.clientId).toBe("godot-cli");
+  });
+
+  it("brutal: http-only, ai-game-developer, brutal-cli, flat .ai-game-dev/server, AS-root login target", () => {
+    expect(brutalAdapter.engine).toBe("brutal");
+    expect(brutalAdapter.clientId).toBe("brutal-cli");
+    expect(brutalAdapter.serverName).toBe("ai-game-developer");
+    expect(brutalAdapter.stdioSupported).toBe(false);
+    expect(brutalAdapter.markers).toEqual([{ kind: "csproj-ref", packagePrefix: "Ahwoo.BRUTAL." }]);
+    expect(brutalAdapter.serverInstallDir("/proj").replace(/\\/g, "/")).toMatch(/\/proj\/\.ai-game-dev\/server$/);
+    expect(brutalAdapter.serverBinaryPath("/proj", "win32").replace(/\\/g, "/")).toMatch(
+      /\/proj\/\.ai-game-dev\/server\/gamedev-mcp-server\.exe$/,
+    );
+    expect(brutalAdapter.loginServerTarget("https://ai-game.dev/mcp/p/34ea75f2")).toBe("https://ai-game.dev");
   });
 
   it("declares the right project markers per engine", () => {
@@ -57,7 +71,8 @@ describe("engine-adapter contract", () => {
     expect(getEngineAdapter("unity")).toBe(unityAdapter);
     expect(getEngineAdapter("unreal")).toBe(unrealAdapter);
     expect(getEngineAdapter("godot")).toBe(godotAdapter);
-    expect(Object.keys(engineAdapters).sort()).toEqual(["godot", "unity", "unreal"]);
+    expect(getEngineAdapter("brutal")).toBe(brutalAdapter);
+    expect(Object.keys(engineAdapters).sort()).toEqual(["brutal", "godot", "unity", "unreal"]);
   });
 });
 

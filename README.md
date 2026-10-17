@@ -1,9 +1,9 @@
 # AI-Game-Dev-CLI-Core
 
-Shared TypeScript CLI core for the AI Game Dev engine CLIs (Unity / Unreal / Godot),
-published to npm as **`@baizor/gamedev-cli-core`** via **npm Trusted Publishing (OIDC, tokenless)**.
+Shared TypeScript CLI core for the AI Game Dev engine CLIs (Unity / Unreal / Godot) and the
+AI Game Developer App's Brutal integration, published to npm as **`@baizor/gamedev-cli-core`** via **npm Trusted Publishing (OIDC, tokenless)**.
 
-This package is the single source of truth for CLI logic; the three engine CLIs are thin,
+This package is the single source of truth for CLI logic; the engine CLIs are thin,
 engine-specific adapters over it. The shared modules land here through the `auth-fixes` design
 (tasks b2/b3):
 
@@ -16,7 +16,8 @@ engine-specific adapters over it. The shared modules land here through the `auth
   - **OAuth 2.1 device-grant login** — `deviceLogin` (RFC 8628, `/oauth/device_authorization` +
     `/oauth/token`) with token rotation and a clean `login required` on family-revoke.
 - **Landed (b3 — shared modules + the engine-adapter contract):**
-  - **engine-adapter contract** — `EngineAdapter` (+ `unityAdapter` / `unrealAdapter` / `godotAdapter`),
+  - **engine-adapter contract** — `EngineAdapter` (+ `unityAdapter` / `unrealAdapter` / `godotAdapter` /
+    `brutalAdapter`),
     the single typed seam that carries every per-engine difference: `serverName`, project markers,
     `stdioSupported` + `stdioArgs`, the server install-dir layout, `loginServerTarget`, and the OAuth
     `clientId`. **No engine specifics live anywhere else in the package.**

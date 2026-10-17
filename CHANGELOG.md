@@ -9,6 +9,19 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
 
 ## Unreleased
 
+### Added — Brutal engine adapter
+
+- **New engine `brutal`** (the BRUTAL C# framework, a .NET 10 project). `EngineId` and
+  `ProjectKeyEngine` gain `"brutal"`; the new exported `brutalAdapter` (also in `engineAdapters`)
+  mirrors Godot: client id `brutal-cli`, server entry `ai-game-developer`, http-only (stdio is
+  rejected), server installed flat under `<project>/.ai-game-dev/server/`, AS-root login target.
+- **New project-marker kind `csproj-ref`** (`{ kind: "csproj-ref"; packagePrefix }`): matches when a
+  `*.csproj` directly in the project root (non-recursive) has an `Include="<prefix>…"` reference
+  (prefix case-insensitive, single or double quotes, whitespace tolerated; XML comments ignored). The Brutal marker is
+  `Ahwoo.BRUTAL.`, so a Godot C# `*.csproj` without that reference does not match.
+  `probeProjectMarkers` now switches exhaustively over marker kinds. Consumers that switch over
+  `ProjectMarkerSpec.kind` or exhaustively over `EngineId` must handle the new members.
+
 ### Fixed — sign-in failures are diagnosable; a cold DPAPI start no longer fails the login commit
 
 - **Network failures keep their cause.** undici reports every transport failure as `TypeError:

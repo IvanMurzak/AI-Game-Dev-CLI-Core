@@ -6,17 +6,17 @@ import { normalizeServerBase } from "./token-refresher.js";
  * The **engine-adapter contract** (auth-fixes design 02 §T7 / decision D1+D4) — the single typed seam
  * that carries every per-engine difference so the rest of cli-core (agents-registry, setup-mcp,
  * install-plugin, enroll, server-download) stays engine-agnostic. There is **zero engine-specific
- * hard-coding anywhere outside an {@link EngineAdapter} definition**: the three CLIs each pass their
- * adapter into the shared policy functions.
+ * hard-coding anywhere outside an {@link EngineAdapter} definition**: each engine CLI (and the App's
+ * Brutal module) passes its adapter into the shared policy functions.
  *
  * What the adapter parameterizes (the §T7 list):
  *   - **serverName** — the MCP server-entry name written into agent configs
- *     (`ai-game-developer` for Unity/Godot, `unreal-mcp` for Unreal).
+ *     (`ai-game-developer` for Unity/Godot/Brutal, `unreal-mcp` for Unreal).
  *   - **project markers** — how to recognise this engine's project root
- *     (`Packages/manifest.json` / any `*.uproject` / `project.godot`), used by the T5 install-plugin
- *     marker probe.
+ *     (`Packages/manifest.json` / any `*.uproject` / `project.godot` / a root `*.csproj` referencing
+ *     `Ahwoo.BRUTAL.*`), used by the T5 install-plugin marker probe.
  *   - **stdio support flag + stdio-args vector** — whether the plugin supports the stdio transport
- *     (Godot is http-only) and the exact server args a stdio config emits.
+ *     (Godot and Brutal are http-only) and the exact server args a stdio config emits.
  *   - **install-dir layout** — where the RID-matched `gamedev-mcp-server` binary is installed
  *     (`Library/mcp-server/<rid>` vs `Intermediate/UnrealMCP/server/<rid>` vs `.ai-game-dev/server`).
  *   - **login project-sink** — the {@link EngineAdapter.loginServerTarget} that yields the AS-root
@@ -24,8 +24,8 @@ import { normalizeServerBase } from "./token-refresher.js";
  *   - **OAuth client_id** — the per-product device-flow client id.
  */
 
-/** The three supported engines. */
-export type EngineId = "unity" | "unreal" | "godot";
+/** The supported engines. */
+export type EngineId = "unity" | "unreal" | "godot" | "brutal";
 
 /** Base name of the shared MCP server binary released from `IvanMurzak/GameDev-MCP-Server`. */
 export const SERVER_BINARY_BASENAME = "gamedev-mcp-server";
@@ -33,11 +33,15 @@ export const SERVER_BINARY_BASENAME = "gamedev-mcp-server";
 /**
  * How to recognise an engine's project root. `file` matches an exact relative path; `ext` matches any
  * file with the given extension inside `dir` (default the project root) — the shape a `*.uproject`
- * probe needs, since the file's basename is the user's project name.
+ * probe needs, since the file's basename is the user's project name. `csproj-ref` matches when any
+ * `*.csproj` directly in the project root (non-recursive) carries an `Include="<packagePrefix>…"`
+ * attribute (prefix compared case-insensitively) — the shape a .NET framework project (Brutal) needs,
+ * since a bare `*.csproj` would also match a Godot C# project.
  */
 export type ProjectMarkerSpec =
   | { kind: "file"; relativePath: string }
-  | { kind: "ext"; ext: string; dir?: string };
+  | { kind: "ext"; ext: string; dir?: string }
+  | { kind: "csproj-ref"; packagePrefix: string };
 
 /** Parameters for building a stdio server-args vector. */
 export interface StdioArgsParams {
@@ -55,13 +59,13 @@ export interface StdioArgsParams {
 export interface EngineAdapter {
   /** Which engine this adapter is for. */
   readonly engine: EngineId;
-  /** OAuth product client id (`unity-mcp-cli` / `unreal-mcp-cli` / `godot-cli`). */
+  /** OAuth product client id (`unity-mcp-cli` / `unreal-mcp-cli` / `godot-cli` / `brutal-cli`). */
   readonly clientId: string;
   /** The canonical MCP server-entry name written under an agent config's body path. */
   readonly serverName: string;
   /** Ordered project-root marker probes (T5); the first match identifies the project. */
   readonly markers: readonly ProjectMarkerSpec[];
-  /** Whether this engine's plugin supports the stdio transport (Godot is http-only — decision M6). */
+  /** Whether this engine's plugin supports the stdio transport (Godot/Brutal are http-only — decision M6). */
   readonly stdioSupported: boolean;
   /** Build the stdio server-args vector for this engine. */
   stdioArgs(params: StdioArgsParams): string[];
@@ -188,11 +192,32 @@ export const godotAdapter: EngineAdapter = {
   loginServerTarget: toAuthServerRoot,
 };
 
+/**
+ * Brutal (the BRUTAL C# framework — a .NET 10 project): server-entry `ai-game-developer`; project
+ * marker a root `*.csproj` with a `PackageReference Include="Ahwoo.BRUTAL.<X>"`; **stdio NOT
+ * supported** (http-only, like Godot); server installed FLAT under `<project>/.ai-game-dev/server/`.
+ * The integration is installed by the AI Game Developer App (client id `brutal-cli`); the in-game
+ * plugin uses `brutal-mcp-plugin`.
+ */
+export const brutalAdapter: EngineAdapter = {
+  engine: "brutal",
+  clientId: "brutal-cli",
+  serverName: "ai-game-developer",
+  markers: [{ kind: "csproj-ref", packagePrefix: "Ahwoo.BRUTAL." }],
+  stdioSupported: false,
+  stdioArgs: defaultStdioArgs,
+  serverInstallDir: (root) => path.join(path.resolve(root), ".ai-game-dev", "server"),
+  serverBinaryPath: (root, platform) =>
+    path.join(brutalAdapter.serverInstallDir(root), serverExecutableName(platform)),
+  loginServerTarget: toAuthServerRoot,
+};
+
 /** The built-in adapters, keyed by engine. */
 export const engineAdapters: Readonly<Record<EngineId, EngineAdapter>> = {
   unity: unityAdapter,
   unreal: unrealAdapter,
   godot: godotAdapter,
+  brutal: brutalAdapter,
 };
 
 /** Look up a built-in adapter by engine id. */
