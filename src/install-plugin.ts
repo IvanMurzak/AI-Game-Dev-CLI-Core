@@ -149,6 +149,8 @@ function dirHasFileWithExt(dir: string, ext: string): boolean {
   return filesWithExt(dir, ext).length > 0;
 }
 
+const XML_COMMENT_RE = /<!--[\s\S]*?-->/g;
+
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -156,13 +158,14 @@ function escapeRegExp(text: string): string {
 /**
  * True when any `*.csproj` directly in `dir` (non-recursive) contains an `Include="<prefix>…"`
  * attribute — the prefix matched case-insensitively, tolerant of single or double quotes and of
- * whitespace around `=`. Unreadable dirs/files count as a miss (never throws).
+ * whitespace around `=`. XML comments are ignored, so a commented-out reference is not a match.
+ * Unreadable dirs/files count as a miss (never throws).
  */
 function rootCsprojReferences(dir: string, packagePrefix: string): boolean {
   const pattern = new RegExp(`\\bInclude\\s*=\\s*["']\\s*${escapeRegExp(packagePrefix)}`, "i");
   return filesWithExt(dir, ".csproj").some((name) => {
     try {
-      return pattern.test(fs.readFileSync(path.join(dir, name), "utf8"));
+      return pattern.test(fs.readFileSync(path.join(dir, name), "utf8").replace(XML_COMMENT_RE, ""));
     } catch {
       return false; // unreadable csproj — a miss; keep scanning the rest
     }

@@ -17,7 +17,7 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
   rejected), server installed flat under `<project>/.ai-game-dev/server/`, AS-root login target.
 - **New project-marker kind `csproj-ref`** (`{ kind: "csproj-ref"; packagePrefix }`): matches when a
   `*.csproj` directly in the project root (non-recursive) has an `Include="<prefix>…"` reference
-  (prefix case-insensitive, single or double quotes, whitespace tolerated). The Brutal marker is
+  (prefix case-insensitive, single or double quotes, whitespace tolerated; XML comments ignored). The Brutal marker is
   `Ahwoo.BRUTAL.`, so a Godot C# `*.csproj` without that reference does not match.
   `probeProjectMarkers` now switches exhaustively over marker kinds. Consumers that switch over
   `ProjectMarkerSpec.kind` or exhaustively over `EngineId` must handle the new members.

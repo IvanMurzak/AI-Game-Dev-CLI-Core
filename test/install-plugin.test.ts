@@ -58,6 +58,14 @@ describe("install-plugin — marker probe", () => {
     expect(probe.checked.some((c) => c.includes("*.csproj") && c.includes("Ahwoo.BRUTAL."))).toBe(true);
   });
 
+  it("brutal marker ignores a commented-out BRUTAL reference", () => {
+    fs.writeFileSync(
+      path.join(tmp, "Game.csproj"),
+      `<Project>\n  <!--\n    <PackageReference Include="Ahwoo.BRUTAL.Core" />\n  -->\n</Project>\n`,
+    );
+    expect(probeProjectMarkers(tmp, brutalAdapter.markers).found).toBe(false);
+  });
+
   it("brutal marker ignores a BRUTAL csproj nested below the root (non-recursive)", () => {
     fs.mkdirSync(path.join(tmp, "src", "Game"), { recursive: true });
     fs.writeFileSync(path.join(tmp, "src", "Game", "Game.csproj"), `<PackageReference Include="Ahwoo.BRUTAL.Core" />`);
