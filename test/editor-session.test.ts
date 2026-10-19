@@ -20,6 +20,7 @@ import {
   type SessionLease,
   type SessionProcessOps,
 } from "../src/editor-session.js";
+import { CredentialLockBusyError } from "../src/credential-lock.js";
 import { godotAdapter, unityAdapter, type EngineAdapter } from "../src/engine-adapter.js";
 import { MCP_PING_PATH, mcpReadinessProbe } from "../src/mcp-ping.js";
 
@@ -709,6 +710,47 @@ describe("beforeLaunch", () => {
     expect(fs.existsSync(lockPath)).toBe(false);
   });
 
+  it("a startup lock taken over during the hook launches nothing that round, then decides again", async () => {
+    let builds = 0;
+    const s = session({
+      beforeLaunch: async () => {
+        // e.g. the machine slept through the heartbeat and a peer took the (now stale) lock over.
+        if (++builds === 1) writeLockFile(new Date(Date.now() - 120_000));
+      },
+    });
+    const result = await s.ensure();
+    expect(result.source).toBe("started");
+    expect(builds).toBe(2);
+    expect(world.spawns).toHaveLength(1);
+    expect(fs.existsSync(lockFile())).toBe(false);
+  });
+
+  it("a lock-busy error from inside the hook (another lock) propagates unchanged", async () => {
+    const busy = new CredentialLockBusyError(path.join(root, "credentials.lock"), 5);
+    const s = session({
+      beforeLaunch: async () => {
+        throw busy;
+      },
+    });
+    expect(await s.ensure().catch((e: unknown) => e)).toBe(busy);
+    expect(world.spawns).toHaveLength(0);
+  });
+
+  it("invalid timing options fall back to the defaults", async () => {
+    world.addProcess();
+    const err = await errorOf(
+      session({
+        startupLockWaitMs: Number.NaN,
+        readyTimeoutMs: 80,
+        foreignReadyTimeoutMs: Number.NaN,
+        foreignRecheckIntervalMs: -1,
+        adapter: adapterWith({ findRunningEditor: async () => true }),
+      }).ensure(),
+    );
+    expect(err).toMatchObject({ reason: "not-ready", source: "foreign" });
+    expect(err.message).toContain("within 80 ms");
+  });
+
   it("a throwing hook propagates unchanged: no editor, no lease, lock released", async () => {
     class BuildError extends Error {}
     const s = session({
@@ -754,6 +796,23 @@ describe("foreign editors", () => {
     expect(result.source).toBe("started");
     expect(world.spawns).toHaveLength(1);
     expect(scans).toBeGreaterThanOrEqual(3); // decide, >= 1 re-check, decide again
+  });
+
+  it("a single missed re-check (pid unknown) is not an exit", async () => {
+    world.addProcess();
+    let scans = 0;
+    const statuses: string[] = [];
+    const s = session({
+      onStatus: (m) => statuses.push(m),
+      foreignRecheckIntervalMs: 20,
+      adapter: adapterWith({ findRunningEditor: async () => ++scans !== 2 }), // scan 2 misses once
+    });
+    setTimeout(() => world.procs.forEach((p) => (p.ready = true)), 150); // its server comes up
+    const result = await s.ensure();
+    expect(result.source).toBe("foreign");
+    expect(scans).toBeGreaterThanOrEqual(3);
+    expect(statuses.filter((m) => m === "Waiting for the running editor...")).toHaveLength(1); // one round
+    expect(world.spawns).toHaveLength(0);
   });
 
   it("gives up after the last round when editors keep exiting", async () => {
@@ -810,7 +869,7 @@ describe(".ai-game-dev/.gitignore", () => {
     fs.writeFileSync(gitignore(), "# mine\r\ncredentials.json\r\n/session.json");
     await session().ensure();
     expect(fs.readFileSync(gitignore(), "utf-8")).toBe(
-      "# mine\r\ncredentials.json\r\n/session.json\nsession.lock\nsession.lock.takeover\n",
+      "# mine\r\ncredentials.json\r\n/session.json\r\nsession.lock\r\nsession.lock.takeover\r\n",
     );
     const before = fs.readFileSync(gitignore(), "utf-8");
     expect(ensureAiGameDevGitignore(root, SESSION_GITIGNORE_ENTRIES)).toBe(true);
@@ -819,6 +878,13 @@ describe(".ai-game-dev/.gitignore", () => {
     fs.rmSync(sessionDir(), { recursive: true, force: true });
     await session({ gitignore: false }).ensure();
     expect(fs.existsSync(gitignore())).toBe(false);
+  });
+
+  it("respects the user's `!entry` negation (never appends the entry after it)", () => {
+    fs.mkdirSync(sessionDir(), { recursive: true });
+    fs.writeFileSync(gitignore(), "!session.json\n!/session.lock\n");
+    expect(ensureAiGameDevGitignore(root, SESSION_GITIGNORE_ENTRIES)).toBe(true);
+    expect(fs.readFileSync(gitignore(), "utf-8")).toBe("!session.json\n!/session.lock\nsession.lock.takeover\n");
   });
 
   it("is best-effort: an unusable target reports false and never throws", () => {
