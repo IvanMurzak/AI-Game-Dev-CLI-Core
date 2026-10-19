@@ -1,0 +1,30 @@
+test/golden-vectors/MachineCredentials.GoldenVectors.json
+  s_887efbfc81dc0f::t_f98e883503b288 51-76
+test/machine-credentials-cohort.test.ts
+  s_887efbfc81dc0f::t_511e1bd6e894a7 1-6,15-62,67,72-86,91,94-107
+  s_887efbfc81dc0f::t_0bcfdb7b171bbe 87-90,92-93
+  s_887efbfc81dc0f::t_fe904b3c58d3d0 63-66,68-71
+  s_887efbfc81dc0f::t_04e9ea8419d6b1 7-14
+src/credential-lock.ts
+  s_887efbfc81dc0f::t_5d2745b0ac2193 421-427
+test/credential-dpapi-cross-implementation.test.ts
+  s_887efbfc81dc0f::t_0a1bdefe2da736 1-204
+test/machine-credentials-mirror-readability.test.ts
+  s_887efbfc81dc0f::t_6bdd6d806d0170 1-70
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "579461df0aa751001afd3fa8044291df50b6fe98",
+  "prompts": {},
+  "sessions": {
+    "s_887efbfc81dc0f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "556ed732-8c84-4c19-bfb0-6231e40ac140",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Ivan Murzak <Ivan.D.Murzak@gmail.com>"
+    }
+  }
+}

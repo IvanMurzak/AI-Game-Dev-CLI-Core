@@ -1,0 +1,25 @@
+.github/workflows/ci.yml
+  s_de71e20c9d8602::t_73812567709c89 7
+  s_de71e20c9d8602::t_7feaa8865e8710 9-11
+  s_de71e20c9d8602::t_66b8508bf475a1 251
+  s_de71e20c9d8602::t_5221619240303c 88-90
+.github/workflows/concurrency-suite.yml
+  s_de71e20c9d8602::t_90a4eac7d16d7e 24-25
+  s_de71e20c9d8602::t_477d0a8fa4e55f 59-60
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "2c8f908f400d94afd9ead7906f38edc88ea226b6",
+  "prompts": {},
+  "sessions": {
+    "s_de71e20c9d8602": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b1fa7ae0-224c-4b0e-8499-22456e0d6a3f",
+        "model": "unknown"
+      },
+      "human_author": "Ivan Murzak <Ivan.D.Murzak@gmail.com>"
+    }
+  }
+}

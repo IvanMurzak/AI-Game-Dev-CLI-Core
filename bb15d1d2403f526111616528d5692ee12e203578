@@ -1,0 +1,43 @@
+test/fake-as.ts
+  s_5b742bf37a2587::t_64fda75c8dfbff 185-187
+  s_5b742bf37a2587::t_fd6317cb690fb0 420
+  s_5b742bf37a2587::t_d05eacba0b8f9a 369
+  s_5b742bf37a2587::t_cdf91784225888 344
+  s_5b742bf37a2587::t_30da1a5cc490d1 356
+  s_5b742bf37a2587::t_22ecb20909d261 81-95
+  s_5b742bf37a2587::t_0835c89d8f8536 154
+  s_ed1b4ae4e5d986::t_22b54d1df74572 188-189
+test/concurrency-suite.subprocess.test.ts
+  s_5b742bf37a2587::t_e204f0dfe5df7e 433-445
+  s_5b742bf37a2587::t_540c4ef8642f75 535,550,563-578
+  s_5b742bf37a2587::t_b6ae31b885b215 266-359
+  s_5b742bf37a2587::t_e43f65e6687257 26-30,36-37
+  s_5b742bf37a2587::t_8ecc3957792e37 16
+test/fixtures/concurrency-worker.mjs
+  s_5b742bf37a2587::t_8cec571bd8ca6d 23-28
+  s_5b742bf37a2587::t_b56eb629227cdf 97-109,114
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "bb15d1d2403f526111616528d5692ee12e203578",
+  "prompts": {},
+  "sessions": {
+    "s_5b742bf37a2587": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ba723765-770d-456d-823d-c53d8073ed95",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Ivan Murzak <Ivan.D.Murzak@gmail.com>"
+    },
+    "s_ed1b4ae4e5d986": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d065bda2-94f7-45db-b8f4-2da50c81020b",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Ivan Murzak <Ivan.D.Murzak@gmail.com>"
+    }
+  }
+}

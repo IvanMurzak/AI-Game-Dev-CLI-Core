@@ -1,0 +1,36 @@
+test/credential-lock.test.ts
+  s_887efbfc81dc0f::t_35c576a014e5cb 1-72,74-300
+  s_887efbfc81dc0f::t_a51213fabc1f34 73
+test/lock-protocol.subprocess.test.ts
+  s_887efbfc81dc0f::t_dfce1aa92f7e6f 1-293
+src/credential-lock.ts
+  s_887efbfc81dc0f::t_682498d08a3999 310-329,331
+  s_887efbfc81dc0f::t_a597f1fddcb8b1 335-336,344-357,383,385,387,390-394,396-397,399,401-420,423,425,427
+  s_887efbfc81dc0f::t_874e9875f184e2 381-382
+  s_887efbfc81dc0f::t_00e424b392b206 473-480
+  s_887efbfc81dc0f::t_09edcc9f28382e 47-55
+  s_887efbfc81dc0f::t_3886797a220652 1-46,56-309,330,332-334,337-343,358-376,378-380,384,386,388-389,395,398,400,421-422,424,426,428-472
+  s_887efbfc81dc0f::t_c9ce2c5ce30e0e 377
+test/fixtures/lock-runner.mjs
+  s_887efbfc81dc0f::t_765d1e746403df 1-62
+test/golden-vectors/LockProtocol.GoldenVectors.json
+  s_887efbfc81dc0f::t_6c909d217309f6 1-8
+src/index.ts
+  s_887efbfc81dc0f::t_3f92d73095fcf9 87-99
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "b519f4a92c5a7bbf942f5098cd0a08b33dc20fa2",
+  "prompts": {},
+  "sessions": {
+    "s_887efbfc81dc0f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "556ed732-8c84-4c19-bfb0-6231e40ac140",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Ivan Murzak <Ivan.D.Murzak@gmail.com>"
+    }
+  }
+}

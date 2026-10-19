@@ -1,0 +1,22 @@
+test/credential-provider.test.ts
+  s_8d859c66569e2d::t_6118edc61cf1d4 398-468
+src/credential-provider.ts
+  s_8d859c66569e2d::t_d99e4aa4ad9f77 372-377
+  s_8d859c66569e2d::t_948491ee5af512 378
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "640d1486e811e4f351343ddffb6de41371cb232e",
+  "prompts": {},
+  "sessions": {
+    "s_8d859c66569e2d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d33093a-57c1-4b45-b2ac-0ca6495e78eb",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Ivan Murzak <Ivan.D.Murzak@gmail.com>"
+    }
+  }
+}

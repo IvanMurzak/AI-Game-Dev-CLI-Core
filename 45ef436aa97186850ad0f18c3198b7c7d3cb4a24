@@ -1,0 +1,45 @@
+test/atomic-file.test.ts
+  s_887efbfc81dc0f::t_90cbe0bfe5a6b7 1-47,51-78
+  s_887efbfc81dc0f::t_65029a41a0c191 48-50
+.github/workflows/ci.yml
+  s_887efbfc81dc0f::t_8b4897adcb16db 41-111
+src/machine-credentials.ts
+  s_887efbfc81dc0f::t_16d71a364406eb 16-22,30-37,39-43,52-96,101-104,107,109,111,113,119-120,124-234,291-294,301-310,313-316,320-321,323,330-350,353-358,371,374-382,386-414,418-432,437-471,484-487,494-497
+  s_887efbfc81dc0f::t_a0ac80312afbc6 362-364
+  s_887efbfc81dc0f::t_7c3bff926ff963 359-361,365-366
+  s_887efbfc81dc0f::t_6422bcbed6c7ee 322
+test/machine-credentials.clm.test.ts
+  s_887efbfc81dc0f::t_c41d6905abfc8f 1-108
+test/machine-credentials.test.ts
+  s_887efbfc81dc0f::t_e3be6334c148ea 46,51
+  s_887efbfc81dc0f::t_ec85f1aa9199af 166-170,172
+  s_887efbfc81dc0f::t_97e39f35e1de2a 189
+src/atomic-file.ts
+  s_887efbfc81dc0f::t_105ca8d934bfcf 77,81
+  s_887efbfc81dc0f::t_0031502853692c 38-53,60-64,70-74
+  s_887efbfc81dc0f::t_fa2f7fcd020694 112-119
+  s_887efbfc81dc0f::t_931bded6e368d8 91-103
+src/index.ts
+  s_887efbfc81dc0f::t_830be1a95eadf8 65,69-74,79-85
+  s_887efbfc81dc0f::t_a0b7889432d699 146
+test/golden-vectors/MachineCredentials.GoldenVectors.json
+  s_887efbfc81dc0f::t_fc5c637ab68bf5 1-52
+test/machine-credentials-v2.test.ts
+  s_887efbfc81dc0f::t_984191cc303916 1-375
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "45ef436aa97186850ad0f18c3198b7c7d3cb4a24",
+  "prompts": {},
+  "sessions": {
+    "s_887efbfc81dc0f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "556ed732-8c84-4c19-bfb0-6231e40ac140",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Ivan Murzak <Ivan.D.Murzak@gmail.com>"
+    }
+  }
+}

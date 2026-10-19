@@ -1,0 +1,23 @@
+.github/workflows/ci.yml
+  s_de71e20c9d8602::t_f1cc4d3bddedcd 3-10,15-24,26-32,34-35,40-43,48,59-74,87-112,122,133-160,173-185,189-190,194,205-221,245-259
+.github/workflows/concurrency-suite.yml
+  s_de71e20c9d8602::t_2b779abb61a7b5 17-24,32-45,47-48,50-51,58,60-61,86-113,123-133,142-154
+.github/scripts/chain_feed.py
+  s_de71e20c9d8602::t_3a26822c1fe105 1-3226
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "79e37f3f0bd38b2853c875ac920dfbbeebb2add1",
+  "prompts": {},
+  "sessions": {
+    "s_de71e20c9d8602": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b1fa7ae0-224c-4b0e-8499-22456e0d6a3f",
+        "model": "unknown"
+      },
+      "human_author": null
+    }
+  }
+}

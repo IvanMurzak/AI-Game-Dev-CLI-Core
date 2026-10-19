@@ -1,0 +1,41 @@
+test/engine-adapter.test.ts
+  s_be319aa0129387::t_5970c64d827a53 38
+  s_be319aa0129387::t_0d1e6ebcecce3c 37
+  s_be319aa0129387::t_a619cc7015043e 7,31-36,39-43,74-75
+CHANGELOG.md
+  s_be319aa0129387::t_052b1c2a64a70a 12-24
+README.md
+  s_be319aa0129387::t_8c717208a6a320 3-4,6,19-20
+package.json
+  s_be319aa0129387::t_e90765fc9fa6b0 4
+src/engine-adapter.ts
+  s_be319aa0129387::t_7e8d193d1af2de 9-10,14,16-17,19,27-28,36-39,43-44,62,68,195-214,220
+src/index.ts
+  s_be319aa0129387::t_2f4b2f2aa0d357 2-3,5,320
+src/install-plugin.ts
+  s_be319aa0129387::t_a2d8640f6c30f2 33-55,143-170
+src/project-keys.ts
+  s_be319aa0129387::t_5ae338eae666c6 58
+test/install-plugin.test.ts
+  s_be319aa0129387::t_1f8e58a8ee0a4d 7,35-66
+test/project-keys.test.ts
+  s_be319aa0129387::t_1c248149eec1d5 249-257
+test/setup-mcp.test.ts
+  s_be319aa0129387::t_a2e90120e6bf8d 13,377-382
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d7fda4056baffca9a6f678131657db742852f869",
+  "prompts": {},
+  "sessions": {
+    "s_be319aa0129387": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4973661e-fb8b-4b77-ad37-428f038b740d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ivan Murzak <Ivan.D.Murzak@gmail.com>"
+    }
+  }
+}

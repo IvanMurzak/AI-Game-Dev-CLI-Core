@@ -1,0 +1,39 @@
+test/credential-provider.test.ts
+  s_430fb218fcc774::t_7557293dc1b8d0 640-761
+  s_4e8ff00c6f0dfd::t_e24a7f32e082ce 345,354,429,441
+src/credential-provider.ts
+  s_430fb218fcc774::t_b6469940bc3cd4 499
+  s_430fb218fcc774::t_61ab4089519161 180-182
+  s_430fb218fcc774::t_1c753bbda35f23 495
+  s_430fb218fcc774::t_3c94b8a1b085b8 259-262
+  s_430fb218fcc774::t_8d6463d381e1aa 496-498
+  s_430fb218fcc774::t_309c4b3b917ab4 500-501
+  s_4e8ff00c6f0dfd::t_624c5a6f78a2f5 18,60-83,85,191-195,233-242,486-489,542-559
+CHANGELOG.md
+  s_430fb218fcc774::t_1581c428022c1f 58-60
+  s_430fb218fcc774::t_912e8e3e116c28 14-33
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "50ee702fa94f7f43d3e40a091b10a6407ec19c86",
+  "prompts": {},
+  "sessions": {
+    "s_430fb218fcc774": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cebe014d-4a9e-4e41-831c-fe1aa1fb2795",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ivan Murzak <Ivan.D.Murzak@gmail.com>"
+    },
+    "s_4e8ff00c6f0dfd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-af2cb016841c15907",
+        "model": "unknown"
+      },
+      "human_author": "Ivan Murzak <Ivan.D.Murzak@gmail.com>"
+    }
+  }
+}
