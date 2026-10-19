@@ -336,6 +336,31 @@ export class MachineCredentialLock {
   }
 
   /**
+   * Heartbeat: bump the lock file's mtime while this instance holds it and the file still carries
+   * OUR content, so peers keep judging a long critical section live (staleness is mtime-based).
+   * Returns false when not held or the lock is no longer ours (taken over); never throws. The
+   * credential store never needs it (its critical section is bounded by
+   * {@link REFRESH_HTTP_TIMEOUT}); the editor-session startup lock heartbeats through a
+   * minutes-long pre-launch build.
+   */
+  refresh(): boolean {
+    const own = this._ownContent;
+    if (own === undefined) {
+      return false;
+    }
+    try {
+      if (!fs.readFileSync(this._lockPath).equals(own)) {
+        return false;
+      }
+      const now = new Date();
+      fs.utimesSync(this._lockPath, now, now);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Run `fn` inside the lock's critical section: acquire → fn → release (release runs even when
    * `fn` throws). The refresher's critical section (04 §2): re-read store → decide → network
    * refresh (≤ {@link REFRESH_HTTP_TIMEOUT}) → write → release.

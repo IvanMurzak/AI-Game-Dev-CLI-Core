@@ -485,3 +485,30 @@ describe("classifyLockDocument (amended staleness classes)", () => {
     expect(classifyLockDocument(bytes as Buffer, "host-a")).toBe(expected);
   });
 });
+
+describe("MachineCredentialLock.refresh (heartbeat)", () => {
+  it("bumps the mtime of a held lock so peers never judge it stale", async () => {
+    const lock = lockAt({ staleMs: 100, acquireBudgetMs: 400, maxBackoffMs: 10 });
+    await lock.acquire();
+    const past = new Date(Date.now() - 10_000);
+    fs.utimesSync(lockFilePath(), past, past);
+    expect(lock.refresh()).toBe(true);
+    expect(Date.now() - fs.statSync(lockFilePath()).mtimeMs).toBeLessThan(5_000);
+    // A peer cannot take it over while it is fresh.
+    await expect(lockAt({ staleMs: 100_000, acquireBudgetMs: 50, maxBackoffMs: 10 }).acquire()).rejects.toBeInstanceOf(
+      CredentialLockBusyError,
+    );
+    lock.release();
+  });
+
+  it("returns false when not held, or when the file is no longer ours", async () => {
+    const lock = lockAt();
+    expect(lock.refresh()).toBe(false);
+    await lock.acquire();
+    plantLock(FIXTURE_HOST, 50_000); // a peer took it over
+    expect(lock.refresh()).toBe(false);
+    expect(Date.now() - fs.statSync(lockFilePath()).mtimeMs).toBeGreaterThan(40_000);
+    lock.release(); // never deletes the peer's lock
+    expect(fs.existsSync(lockFilePath())).toBe(true);
+  });
+});

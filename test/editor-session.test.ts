@@ -11,7 +11,10 @@ import {
   SESSION_LEASE_FILE_NAME,
   SESSION_LOCK_FILE_NAME,
   buildSessionEnv,
+  SESSION_GITIGNORE_ENTRIES,
+  ensureAiGameDevGitignore,
   parseSessionLease,
+  readSessionLease,
   waitForReady,
   type EditorSessionOptions,
   type SessionLease,
@@ -340,7 +343,9 @@ describe("EditorSession.ensure", () => {
 
   it("lock-busy when the startup lock stays held by a live peer", async () => {
     writeLockFile();
-    expect(await reasonOf(session({ lockTiming: { acquireBudgetMs: 100, maxBackoffMs: 10 } }).ensure())).toBe("lock-busy");
+    expect(
+      await reasonOf(session({ startupLockWaitMs: 0, lockTiming: { acquireBudgetMs: 100, maxBackoffMs: 10 } }).ensure()),
+    ).toBe("lock-busy");
     expect(world.spawns).toHaveLength(0);
   });
 
@@ -527,5 +532,287 @@ describe("helpers", () => {
     const timeout = await waitForReady({ probe: async () => undefined, timeoutMs: 20, intervalMs: 5 });
     expect(timeout.kind).toBe("timeout");
     expect((await waitForReady({ probe: async () => 1, timeoutMs: Number.NaN, intervalMs: 1 })).kind).toBe("timeout");
+  });
+
+  it("waitForReady: an async stopReason ends the wait; a throwing one counts as not stopped", async () => {
+    let n = 0;
+    const stopped = await waitForReady({
+      probe: async () => undefined,
+      timeoutMs: 1_000,
+      intervalMs: 1,
+      stopReason: async () => (++n >= 3 ? "gone" : undefined),
+    });
+    expect(stopped).toMatchObject({ kind: "stopped", message: "gone" });
+    const ready = await waitForReady({
+      probe: async () => "up",
+      timeoutMs: 1_000,
+      intervalMs: 1,
+      stopReason: async () => {
+        throw new Error("scan failed");
+      },
+    });
+    expect(ready).toMatchObject({ kind: "ready", value: "up" });
+  });
+});
+
+/** The Unity adapter with extra editor hooks. */
+function adapterWith(editor: Partial<NonNullable<EngineAdapter["editor"]>>): EngineAdapter {
+  return { ...unityAdapter, editor: { ...unityAdapter.editor!, ...editor } };
+}
+
+describe("lease connection, requestClose lease, lazy binary", () => {
+  it("records serverUrl / connectionMode in the lease; old leases without them still parse", async () => {
+    const s = session({ serverUrl: "http://localhost:5123", connectionMode: "Custom" });
+    const { lease } = await s.ensure();
+    expect(lease).toMatchObject({ serverUrl: "http://localhost:5123", connectionMode: "Custom" });
+    expect(readSessionLease(root)).toEqual(lease);
+    expect(await s.ownedSession()).toEqual(lease);
+
+    const old = { pid: 7, nonce: "n", engine: "unreal", mode: "headless", startedAt: "t", ownedBy: "cli", hostId: "h" };
+    expect(parseSessionLease(JSON.stringify(old))).toEqual(old);
+    expect(parseSessionLease(JSON.stringify({ ...old, serverUrl: 42 }))).toEqual(old);
+  });
+
+  it("readSessionLease: undefined when absent or corrupt", () => {
+    expect(readSessionLease(root)).toBeUndefined();
+    fs.mkdirSync(sessionDir(), { recursive: true });
+    fs.writeFileSync(path.join(sessionDir(), SESSION_LEASE_FILE_NAME), "{not json");
+    expect(readSessionLease(root)).toBeUndefined();
+  });
+
+  it("passes the verified lease to the adapter's requestClose", async () => {
+    const seen: Array<SessionLease | undefined> = [];
+    const s = session({
+      serverUrl: "http://localhost:9",
+      adapter: adapterWith({
+        requestClose: async (pid, _root, lease) => {
+          seen.push(lease);
+          world.procs.get(pid)!.alive = false;
+          return true;
+        },
+      }),
+    });
+    const { lease } = await s.ensure();
+    expect((await s.closeOwned()).kind).toBe("closed");
+    expect(seen).toEqual([lease]);
+    expect(seen[0]!.serverUrl).toBe("http://localhost:9");
+  });
+
+  it("the binary resolver never runs when the call joins our editor or waits for a foreign one", async () => {
+    let resolved = 0;
+    const editorBinary = () => {
+      resolved++;
+      return "/opt/unity/Editor";
+    };
+    const pid = world.addProcess();
+    writeLease({ pid });
+    setTimeout(() => (world.procs.get(pid)!.ready = true), 30);
+    expect((await session({ editorBinary }).ensure()).source).toBe("owned");
+
+    world.procs.get(pid)!.alive = false;
+    fs.rmSync(path.join(sessionDir(), SESSION_LEASE_FILE_NAME));
+    const foreign = world.addProcess();
+    setTimeout(() => (world.procs.get(foreign)!.ready = true), 30);
+    const viaForeign = session({ editorBinary, adapter: adapterWith({ findRunningEditor: async () => foreign }) });
+    expect((await viaForeign.ensure()).source).toBe("foreign");
+    expect(resolved).toBe(0);
+    expect(world.spawns).toHaveLength(0);
+
+    world.procs.get(foreign)!.alive = false;
+    expect((await session({ editorBinary }).ensure()).source).toBe("started");
+    expect(resolved).toBe(1);
+  });
+});
+
+describe("beforeLaunch", () => {
+  it("runs once, under the startup lock, right before a launch, with the resolved binary and mode", async () => {
+    const lockPath = path.join(sessionDir(), SESSION_LOCK_FILE_NAME);
+    const calls: Array<{ root: string; mode: string; binary: string; locked: boolean; spawnsBefore: number }> = [];
+    const s = session({
+      beforeLaunch: async (projectRoot, mode, { editorBinary }) => {
+        calls.push({ root: projectRoot, mode, binary: editorBinary, locked: fs.existsSync(lockPath), spawnsBefore: world.spawns.length });
+      },
+    });
+    await s.ensure({ mode: "window" });
+    expect(calls).toEqual([{ root: path.resolve(root), mode: "window", binary: "/opt/unity/Editor", locked: true, spawnsBefore: 0 }]);
+    await s.ensure(); // warm: no launch, no hook
+    expect(calls).toHaveLength(1);
+  });
+
+  it("never runs when the call joins our editor or waits for a foreign one", async () => {
+    let hooks = 0;
+    const beforeLaunch = () => {
+      hooks++;
+    };
+    const pid = world.addProcess();
+    writeLease({ pid });
+    setTimeout(() => (world.procs.get(pid)!.ready = true), 30);
+    expect((await session({ beforeLaunch }).ensure()).source).toBe("owned");
+    world.procs.get(pid)!.ready = false;
+    fs.rmSync(path.join(sessionDir(), SESSION_LEASE_FILE_NAME));
+    setTimeout(() => (world.procs.get(pid)!.ready = true), 30);
+    const foreign = session({ beforeLaunch, adapter: adapterWith({ findRunningEditor: async () => true }) });
+    expect((await foreign.ensure()).source).toBe("foreign");
+    expect(hooks).toBe(0);
+  });
+
+  it("race: parallel cold calls with a build longer than the lock's staleness run ONE build and ONE editor", async () => {
+    world.readyAfterMs = 20;
+    let builds = 0;
+    let concurrent = 0;
+    let maxConcurrent = 0;
+    const statuses: string[] = [];
+    const beforeLaunch = async () => {
+      builds++;
+      concurrent++;
+      maxConcurrent = Math.max(maxConcurrent, concurrent);
+      await sleep(1_500); // > staleMs and > one acquire budget: only the heartbeat keeps the peers out
+      concurrent--;
+    };
+    const lockTiming = { staleMs: 400, acquireBudgetMs: 500, maxBackoffMs: 20 };
+    const results = await Promise.all(
+      Array.from({ length: 4 }, () => session({ beforeLaunch, lockTiming, onStatus: (m) => statuses.push(m) }).ensure()),
+    );
+    expect(builds).toBe(1);
+    expect(maxConcurrent).toBe(1);
+    expect(world.spawns).toHaveLength(1);
+    expect(results.filter((r) => r.source === "started")).toHaveLength(1);
+    expect(statuses).toContain("Waiting for another CLI call that is starting the editor...");
+  }, 15_000);
+
+  it("the heartbeat keeps the held lock's mtime fresh", async () => {
+    const lockPath = path.join(sessionDir(), SESSION_LOCK_FILE_NAME);
+    const mtimes: number[] = [];
+    await session({
+      lockTiming: { staleMs: 120, maxBackoffMs: 10 },
+      beforeLaunch: async () => {
+        for (let i = 0; i < 4; i++) {
+          mtimes.push(fs.statSync(lockPath).mtimeMs);
+          await sleep(80);
+        }
+      },
+    }).ensure();
+    expect(mtimes[3]!).toBeGreaterThan(mtimes[0]!);
+    expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
+  it("a throwing hook propagates unchanged: no editor, no lease, lock released", async () => {
+    class BuildError extends Error {}
+    const s = session({
+      beforeLaunch: async () => {
+        throw new BuildError("UBT failed");
+      },
+    });
+    const err = await s.ensure().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(BuildError);
+    expect(world.spawns).toHaveLength(0);
+    expect(s.readLease()).toBeUndefined();
+    expect(fs.existsSync(path.join(sessionDir(), SESSION_LOCK_FILE_NAME))).toBe(false);
+  });
+});
+
+describe("foreign editors", () => {
+  it("race: a foreign editor (pid known) that exits while we wait is replaced by our own", async () => {
+    // Unity: the plugin removes the lease just before it exits; a parallel exec sees a dying editor.
+    const dying = world.addProcess();
+    const s = session({ adapter: adapterWith({ findRunningEditor: async () => (world.procs.get(dying)!.alive ? dying : false) }) });
+    setTimeout(() => (world.procs.get(dying)!.alive = false), 40);
+    const started = Date.now();
+    const result = await s.ensure();
+    expect(result.source).toBe("started");
+    expect(world.spawns).toHaveLength(1);
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  it("race: a foreign editor (pid unknown) that exits is noticed on the periodic re-check", async () => {
+    const dying = world.addProcess();
+    let scans = 0;
+    const s = session({
+      foreignRecheckIntervalMs: 30,
+      adapter: adapterWith({
+        findRunningEditor: async () => {
+          scans++;
+          return world.procs.get(dying)!.alive;
+        },
+      }),
+    });
+    setTimeout(() => (world.procs.get(dying)!.alive = false), 60);
+    const result = await s.ensure();
+    expect(result.source).toBe("started");
+    expect(world.spawns).toHaveLength(1);
+    expect(scans).toBeGreaterThanOrEqual(3); // decide, >= 1 re-check, decide again
+  });
+
+  it("gives up after the last round when editors keep exiting", async () => {
+    let scans = 0;
+    const s = session({
+      adapter: adapterWith({
+        findRunningEditor: async () => {
+          scans++;
+          const pid = world.addProcess();
+          setTimeout(() => (world.procs.get(pid)!.alive = false), 10);
+          return pid;
+        },
+      }),
+    });
+    expect(await reasonOf(s.ensure())).toBe("exited");
+    expect(scans).toBe(3);
+    expect(world.spawns).toHaveLength(0);
+  });
+
+  it("foreignReadyTimeoutMs fails fast on a foreign editor whose server never answers", async () => {
+    world.addProcess();
+    const s = session({
+      readyTimeoutMs: 60_000,
+      foreignReadyTimeoutMs: 80,
+      adapter: adapterWith({ findRunningEditor: async () => true }),
+    });
+    const started = Date.now();
+    const err = (await s.ensure().catch((e: unknown) => e)) as EditorSessionError;
+    expect(err).toBeInstanceOf(EditorSessionError);
+    expect(err.reason).toBe("not-ready");
+    expect(err.source).toBe("foreign");
+    expect(err.message).toContain("not started by the CLI");
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(world.spawns).toHaveLength(0);
+  });
+
+  it("errors name the editor waited for: started / owned", async () => {
+    world.readyAfterMs = undefined;
+    const started = (await session({ readyTimeoutMs: 60 }).ensure().catch((e: unknown) => e)) as EditorSessionError;
+    expect([started.reason, started.source]).toEqual(["not-ready", "started"]);
+    const owned = (await session({ readyTimeoutMs: 60 }).ensure().catch((e: unknown) => e)) as EditorSessionError;
+    expect([owned.reason, owned.source]).toEqual(["not-ready", "owned"]);
+  });
+});
+
+describe(".ai-game-dev/.gitignore", () => {
+  const gitignore = () => path.join(sessionDir(), ".gitignore");
+
+  it("a launch creates it with the session entries", async () => {
+    await session().ensure();
+    expect(fs.readFileSync(gitignore(), "utf-8")).toBe(SESSION_GITIGNORE_ENTRIES.join("\n") + "\n");
+    expect(SESSION_GITIGNORE_ENTRIES).toEqual(["session.json", "session.lock", "session.lock.takeover"]);
+  });
+
+  it("keeps the user's lines and appends only missing entries; `gitignore: false` writes nothing", async () => {
+    fs.mkdirSync(sessionDir(), { recursive: true });
+    fs.writeFileSync(gitignore(), "# mine\r\ncredentials.json\r\n/session.json");
+    await session().ensure();
+    expect(fs.readFileSync(gitignore(), "utf-8")).toBe(
+      "# mine\r\ncredentials.json\r\n/session.json\nsession.lock\nsession.lock.takeover\n",
+    );
+    const before = fs.readFileSync(gitignore(), "utf-8");
+    expect(ensureAiGameDevGitignore(root, SESSION_GITIGNORE_ENTRIES)).toBe(true);
+    expect(fs.readFileSync(gitignore(), "utf-8")).toBe(before);
+
+    fs.rmSync(sessionDir(), { recursive: true, force: true });
+    await session({ gitignore: false }).ensure();
+    expect(fs.existsSync(gitignore())).toBe(false);
+  });
+
+  it("is best-effort: an unusable target reports false and never throws", () => {
+    fs.mkdirSync(gitignore(), { recursive: true }); // a directory where the file should be
+    expect(ensureAiGameDevGitignore(root, ["x"])).toBe(false);
   });
 });

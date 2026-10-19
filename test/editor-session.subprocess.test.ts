@@ -40,14 +40,15 @@ afterEach(() => {
       /* already gone */
     }
   }
-  fs.rmSync(root, { recursive: true, force: true });
+  // Windows: a just-killed editor may still hold the project dir as its cwd for a moment.
+  fs.rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 });
 
-function runCli(readyFile: string, launchesLog: string): Promise<{ ok: boolean; source?: string; pid?: number; reason?: string; message?: string }> {
+function runCli(readyFile: string, launchesLog: string, buildsLog?: string): Promise<{ ok: boolean; source?: string; pid?: number; reason?: string; message?: string }> {
   return new Promise((resolve, reject) => {
     execFile(
       process.execPath,
-      [path.join(fixtures, "session-runner.mjs"), root, readyFile, launchesLog],
+      [path.join(fixtures, "session-runner.mjs"), root, readyFile, launchesLog, ...(buildsLog ? [buildsLog] : [])],
       { timeout: 90_000 },
       (err, stdout, stderr) => {
         if (err) reject(new Error(`${err.message}\n${stderr}`));
@@ -86,11 +87,33 @@ describe("EditorSession with real processes", () => {
     expect(lease?.pid).toBe(editor.pid);
     expect(lease?.nonce).toBe(editor.nonce);
     expect(lease?.processStart).toBe(await readProcessStart(editor.pid));
+    expect(lease?.serverUrl).toBe("http://localhost:1");
 
     // POSIX: SIGTERM ends it. Windows: WM_CLOSE cannot reach a windowless process, so `force` does.
     const closed = await session.closeOwned({ timeoutMs: 3_000, force: true });
     expect(closed).toMatchObject({ kind: "closed", pid: editor.pid });
     expect(isProcessAlive(editor.pid)).toBe(false);
     expect(session.readLease()).toBeUndefined();
+  }, 120_000);
+
+  it("a pre-launch build longer than the lock's staleness runs once across concurrent processes", async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "editor-session-proc-"));
+    const readyFile = path.join(root, "ready");
+    const launchesLog = path.join(root, "launches.log");
+    const buildsLog = path.join(root, "builds.log");
+
+    const results = await Promise.all([1, 2, 3].map(() => runCli(readyFile, launchesLog, buildsLog)));
+    const launches = fs
+      .readFileSync(launchesLog, "utf-8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { pid: number });
+    editorPids.push(...launches.map((l) => l.pid));
+
+    expect(results.every((r) => r.ok), JSON.stringify(results)).toBe(true);
+    expect(fs.readFileSync(buildsLog, "utf-8").trim().split("\n")).toHaveLength(1);
+    expect(launches).toHaveLength(1);
+    expect(results.filter((r) => r.source === "started")).toHaveLength(1);
+    expect(fs.readFileSync(path.join(root, ".ai-game-dev", ".gitignore"), "utf-8")).toContain("session.json");
   }, 120_000);
 });
