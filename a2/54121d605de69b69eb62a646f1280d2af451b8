@@ -1,0 +1,27 @@
+CHANGELOG.md
+  s_5f9a753ce320b5::t_b2227dd35a019c 27-29
+src/credential-lock.ts
+  s_5f9a753ce320b5::t_4c156f89147ba8 218-231,259-261,271,278-279,314-317,324-326,343-344,369-370
+src/editor-session.ts
+  s_5f9a753ce320b5::t_927d9a866bb860 6-7,46,49-53,159,290,304,310,376,405,418,426-427,438,442-445,449-453,470,473,489-490,498,584-586,588-591,596-599,604-613,716,750-753
+src/index.ts
+  s_5f9a753ce320b5::t_1d5561fa32c553 102
+test/editor-session.test.ts
+  s_5f9a753ce320b5::t_3850ecc9bd6fa8 125,132-139,142,149-150,156-161,321,346,592,626,642,665,697,723,784,794-795
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a254121d605de69b69eb62a646f1280d2af451b8",
+  "prompts": {},
+  "sessions": {
+    "s_5f9a753ce320b5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7ee65e8c-aca3-452e-9397-46e1aceea5e9",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ivan Murzak <Ivan.D.Murzak@gmail.com>"
+    }
+  }
+}
