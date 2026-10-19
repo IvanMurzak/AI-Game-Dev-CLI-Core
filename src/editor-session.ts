@@ -3,8 +3,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { writeFileAtomicSync } from "./atomic-file.js";
-import { CredentialLockBusyError, LOCK_STALE_MS, MachineCredentialLock } from "./credential-lock.js";
+import { isErrno, writeFileAtomicSync } from "./atomic-file.js";
+import { ACQUIRE_BUDGET, CredentialLockBusyError, MachineCredentialLock, takeoverFileName } from "./credential-lock.js";
 import type { EditorLaunchSpec, EditorSessionMode, EngineAdapter, EngineId } from "./engine-adapter.js";
 import { errorMessage } from "./network-error.js";
 import { isProcessAlive, readProcessStart, sleep, spawnDetached, terminateProcess } from "./process.js";
@@ -43,8 +43,13 @@ export const SESSION_LOCK_FILE_NAME = "session.lock";
 export const SESSION_GITIGNORE_ENTRIES: readonly string[] = [
   SESSION_LEASE_FILE_NAME,
   SESSION_LOCK_FILE_NAME,
-  `${SESSION_LOCK_FILE_NAME}.takeover`,
+  takeoverFileName(SESSION_LOCK_FILE_NAME),
 ];
+
+/** `<projectRoot>/.ai-game-dev`. */
+function sessionDir(projectRoot: string): string {
+  return path.join(path.resolve(projectRoot), SESSION_DIR_NAME);
+}
 
 /** Environment a CLI-started editor receives (the same names for every engine). */
 export const SESSION_ENV = {
@@ -151,7 +156,7 @@ export class EditorSessionError extends Error {
     message: string,
     options?: { cause?: unknown; source?: WaitedEditorSource },
   ) {
-    super(message, options?.cause !== undefined ? { cause: options.cause } : undefined);
+    super(message, options);
     this.name = "EditorSessionError";
     this.reason = reason;
     if (options?.source !== undefined) this.source = options.source;
@@ -282,7 +287,7 @@ export function buildSessionEnv(nonce: string, idleSeconds: number): Record<stri
 export function readSessionLease(projectRoot: string): SessionLease | undefined {
   let text: string;
   try {
-    text = fs.readFileSync(path.join(path.resolve(projectRoot), SESSION_DIR_NAME, SESSION_LEASE_FILE_NAME), "utf-8");
+    text = fs.readFileSync(path.join(sessionDir(projectRoot), SESSION_LEASE_FILE_NAME), "utf-8");
   } catch {
     return undefined;
   }
@@ -296,13 +301,13 @@ export function readSessionLease(projectRoot: string): SessionLease | undefined 
  * when it could not read or write, true when every entry is listed.
  */
 export function ensureAiGameDevGitignore(projectRoot: string, entries: readonly string[]): boolean {
-  const file = path.join(path.resolve(projectRoot), SESSION_DIR_NAME, ".gitignore");
+  const file = path.join(sessionDir(projectRoot), ".gitignore");
   try {
     let existing = "";
     try {
       existing = fs.readFileSync(file, "utf-8");
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") return false;
+      if (!isErrno(err, "ENOENT")) return false;
     }
     const present = new Set(existing.split(/\r?\n/).map((line) => line.trim()));
     const missing = entries.filter((e) => !present.has(e) && !present.has(`/${e}`));
@@ -368,7 +373,7 @@ export class EditorSession<TReady = unknown> {
   constructor(options: EditorSessionOptions<TReady>) {
     this._options = options;
     this.projectRoot = path.resolve(options.projectRoot);
-    const dir = path.join(this.projectRoot, SESSION_DIR_NAME);
+    const dir = sessionDir(this.projectRoot);
     this.leasePath = path.join(dir, SESSION_LEASE_FILE_NAME);
     this.lockPath = path.join(dir, SESSION_LOCK_FILE_NAME);
     this._ops = { ...defaultSessionProcessOps, ...options.processOps };
@@ -397,7 +402,7 @@ export class EditorSession<TReady = unknown> {
 
     const spec = this.requireSpec();
     const mode = options.mode ?? "headless";
-    const binary: BinaryRef = {};
+    const binary: { value?: string } = {};
     // An editor we wait for that exits first (a leased one idling out, a foreign one quitting) is
     // re-evaluated: the next round starts ours.
     for (let round = 1; ; round++) {
@@ -410,7 +415,7 @@ export class EditorSession<TReady = unknown> {
   private async attemptEnsure(
     spec: EditorLaunchSpec,
     mode: EditorSessionMode,
-    binary: BinaryRef,
+    binary: { value?: string },
     lastAttempt: boolean,
   ): Promise<EnsureResult<TReady> | undefined> {
     const outcome = await this.withStartupLock(async (): Promise<StartOutcome> => {
@@ -418,9 +423,8 @@ export class EditorSession<TReady = unknown> {
       // An unverifiable lease never authorizes a close, but its editor may well be ours and still
       // starting: wait for it rather than launch a second editor into the same project.
       if (lease !== undefined && (await this.leaseState(lease)) !== "dead") return { kind: "join", lease };
-      const running = await spec.findRunningEditor?.(this.projectRoot);
-      if (running === true) return { kind: "foreign" };
-      if (typeof running === "number" && running > 0) return { kind: "foreign", pid: running };
+      const running = runningEditor(await spec.findRunningEditor?.(this.projectRoot));
+      if (running.found) return { kind: "foreign", ...(running.pid !== undefined ? { pid: running.pid } : {}) };
       // Resolved only now that a launch is decided, and never inside the lock: leave, resolve, and
       // decide again.
       if (binary.value === undefined) return { kind: "resolve" };
@@ -431,17 +435,22 @@ export class EditorSession<TReady = unknown> {
 
     switch (outcome.kind) {
       case "resolve":
-        binary.value = await (binary.promise ??= this.resolveBinary());
+        binary.value = await this.resolveBinary();
         return this.attemptEnsure(spec, mode, binary, lastAttempt);
       case "foreign":
         this.status("Waiting for the running editor...");
-        return this.waitOrRetry(lastAttempt, () =>
-          this.waitReady("foreign", this.foreignGone(spec, outcome.pid), this._options.foreignReadyTimeoutMs),
-        );
+        return this.waitOrRetry(lastAttempt, async () => ({
+          ready: await this.waitReady("foreign", this.foreignGone(spec, outcome.pid), this._options.foreignReadyTimeoutMs),
+          source: "foreign",
+        }));
       case "join": {
         const { lease } = outcome;
         this.status("Waiting for the editor started by another CLI call...");
-        return this.waitOrRetry(lastAttempt, () => this.waitReady("owned", this.pidExited(lease.pid)), lease);
+        return this.waitOrRetry(lastAttempt, async () => ({
+          ready: await this.waitReady("owned", this.pidExited(lease.pid)),
+          source: "owned",
+          lease,
+        }));
       }
       case "started": {
         const { lease } = outcome;
@@ -458,12 +467,10 @@ export class EditorSession<TReady = unknown> {
   /** Wait for an editor this call did not start; undefined (decide again) when it exited first, unless last. */
   private async waitOrRetry(
     lastAttempt: boolean,
-    wait: () => Promise<TReady>,
-    lease?: SessionLease,
+    wait: () => Promise<EnsureResult<TReady>>,
   ): Promise<EnsureResult<TReady> | undefined> {
     try {
-      const ready = await wait();
-      return lease !== undefined ? { ready, source: "owned", lease } : { ready, source: "foreign" };
+      return await wait();
     } catch (err) {
       if (!lastAttempt && err instanceof EditorSessionError && err.reason === "exited") return undefined;
       throw err;
@@ -479,9 +486,8 @@ export class EditorSession<TReady = unknown> {
    * Stop reason for a foreign editor: its pid is gone, or — pid unknown — `findRunningEditor` no
    * longer finds it (re-run at most every `foreignRecheckIntervalMs`: a process scan is slow).
    */
-  private foreignGone(spec: EditorLaunchSpec, pid: number | undefined): () => Promise<string | undefined> {
-    const message = "the running editor exited before it became ready";
-    if (pid !== undefined) return async () => (this._ops.isAlive(pid) ? undefined : `${message} (pid ${pid})`);
+  private foreignGone(spec: EditorLaunchSpec, pid: number | undefined): () => string | undefined | Promise<string | undefined> {
+    if (pid !== undefined) return this.pidExited(pid);
     const find = spec.findRunningEditor;
     const interval = this._options.foreignRecheckIntervalMs ?? DEFAULT_SESSION_FOREIGN_RECHECK_MS;
     let lastCheck = Date.now();
@@ -489,8 +495,7 @@ export class EditorSession<TReady = unknown> {
       if (find === undefined || Date.now() - lastCheck < interval) return undefined;
       lastCheck = Date.now();
       try {
-        const running = await find(this.projectRoot);
-        return running === false || running === 0 ? message : undefined;
+        return runningEditor(await find(this.projectRoot)).found ? undefined : "the running editor exited before it became ready";
       } catch {
         return undefined; // a failed scan proves nothing
       }
@@ -576,45 +581,36 @@ export class EditorSession<TReady = unknown> {
   }
 
   /**
-   * Run `fn` under the startup lock, heartbeating it while held. `long` (decide and launch) waits up
-   * to `startupLockWaitMs` for a live peer, which may be running a minutes-long pre-launch hook;
-   * `short` (lease cleanup) gives up after one acquire budget.
+   * Run `fn` under the startup lock, heartbeated while held. `waitMs` (default `startupLockWaitMs`,
+   * for deciding and launching) is how long to wait for a live peer, which may be running a
+   * minutes-long pre-launch hook; lease cleanup passes 0 (one ordinary acquire budget).
    */
-  private async withStartupLock<T>(fn: () => Promise<T>, wait: "long" | "short" = "long"): Promise<T> {
+  private async withStartupLock<T>(
+    fn: () => Promise<T>,
+    waitMs = this._options.startupLockWaitMs ?? DEFAULT_SESSION_STARTUP_LOCK_WAIT_MS,
+  ): Promise<T> {
     const timing = this._options.lockTiming ?? {};
     const lock = new MachineCredentialLock(path.dirname(this.lockPath), {
       lockFileName: SESSION_LOCK_FILE_NAME,
       hostId: this._hostId,
+      heartbeat: true,
+      // Never below the protocol budget: a waiter must outlive the staleness bar to take over.
+      acquireBudgetMs: Math.max(waitMs, timing.acquireBudgetMs ?? ACQUIRE_BUDGET),
+      onWait: () => this.status("Waiting for another CLI call that is starting the editor..."),
       ...(timing.staleMs !== undefined ? { staleMs: timing.staleMs } : {}),
-      ...(timing.acquireBudgetMs !== undefined ? { acquireBudgetMs: timing.acquireBudgetMs } : {}),
       ...(timing.maxBackoffMs !== undefined ? { maxBackoffMs: timing.maxBackoffMs } : {}),
     });
-    const started = Date.now();
-    const waitMs = wait === "long" ? (this._options.startupLockWaitMs ?? DEFAULT_SESSION_STARTUP_LOCK_WAIT_MS) : 0;
-    for (let announced = false; ; announced = true) {
-      try {
-        await lock.acquire();
-        break;
-      } catch (err) {
-        if (!(err instanceof CredentialLockBusyError)) throw err;
-        if (Date.now() - started >= waitMs) {
-          throw new EditorSessionError(
-            "lock-busy",
-            `another process is starting the editor (${this.lockPath} stayed locked for ${Date.now() - started} ms)`,
-            { cause: err },
-          );
-        }
-        if (!announced) this.status("Waiting for another CLI call that is starting the editor...");
-      }
-    }
-    // Peers judge the lock stale by its mtime: keep it fresh through a long critical section.
-    const heartbeat = setInterval(() => lock.refresh(), Math.max(10, Math.floor((timing.staleMs ?? LOCK_STALE_MS) / 4)));
-    heartbeat.unref();
     try {
-      return await fn();
-    } finally {
-      clearInterval(heartbeat);
-      lock.release();
+      return await lock.withLock(fn);
+    } catch (err) {
+      if (err instanceof CredentialLockBusyError) {
+        throw new EditorSessionError(
+          "lock-busy",
+          `another process is starting the editor (${this.lockPath} stayed locked for ${err.waitedMs} ms)`,
+          { cause: err },
+        );
+      }
+      throw err;
     }
   }
 
@@ -717,7 +713,7 @@ export class EditorSession<TReady = unknown> {
    */
   private async removeLeaseLocked(nonce: string): Promise<boolean> {
     try {
-      return await this.withStartupLock(async () => this.removeLease(nonce), "short");
+      return await this.withStartupLock(async () => this.removeLease(nonce), 0);
     } catch (err) {
       if (err instanceof EditorSessionError && err.reason === "lock-busy") return false;
       throw err;
@@ -751,10 +747,10 @@ interface CloseOptions {
   force?: boolean;
 }
 
-/** The editor binary, resolved lazily once a launch is decided; `value` is set once it has resolved. */
-interface BinaryRef {
-  promise?: Promise<string>;
-  value?: string;
+/** A `findRunningEditor` result: `true` or a positive pid means found. */
+function runningEditor(result: boolean | number | undefined): { found: boolean; pid?: number } {
+  if (typeof result === "number") return result > 0 ? { found: true, pid: result } : { found: false };
+  return { found: result === true };
 }
 
 type StartOutcome =

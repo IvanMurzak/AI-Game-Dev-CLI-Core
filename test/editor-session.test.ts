@@ -122,30 +122,43 @@ function writeLease(lease: Partial<SessionLease> & { pid: number }): void {
     ...lease,
   };
   fs.mkdirSync(sessionDir(), { recursive: true });
-  fs.writeFileSync(path.join(sessionDir(), SESSION_LEASE_FILE_NAME), JSON.stringify(full));
+  fs.writeFileSync(leaseFile(), JSON.stringify(full));
 }
 
 function sessionDir(): string {
   return path.join(root, SESSION_DIR_NAME);
 }
 
+function lockFile(): string {
+  return path.join(sessionDir(), SESSION_LOCK_FILE_NAME);
+}
+
+function leaseFile(): string {
+  return path.join(sessionDir(), SESSION_LEASE_FILE_NAME);
+}
+
 /** A startup lock held by a peer (fresh, or aged to `mtime`). */
 function writeLockFile(mtime?: Date): string {
-  const lockPath = path.join(sessionDir(), SESSION_LOCK_FILE_NAME);
+  const lockPath = lockFile();
   fs.mkdirSync(sessionDir(), { recursive: true });
   fs.writeFileSync(lockPath, JSON.stringify({ pid: 1, startedAt: new Date().toISOString(), hostId: "host-a", nonce: "x" }));
   if (mtime) fs.utimesSync(lockPath, mtime, mtime);
   return lockPath;
 }
 
-/** The EditorSessionError reason a promise rejects with (fails the test if it resolves). */
-async function reasonOf(promise: Promise<unknown>): Promise<string> {
+/** The EditorSessionError a promise rejects with (fails the test if it resolves or throws another type). */
+async function errorOf(promise: Promise<unknown>): Promise<EditorSessionError> {
   const err = await promise.then(
     () => undefined,
     (e: unknown) => e,
   );
   expect(err).toBeInstanceOf(EditorSessionError);
-  return (err as EditorSessionError).reason;
+  return err as EditorSessionError;
+}
+
+/** The EditorSessionError reason a promise rejects with. */
+async function reasonOf(promise: Promise<unknown>): Promise<string> {
+  return (await errorOf(promise)).reason;
 }
 
 describe("EditorSession.ensure", () => {
@@ -305,7 +318,7 @@ describe("EditorSession.ensure", () => {
   });
 
   it("a slow binary resolver is not awaited inside the startup lock", async () => {
-    const lockPath = path.join(sessionDir(), SESSION_LOCK_FILE_NAME);
+    const lockPath = lockFile();
     let lockHeldWhileResolving = false;
     const s = session({
       editorBinary: async () => {
@@ -330,7 +343,7 @@ describe("EditorSession.ensure", () => {
         throw new Error("Unity 6000.6 is not installed");
       },
     });
-    const err = (await throwing.ensure().catch((e: unknown) => e)) as EditorSessionError;
+    const err = await errorOf(throwing.ensure());
     expect(err.reason).toBe("no-editor-binary");
     expect(err.message).toContain("6000.6");
   });
@@ -576,7 +589,7 @@ describe("lease connection, requestClose lease, lazy binary", () => {
   it("readSessionLease: undefined when absent or corrupt", () => {
     expect(readSessionLease(root)).toBeUndefined();
     fs.mkdirSync(sessionDir(), { recursive: true });
-    fs.writeFileSync(path.join(sessionDir(), SESSION_LEASE_FILE_NAME), "{not json");
+    fs.writeFileSync(leaseFile(), "{not json");
     expect(readSessionLease(root)).toBeUndefined();
   });
 
@@ -610,7 +623,7 @@ describe("lease connection, requestClose lease, lazy binary", () => {
     expect((await session({ editorBinary }).ensure()).source).toBe("owned");
 
     world.procs.get(pid)!.alive = false;
-    fs.rmSync(path.join(sessionDir(), SESSION_LEASE_FILE_NAME));
+    fs.rmSync(leaseFile());
     const foreign = world.addProcess();
     setTimeout(() => (world.procs.get(foreign)!.ready = true), 30);
     const viaForeign = session({ editorBinary, adapter: adapterWith({ findRunningEditor: async () => foreign }) });
@@ -626,7 +639,7 @@ describe("lease connection, requestClose lease, lazy binary", () => {
 
 describe("beforeLaunch", () => {
   it("runs once, under the startup lock, right before a launch, with the resolved binary and mode", async () => {
-    const lockPath = path.join(sessionDir(), SESSION_LOCK_FILE_NAME);
+    const lockPath = lockFile();
     const calls: Array<{ root: string; mode: string; binary: string; locked: boolean; spawnsBefore: number }> = [];
     const s = session({
       beforeLaunch: async (projectRoot, mode, { editorBinary }) => {
@@ -649,7 +662,7 @@ describe("beforeLaunch", () => {
     setTimeout(() => (world.procs.get(pid)!.ready = true), 30);
     expect((await session({ beforeLaunch }).ensure()).source).toBe("owned");
     world.procs.get(pid)!.ready = false;
-    fs.rmSync(path.join(sessionDir(), SESSION_LEASE_FILE_NAME));
+    fs.rmSync(leaseFile());
     setTimeout(() => (world.procs.get(pid)!.ready = true), 30);
     const foreign = session({ beforeLaunch, adapter: adapterWith({ findRunningEditor: async () => true }) });
     expect((await foreign.ensure()).source).toBe("foreign");
@@ -681,7 +694,7 @@ describe("beforeLaunch", () => {
   }, 15_000);
 
   it("the heartbeat keeps the held lock's mtime fresh", async () => {
-    const lockPath = path.join(sessionDir(), SESSION_LOCK_FILE_NAME);
+    const lockPath = lockFile();
     const mtimes: number[] = [];
     await session({
       lockTiming: { staleMs: 120, maxBackoffMs: 10 },
@@ -707,7 +720,7 @@ describe("beforeLaunch", () => {
     expect(err).toBeInstanceOf(BuildError);
     expect(world.spawns).toHaveLength(0);
     expect(s.readLease()).toBeUndefined();
-    expect(fs.existsSync(path.join(sessionDir(), SESSION_LOCK_FILE_NAME))).toBe(false);
+    expect(fs.existsSync(lockFile())).toBe(false);
   });
 });
 
@@ -768,8 +781,7 @@ describe("foreign editors", () => {
       adapter: adapterWith({ findRunningEditor: async () => true }),
     });
     const started = Date.now();
-    const err = (await s.ensure().catch((e: unknown) => e)) as EditorSessionError;
-    expect(err).toBeInstanceOf(EditorSessionError);
+    const err = await errorOf(s.ensure());
     expect(err.reason).toBe("not-ready");
     expect(err.source).toBe("foreign");
     expect(err.message).toContain("not started by the CLI");
@@ -779,10 +791,8 @@ describe("foreign editors", () => {
 
   it("errors name the editor waited for: started / owned", async () => {
     world.readyAfterMs = undefined;
-    const started = (await session({ readyTimeoutMs: 60 }).ensure().catch((e: unknown) => e)) as EditorSessionError;
-    expect([started.reason, started.source]).toEqual(["not-ready", "started"]);
-    const owned = (await session({ readyTimeoutMs: 60 }).ensure().catch((e: unknown) => e)) as EditorSessionError;
-    expect([owned.reason, owned.source]).toEqual(["not-ready", "owned"]);
+    expect(await errorOf(session({ readyTimeoutMs: 60 }).ensure())).toMatchObject({ reason: "not-ready", source: "started" });
+    expect(await errorOf(session({ readyTimeoutMs: 60 }).ensure())).toMatchObject({ reason: "not-ready", source: "owned" });
   });
 });
 

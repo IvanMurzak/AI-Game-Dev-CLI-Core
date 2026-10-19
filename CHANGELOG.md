@@ -24,8 +24,9 @@ options.
   start the editor (never when it reuses, joins or waits for one), after the binary is resolved,
   under the startup lock. Concurrent cold callers wait for it and then join the editor, so a
   pre-launch C# build (Godot) or UBT build (Unreal) runs once per project. The lock is
-  **heartbeated** while held (new `MachineCredentialLock.refresh()`, bumping the mtime peers judge
-  staleness by), so a build longer than the 60 s staleness bar is never taken over; a crashed holder
+  **heartbeated** while held (new `MachineCredentialLock` option `heartbeat`, which runs the new
+  `refresh()` — bumping the mtime peers judge staleness by — every quarter of the staleness bar; also
+  new: the `onWait` option and `takeoverFileName(lockFileName)`), so a build longer than the 60 s staleness bar is never taken over; a crashed holder
   stops heartbeating and is still taken over after 60 s. Waiters keep waiting for a live holder up to
   `startupLockWaitMs` (default `DEFAULT_SESSION_STARTUP_LOCK_WAIT_MS`, 30 min), reporting "Waiting for
   another CLI call that is starting the editor..." through `onStatus`. A throwing hook propagates
