@@ -259,6 +259,20 @@ describe("EditorSession.ensure", () => {
     expect(await session().ownedSession()).toBeUndefined();
   });
 
+  it("an unverifiable lease with a live pid is joined, not replaced, and closeOwned keeps it", async () => {
+    const pid = world.addProcess();
+    writeLease({ pid, processStart: undefined });
+    const s = session();
+    const closed = await s.closeOwned();
+    expect(closed).toEqual({ kind: "not-owned", staleLeaseRemoved: false });
+    expect(s.readLease()?.pid).toBe(pid);
+    expect(world.closeRequests).toHaveLength(0);
+    setTimeout(() => (world.procs.get(pid)!.ready = true), 30);
+    const result = await s.ensure();
+    expect(result.source).toBe("owned");
+    expect(world.spawns).toHaveLength(0);
+  });
+
   it("replaces a leased editor that exits while we wait for it (it was idling out)", async () => {
     world.readyAfterMs = undefined;
     const dying = world.addProcess();
@@ -285,6 +299,21 @@ describe("EditorSession.ensure", () => {
   it("not-ready after the timeout", async () => {
     world.readyAfterMs = undefined;
     expect(await reasonOf(session({ readyTimeoutMs: 100 }).ensure())).toBe("not-ready");
+  });
+
+  it("a slow binary resolver is not awaited inside the startup lock", async () => {
+    const lockPath = path.join(sessionDir(), SESSION_LOCK_FILE_NAME);
+    let lockHeldWhileResolving = false;
+    const s = session({
+      editorBinary: async () => {
+        await sleep(60);
+        lockHeldWhileResolving = fs.existsSync(lockPath);
+        return "/opt/unity/Editor";
+      },
+    });
+    expect((await s.ensure()).source).toBe("started");
+    expect(lockHeldWhileResolving).toBe(false);
+    expect(world.spawns[0]!.command).toBe("/opt/unity/Editor");
   });
 
   it("launch failure and a missing binary are typed errors", async () => {
@@ -445,6 +474,19 @@ describe("mcpReadinessProbe", () => {
     expect(aborted).toEqual([`http://slow:1${MCP_PING_PATH}`]);
     expect(await mcpReadinessProbe({ urls: ["http://down:2"], fetchImpl })()).toBeUndefined();
     expect(await mcpReadinessProbe({ urls: [], fetchImpl })()).toBeUndefined();
+  });
+
+  it("counts 401/403 as an answering server, other errors as down; joins the ping path once", async () => {
+    const seen: string[] = [];
+    const statusFor = (status: number) =>
+      (async (input: string | URL | Request) => {
+        seen.push(String(input));
+        return new Response("no", { status });
+      }) as typeof fetch;
+    expect(await mcpReadinessProbe({ urls: ["http://h:1/"], fetchImpl: statusFor(401) })()).toBe("http://h:1/");
+    expect(seen).toEqual([`http://h:1${MCP_PING_PATH}`]);
+    expect(await mcpReadinessProbe({ urls: ["http://h:1"], fetchImpl: statusFor(403) })()).toBe("http://h:1");
+    expect(await mcpReadinessProbe({ urls: ["http://h:1"], fetchImpl: statusFor(503) })()).toBeUndefined();
   });
 });
 

@@ -132,7 +132,6 @@ function existsFile(candidate: string): boolean {
   }
 }
 
-/** Names of the files directly in `dir` whose name ends with `ext` (case-insensitive); [] when unreadable. */
 function dirHasFileWithExt(dir: string, ext: string): boolean {
   return filesWithExt(dir, ext).length > 0;
 }

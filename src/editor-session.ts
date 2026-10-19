@@ -121,7 +121,11 @@ export interface EditorSessionOptions<TReady> {
    * {@link mcpReadinessProbe} builds the standard one.
    */
   probeReady: () => Promise<TReady | undefined>;
-  /** The editor executable, or a resolver (called only when an editor has to be started). */
+  /**
+   * The editor executable, or a resolver. Resolution starts as soon as the warm readiness probe
+   * fails (so it overlaps the startup lock), even when the call then joins an existing editor; its
+   * result is used only when an editor has to be started.
+   */
   editorBinary?: string | (() => string | Promise<string>);
   /** Extra environment for a started editor (engine-specific connection settings). */
   env?: Record<string, string>;
@@ -274,8 +278,11 @@ export class EditorSession<TReady = unknown> {
     const spec = this.requireSpec();
     const mode = options.mode ?? "headless";
     // Resolved outside the lock (it can be slow: Unity Hub, registry lookups), awaited only to launch.
-    const binary = this.resolveBinary();
-    binary.catch(() => {}); // unused when we join another editor
+    const binary: BinaryRef = { promise: this.resolveBinary() };
+    binary.promise.then(
+      (value) => (binary.value = value),
+      () => {}, // surfaced by the `await binary.promise` below, if a launch needs it
+    );
     // A leased editor that dies while we wait for it (it was idling out) is replaced once.
     return (await this.attemptEnsure(spec, mode, binary, false)) ?? (await this.attemptEnsure(spec, mode, binary, true))!;
   }
@@ -284,16 +291,26 @@ export class EditorSession<TReady = unknown> {
   private async attemptEnsure(
     spec: EditorLaunchSpec,
     mode: EditorSessionMode,
-    binary: Promise<string>,
+    binary: BinaryRef,
     lastAttempt: boolean,
   ): Promise<EnsureResult<TReady> | undefined> {
     const outcome = await this.withStartupLock(async (): Promise<StartOutcome> => {
       const lease = this.readLease();
-      if (lease !== undefined && (await this.isLive(lease))) return { kind: "join", lease };
+      // An unverifiable lease never authorizes a close, but its editor may well be ours and still
+      // starting: wait for it rather than launch a second editor into the same project.
+      if (lease !== undefined && (await this.leaseState(lease)) !== "dead") return { kind: "join", lease };
       if (await spec.findRunningEditor?.(this.projectRoot)) return { kind: "foreign" };
+      // Never wait for a slow resolver inside the lock (peers judge it stale after 60 s): leave,
+      // resolve, and decide again.
+      if (binary.value === undefined) return { kind: "resolve" };
       if (lease !== undefined) this.removeStaleLease(lease);
-      return { kind: "started", lease: await this.launch(await binary, spec, mode) };
+      return { kind: "started", lease: await this.launch(binary.value, spec, mode) };
     });
+
+    if (outcome.kind === "resolve") {
+      await binary.promise;
+      return this.attemptEnsure(spec, mode, binary, lastAttempt);
+    }
 
     if (outcome.kind === "foreign") {
       this.status("Waiting for the running editor...");
@@ -312,7 +329,7 @@ export class EditorSession<TReady = unknown> {
     try {
       return { ready: await this.waitReady(lease.pid), source: "started", lease };
     } catch (err) {
-      if (!this._ops.isAlive(lease.pid)) this.removeLease(lease.nonce);
+      if (!this._ops.isAlive(lease.pid)) await this.removeLeaseLocked(lease.nonce);
       throw err;
     }
   }
@@ -324,8 +341,13 @@ export class EditorSession<TReady = unknown> {
   async closeOwned(options: CloseOptions = {}): Promise<CloseOwnedResult> {
     const lease = this.readLease();
     if (lease === undefined) return { kind: "not-owned", staleLeaseRemoved: false };
-    if (!(await this.isLive(lease))) return { kind: "not-owned", staleLeaseRemoved: this.removeStaleLease(lease) };
-    return this.closeLease(lease, options);
+    const state = await this.leaseState(lease);
+    if (state === "live") return this.closeLease(lease, options);
+    // Unverifiable (pid alive, start time unknown): not ours to close, but not provably stale either.
+    return {
+      kind: "not-owned",
+      staleLeaseRemoved: state === "dead" && this.isThisHost(lease) && (await this.removeLeaseLocked(lease.nonce)),
+    };
   }
 
   /**
@@ -374,7 +396,7 @@ export class EditorSession<TReady = unknown> {
       exited = await this.waitForExit(pid, 5_000);
     }
     if (!exited && this._ops.isAlive(pid)) return { kind: "still-running", pid };
-    this.removeLease(lease.nonce);
+    await this.removeLeaseLocked(lease.nonce);
     return { kind: "closed", pid, forced };
   }
 
@@ -471,12 +493,21 @@ export class EditorSession<TReady = unknown> {
   }
 
   private async isLive(lease: SessionLease): Promise<boolean> {
-    if (!this.isThisHost(lease)) return false;
-    if (!this._ops.isAlive(lease.pid)) return false;
-    // Pid reuse: the recorded start time must still match. Unknown on either side = unverifiable,
-    // which is treated as NOT ours — a lease never authorizes closing a process we cannot identify.
-    if (lease.processStart === undefined) return false;
-    return (await this._ops.processStart(lease.pid)) === lease.processStart;
+    return (await this.leaseState(lease)) === "live";
+  }
+
+  /**
+   * `live`: same host, pid alive, and the recorded start time still matches (provably our editor).
+   * `unverifiable`: same host and pid alive, but the start time is unknown on either side — NOT ours
+   * (a lease never authorizes closing a process we cannot identify), yet not provably stale either.
+   * `dead`: another host, the pid is gone, or the pid was reused (the start time differs).
+   */
+  private async leaseState(lease: SessionLease): Promise<"live" | "unverifiable" | "dead"> {
+    if (!this.isThisHost(lease) || !this._ops.isAlive(lease.pid)) return "dead";
+    if (lease.processStart === undefined) return "unverifiable";
+    const current = await this._ops.processStart(lease.pid);
+    if (current === undefined) return "unverifiable";
+    return current === lease.processStart ? "live" : "dead";
   }
 
   private isThisHost(lease: SessionLease): boolean {
@@ -488,7 +519,20 @@ export class EditorSession<TReady = unknown> {
     return this.isThisHost(lease) && this.removeLease(lease.nonce);
   }
 
-  /** Compare-and-delete: remove the lease only while it still carries `nonce`. */
+  /**
+   * {@link removeLease} under the startup lock, so it cannot race a peer writing a new lease. A busy
+   * lock leaves the (dead) lease for the next `ensure` to clean up.
+   */
+  private async removeLeaseLocked(nonce: string): Promise<boolean> {
+    try {
+      return await this.withStartupLock(async () => this.removeLease(nonce));
+    } catch (err) {
+      if (err instanceof EditorSessionError && err.reason === "lock-busy") return false;
+      throw err;
+    }
+  }
+
+  /** Compare-and-delete (call with the startup lock held): remove the lease only while it still carries `nonce`. */
   private removeLease(nonce: string): boolean {
     if (this.readLease()?.nonce !== nonce) return false;
     return unlinkQuietly(this.leasePath);
@@ -515,7 +559,14 @@ interface CloseOptions {
   force?: boolean;
 }
 
+/** The editor binary being resolved; `value` is set once it has resolved. */
+interface BinaryRef {
+  promise: Promise<string>;
+  value?: string;
+}
+
 type StartOutcome =
+  | { kind: "resolve" }
   | { kind: "join"; lease: SessionLease }
   | { kind: "foreign" }
   | { kind: "started"; lease: SessionLease };

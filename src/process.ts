@@ -47,7 +47,7 @@ export async function readProcessStart(pid: number): Promise<string | undefined>
     const script = `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`;
     for (const host of powerShellHostsInOrder()) {
       try {
-        const out = (await execFileText(host, ["-NoProfile", "-NonInteractive", "-Command", script], 30_000)).trim();
+        const out = (await execFileText(host, ["-NoProfile", "-NonInteractive", "-Command", script], 15_000)).trim();
         return /^\d+$/.test(out) ? `win:${out}` : undefined;
       } catch (err) {
         if (isHostStartFailure(err)) continue; // this host is missing — try the next

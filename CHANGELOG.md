@@ -22,13 +22,15 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
 - **Lease** `<project>/.ai-game-dev/session.json` (`pid`, `nonce`, `engine`, `mode`, `startedAt`,
   `ownedBy: "cli"`, `hostId`, `processStart`), written atomically. A lease is valid only on the
   same host, with the pid alive and its OS process start time unchanged (a reused pid never
-  matches; an unverifiable start time is treated as not ours). Stale leases are removed by
+  matches; an unverifiable start time is treated as not ours — never closed, but waited for rather
+  than replaced by a second editor). Stale leases are removed by
   compare-and-delete on the nonce.
 - **One start per project**: the decide-and-launch step runs under
   `<project>/.ai-game-dev/session.lock` (the `MachineCredentialLock` protocol); concurrent cold
   callers wait for the editor the winner started instead of launching a second one.
 - **Readiness helpers**: `waitForReady` (generic poll with a stop reason), `probeMcpServer` and
-  `mcpReadinessProbe` (`POST /api/system-tools/ping`, first answering URL wins). Process helpers:
+  `mcpReadinessProbe` (`POST /api/system-tools/ping`, first answering URL wins, losers aborted;
+  a 401/403 counts as an answering server). Process helpers:
   `isProcessAlive`, `readProcessStart`, `defaultSessionProcessOps`.
 - **`EngineAdapter.editor?: EditorLaunchSpec`** (optional — adapters defined elsewhere keep
   compiling): `args(projectRoot, mode)`, optional `requestClose(pid, projectRoot)` and

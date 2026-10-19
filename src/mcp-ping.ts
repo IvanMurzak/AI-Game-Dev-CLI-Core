@@ -3,7 +3,10 @@ import { describeErrorWithCause } from "./network-error.js";
 /** The MCP server's ping endpoint (a system tool, the same for every engine). */
 export const MCP_PING_PATH = "/api/system-tools/ping";
 
-export type McpProbeResult = { ok: true; baseUrl: string; data: unknown } | { ok: false; reason: string };
+export type McpProbeResult =
+  | { ok: true; baseUrl: string; data: unknown }
+  /** `status`: the HTTP status when the server answered with an error. */
+  | { ok: false; reason: string; status?: number };
 
 /** One POST to `<baseUrl>/api/system-tools/ping`. Never throws. */
 export async function probeMcpServer(
@@ -22,7 +25,7 @@ export async function probeMcpServer(
       signal: options.signal ? AbortSignal.any([options.signal, timeout]) : timeout,
     });
     const text = await response.text();
-    if (!response.ok) return { ok: false, reason: `HTTP ${response.status}` };
+    if (!response.ok) return { ok: false, reason: `HTTP ${response.status}`, status: response.status };
     let data: unknown = text;
     try {
       data = JSON.parse(text);
@@ -37,7 +40,10 @@ export async function probeMcpServer(
 
 /**
  * The standard readiness probe for an editor session: ping every URL at once and resolve the first
- * that answers (the others are aborted), or undefined when none does.
+ * that answers (the others are aborted), or undefined when none does. A 401/403 counts as an
+ * answer: the server (so the editor) is up, and the tool call will report the auth problem —
+ * treating it as "down" would start a second editor or wait out the whole ready timeout. Pass only
+ * the project's LOCAL server URLs: a cloud relay answers whether or not this editor runs.
  */
 export function mcpReadinessProbe(options: {
   urls: readonly string[];
@@ -52,7 +58,7 @@ export function mcpReadinessProbe(options: {
       return await Promise.any(
         options.urls.map(async (url) => {
           const result = await probeMcpServer(url, { ...options, timeoutMs, signal: losers.signal });
-          if (!result.ok) throw new Error(result.reason);
+          if (!result.ok && result.status !== 401 && result.status !== 403) throw new Error(result.reason);
           return url;
         }),
       );

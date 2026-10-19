@@ -738,7 +738,6 @@ function dpapiInvocation(action: "Protect" | "Unprotect", input: Buffer): { args
   };
 }
 
-/** Hosts in try-order: the known-startable one first (it may have been uninstalled since). */
 /**
  * The PowerShell hosts to try for a one-off script, the one last seen to start first (the same
  * cached, self-invalidating resolution the DPAPI codec uses). Advance past a host only when
@@ -748,6 +747,7 @@ export function powerShellHostsInOrder(): string[] {
   return orderedHosts(resolvePowerShellHosts());
 }
 
+/** Hosts in try-order: the known-startable one first (it may have been uninstalled since). */
 function orderedHosts(resolution: PowerShellHostResolution): string[] {
   return resolution.spawnable === undefined
     ? resolution.candidates
