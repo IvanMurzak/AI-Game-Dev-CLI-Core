@@ -32,17 +32,21 @@ beforeAll(() => {
   }
 }, 180_000);
 
-afterEach(() => {
-  for (const pid of editorPids.splice(0)) {
+afterEach(async () => {
+  const pids = editorPids.splice(0);
+  for (const pid of pids) {
     try {
       process.kill(pid, "SIGKILL");
     } catch {
       /* already gone */
     }
   }
-  // Windows: a just-killed editor may still hold the project dir as its cwd for a moment.
+  // Windows: a killed editor holds the project dir (its cwd) until it has fully exited.
+  for (let deadline = Date.now() + 15_000; pids.some(isProcessAlive) && Date.now() < deadline; ) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
   fs.rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
-});
+}, 30_000);
 
 function runCli(readyFile: string, launchesLog: string, buildsLog?: string): Promise<{ ok: boolean; source?: string; pid?: number; reason?: string; message?: string }> {
   return new Promise((resolve, reject) => {
