@@ -119,5 +119,9 @@ describe("EditorSession with real processes", () => {
     expect(launches).toHaveLength(1);
     expect(results.filter((r) => r.source === "started")).toHaveLength(1);
     expect(fs.readFileSync(path.join(root, ".ai-game-dev", ".gitignore"), "utf-8")).toContain("session.json");
+
+    // Stop it the way the CLI does (the same path the first case proves on every OS).
+    const session = new EditorSession({ adapter: unityAdapter, projectRoot: root, probeReady: async () => undefined });
+    expect(await session.closeOwned({ timeoutMs: 3_000, force: true })).toMatchObject({ kind: "closed", pid: launches[0]!.pid });
   }, 120_000);
 });
