@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+import type { SessionLease } from "./editor-session.js";
 import { normalizeServerBase } from "./token-refresher.js";
 
 /**
@@ -110,15 +111,21 @@ export interface EditorLaunchSpec {
    * `true` when the request was delivered. Default when absent: the OS polite-quit signal —
    * `SIGTERM` on POSIX, `taskkill /PID` (no `/F`, i.e. `WM_CLOSE`) on Windows. Note that
    * `WM_CLOSE` never reaches a windowless (headless) process, so an engine that can quit through
-   * its plugin should implement this.
+   * its plugin should implement this. `lease` is the session lease that names `pid` (already
+   * verified live), so the hook can use its `nonce` / `serverUrl` without re-reading it; always
+   * passed by `EditorSession` since 0.7.1 (optional in the signature for older callers).
    */
-  requestClose?(pid: number, projectRoot: string): Promise<boolean>;
+  requestClose?(pid: number, projectRoot: string, lease?: SessionLease): Promise<boolean>;
   /**
    * Whether an editor NOT started by a CLI session (e.g. the user's GUI) has this project open.
    * Such an editor is reused and never closed. Optional: the readiness probe already detects an
    * editor whose MCP server answers; this hook additionally catches one that is still loading.
+   *
+   * Return its pid (a positive number) when known: the session then notices cheaply when that
+   * editor exits while it waits for it, and starts its own. With `true` the session re-runs this
+   * hook every `foreignRecheckIntervalMs` instead.
    */
-  findRunningEditor?(projectRoot: string): Promise<boolean>;
+  findRunningEditor?(projectRoot: string): Promise<boolean | number>;
 }
 
 /** Names of the files directly in `dir` ending in `ext` (case-insensitive); `[]` when unreadable. */

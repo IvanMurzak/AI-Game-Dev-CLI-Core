@@ -215,6 +215,20 @@ export interface MachineCredentialLockOptions {
    * unparseable/zero-byte lock artifact — surfaces even before a consumer wires a sink.
    */
   onWarning?: (message: string) => void;
+  /**
+   * Heartbeat the lock while held: {@link MachineCredentialLock.refresh} every quarter of the
+   * staleness bar, so a critical section longer than {@link LOCK_STALE_MS} (the editor-session
+   * pre-launch build) is never taken over by a live peer. The credential store never sets it (its
+   * critical section is bounded by {@link REFRESH_HTTP_TIMEOUT}). Default false.
+   */
+  heartbeat?: boolean;
+  /** Called once per {@link MachineCredentialLock.acquire} when its first attempt finds the lock held. */
+  onWait?: () => void;
+}
+
+/** File name of the takeover-intent file that guards the lock file `lockFileName`. */
+export function takeoverFileName(lockFileName: string): string {
+  return `${lockFileName}.takeover`;
 }
 
 /** Backoff base delay (ms); doubled per attempt up to the cap, then jittered ×[0.5, 1.5). */
@@ -242,6 +256,9 @@ export class MachineCredentialLock {
   private readonly _acquireBudgetMs: number;
   private readonly _maxBackoffMs: number;
   private readonly _onWarning: (message: string) => void;
+  private readonly _heartbeat: boolean;
+  private readonly _onWait: (() => void) | undefined;
+  private _heartbeatTimer: ReturnType<typeof setInterval> | undefined;
 
   /** The exact bytes we wrote into the lock file while held; undefined when not held. */
   private _ownContent: Buffer | undefined;
@@ -251,13 +268,15 @@ export class MachineCredentialLock {
     // `<name>.takeover`: for the default name this is exactly CREDENTIALS_LOCK_TAKEOVER_FILE_NAME.
     const lockFileName = options.lockFileName ?? CREDENTIALS_LOCK_FILE_NAME;
     this._lockPath = path.join(dir, lockFileName);
-    this._intentPath = path.join(dir, `${lockFileName}.takeover`);
+    this._intentPath = path.join(dir, takeoverFileName(lockFileName));
     this._hostId = options.hostId ?? os.hostname();
     this._staleMs = options.staleMs ?? LOCK_STALE_MS;
     this._foreignStaleMs = options.foreignStaleMs ?? FOREIGN_LOCK_STALE_MS;
     this._acquireBudgetMs = options.acquireBudgetMs ?? ACQUIRE_BUDGET;
     this._maxBackoffMs = options.maxBackoffMs ?? BACKOFF_CAP_MS;
     this._onWarning = options.onWarning ?? ((message) => console.warn(message));
+    this._heartbeat = options.heartbeat === true;
+    this._onWait = options.onWait;
   }
 
   /** Absolute path of the lock file (`<store dir>/credentials.lock`). */
@@ -292,11 +311,18 @@ export class MachineCredentialLock {
     let attempt = 0;
     for (;;) {
       if (this.tryExclusiveCreate()) {
+        if (this._heartbeat) {
+          this._heartbeatTimer = setInterval(() => this.refresh(), Math.max(10, Math.floor(this._staleMs / 4)));
+          this._heartbeatTimer.unref();
+        }
         return;
       }
       if (this.tryStaleTakeover()) {
         // We removed a stale lock — race for exclusive-create immediately (04 §2), no backoff.
         continue;
+      }
+      if (attempt === 0) {
+        this._onWait?.();
       }
       const now = Date.now();
       if (now >= deadline) {
@@ -314,6 +340,8 @@ export class MachineCredentialLock {
    * the held state.
    */
   release(): void {
+    clearInterval(this._heartbeatTimer);
+    this._heartbeatTimer = undefined;
     const own = this._ownContent;
     this._ownContent = undefined;
     if (own === undefined) {
@@ -332,6 +360,29 @@ export class MachineCredentialLock {
       fs.unlinkSync(this._lockPath);
     } catch {
       /* best-effort: a racing takeover may have removed it between the read and here */
+    }
+  }
+
+  /**
+   * Heartbeat: bump the lock file's mtime while this instance holds it and the file still carries
+   * OUR content, so peers keep judging a long critical section live (staleness is mtime-based).
+   * Returns false when not held or the lock is no longer ours (taken over); never throws. Runs on
+   * a timer with the `heartbeat` option.
+   */
+  refresh(): boolean {
+    const own = this._ownContent;
+    if (own === undefined) {
+      return false;
+    }
+    try {
+      if (!fs.readFileSync(this._lockPath).equals(own)) {
+        return false;
+      }
+      const now = new Date();
+      fs.utimesSync(this._lockPath, now, now);
+      return true;
+    } catch {
+      return false;
     }
   }
 

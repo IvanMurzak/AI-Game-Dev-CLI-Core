@@ -7,7 +7,72 @@ Versions are set at publish time by the `release.yml` workflow input (`gh workfl
 MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not auto-resolve
 `0.4.0` — adopt deliberately).
 
-## Unreleased
+## 0.7.1 — 2026-10-19
+
+Follow-ups to `EditorSession` from the Unity, Godot and Unreal CLI integrations. New options are
+opt-in, but some defaults change for every consumer on `^0.7.0` — see **Changed**.
+
+### Added — editor-session follow-ups
+
+- **The lease records the server.** New `EditorSessionOptions.serverUrl` / `connectionMode`, written
+  into the lease as optional `SessionLease.serverUrl` / `connectionMode`, so `close --owned-only` and
+  `open` reach the editor's plugin without a `--url`. Leases written by 0.7.0 (without them) still
+  parse. New `readSessionLease(projectRoot)` reads the lease before any session (or connection) is
+  built.
+- **`beforeLaunch(projectRoot, mode, { editorBinary })`** — runs only when this call is about to
+  start the editor (never when it reuses, joins or waits for one), after the binary is resolved,
+  under the startup lock. Concurrent cold callers wait for it and then join the editor, so a
+  pre-launch C# build (Godot) or UBT build (Unreal) runs once per project. The lock is
+  **heartbeated** while held (new `MachineCredentialLock` option `heartbeat`, which runs the new
+  `refresh()` — bumping the mtime peers judge staleness by — every quarter of the staleness bar; also
+  new: the `onWait` option and `takeoverFileName(lockFileName)`), so a build longer than the 60 s
+  staleness bar is never taken over; a crashed holder stops heartbeating and is still taken over
+  after 60 s. If the lock was nevertheless taken over while the hook ran (e.g. the machine slept
+  through the heartbeat), nothing is launched and the session decides again (normally joining the
+  peer's editor). Waiters keep waiting for a live holder up to `startupLockWaitMs` (default
+  `DEFAULT_SESSION_STARTUP_LOCK_WAIT_MS`, 30 min), reporting "Waiting for another CLI call that is
+  starting the editor..." through `onStatus`. A throwing hook propagates from `ensure` unchanged (no
+  editor started, lock released) — including a `CredentialLockBusyError` of another lock. The hook
+  must not block the event loop.
+- **`requestClose(pid, projectRoot, lease)`** — the adapter hook now receives the verified lease
+  (nonce, `serverUrl`), so engines no longer re-read it.
+- **Foreign editors.** `findRunningEditor` may return the editor's pid instead of `true`. While a
+  foreign editor is waited for, the session notices when it exits (pid gone, or — pid unknown — the
+  hook no longer finds it on two re-checks in a row; re-run every `foreignRecheckIntervalMs`,
+  default 10 s) and decides again. New `foreignReadyTimeoutMs` (default `readyTimeoutMs`) fails fast
+  on a foreign editor whose MCP server never answers, with a generic hint in the message.
+- **`EditorSessionError.source`** (`foreign` / `owned` / `started`) on `exited` / `not-ready`: which
+  editor was waited for, so CLIs can tailor their hint (new type `WaitedEditorSource`).
+- **`ensureAiGameDevGitignore(projectRoot, entries)`** and `SESSION_GITIGNORE_ENTRIES`
+  (`session.json`, `session.lock`, `session.lock.takeover`): makes sure
+  `<project>/.ai-game-dev/.gitignore` lists the entries — created when absent, otherwise only the
+  missing lines are appended in the file's line ending; user lines are never rewritten and a user's
+  `!entry` negation is respected. Best-effort (returns false, never throws). Usable for the
+  per-project credential files too.
+- `WaitForReadyOptions.stopReason` may be async (a throw counts as "not stopped").
+
+### Changed — default behaviour (consumers on `^0.7.0` get these without opting in)
+
+- **A launch writes `<project>/.ai-game-dev/.gitignore`** (see above). Opt out with
+  `gitignore: false`.
+- **A held startup lock is waited for up to 30 min** (`startupLockWaitMs`) instead of failing with
+  `lock-busy` after the 75 s acquire budget. Invalid values (NaN, negative, infinite) of
+  `startupLockWaitMs`, `readyTimeoutMs`, `foreignReadyTimeoutMs` and `foreignRecheckIntervalMs` fall
+  back to their defaults. Lease cleanup after a close or a failed start waits at most 5 s for the
+  lock (a busy lock leaves the dead lease for the next `ensure`).
+- **A foreign editor that exits while waited for no longer fails `ensure`**: the session starts its
+  own editor. This fixes the Unity race where the plugin deletes the lease just before it exits and
+  a parallel `exec` waited out the whole ready timeout on the dying editor. Up to three
+  decide-and-wait rounds per `ensure` (0.7.0: two).
+- The `not-ready` message for a foreign editor now explains that its MCP server did not answer.
+- `EditorLaunchSpec.findRunningEditor` returns `Promise<boolean | number>` (implementations
+  returning `boolean` still type-check; code that calls the hook and expects a `boolean` must
+  handle a pid).
+- **The editor binary is resolved only once a launch is decided** (no live editor of the project,
+  ours or foreign), outside the startup lock, at most once per `ensure`. 0.7.0 started resolving it
+  as soon as the warm probe failed, even when the call then joined an editor.
+
+## 0.7.0 — 2026-10-19
 
 ### Added — editor sessions (`EditorSession`, Code-Exec §4.6)
 
