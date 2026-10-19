@@ -1,13 +1,13 @@
-import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { isErrno, writeFileAtomicSync } from "./atomic-file.js";
+import { writeFileAtomicSync } from "./atomic-file.js";
 import { CredentialLockBusyError, MachineCredentialLock } from "./credential-lock.js";
-import type { EditorSessionMode, EngineAdapter, EngineId } from "./engine-adapter.js";
-import { powerShellHostCandidates } from "./machine-credentials.js";
+import type { EditorLaunchSpec, EditorSessionMode, EngineAdapter, EngineId } from "./engine-adapter.js";
+import { errorMessage } from "./network-error.js";
+import { isProcessAlive, readProcessStart, sleep, spawnDetached, terminateProcess } from "./process.js";
 
 /**
  * Editor sessions for CLI commands that need a running editor (`exec`, `open --headless`,
@@ -273,40 +273,47 @@ export class EditorSession<TReady = unknown> {
 
     const spec = this.requireSpec();
     const mode = options.mode ?? "headless";
-    let binary: string | undefined;
-    // One retry: a leased editor that dies while we wait for it (it was idling out) is replaced.
-    for (let attempt = 0; ; attempt++) {
-      const joined = await this.ownedSession();
-      if (joined !== undefined) {
-        const ready = await this.waitForLeased(joined, attempt > 0);
-        if (ready !== undefined) return { ready, source: "owned", lease: joined };
-        continue;
-      }
+    // Resolved outside the lock (it can be slow: Unity Hub, registry lookups), awaited only to launch.
+    const binary = this.resolveBinary();
+    binary.catch(() => {}); // unused when we join another editor
+    // A leased editor that dies while we wait for it (it was idling out) is replaced once.
+    return (await this.attemptEnsure(spec, mode, binary, false)) ?? (await this.attemptEnsure(spec, mode, binary, true))!;
+  }
 
-      binary ??= await this.resolveBinary();
-      const outcome = await this.withStartupLock(async (): Promise<StartOutcome> => {
-        const lease = await this.ownedSession();
-        if (lease !== undefined) return { kind: "join", lease };
-        if (await spec.findRunningEditor?.(this.projectRoot)) return { kind: "foreign" };
-        this.removeStaleLease();
-        return { kind: "started", lease: await this.launch(binary!, spec.args(this.projectRoot, mode), mode) };
-      });
+  /** One decide-and-wait round; undefined when the leased editor we joined died (retry once). */
+  private async attemptEnsure(
+    spec: EditorLaunchSpec,
+    mode: EditorSessionMode,
+    binary: Promise<string>,
+    lastAttempt: boolean,
+  ): Promise<EnsureResult<TReady> | undefined> {
+    const outcome = await this.withStartupLock(async (): Promise<StartOutcome> => {
+      const lease = this.readLease();
+      if (lease !== undefined && (await this.isLive(lease))) return { kind: "join", lease };
+      if (await spec.findRunningEditor?.(this.projectRoot)) return { kind: "foreign" };
+      if (lease !== undefined) this.removeStaleLease(lease);
+      return { kind: "started", lease: await this.launch(await binary, spec, mode) };
+    });
 
-      if (outcome.kind === "foreign") {
-        this.status("Waiting for the running editor...");
-        return { ready: await this.waitReady(), source: "foreign" };
-      }
-      if (outcome.kind === "join") {
-        const ready = await this.waitForLeased(outcome.lease, attempt > 0);
-        if (ready !== undefined) return { ready, source: "owned", lease: outcome.lease };
-        continue;
-      }
+    if (outcome.kind === "foreign") {
+      this.status("Waiting for the running editor...");
+      return { ready: await this.waitReady(), source: "foreign" };
+    }
+    const { lease } = outcome;
+    if (outcome.kind === "join") {
+      this.status("Waiting for the editor started by another CLI call...");
       try {
-        return { ready: await this.waitReady(outcome.lease.pid), source: "started", lease: outcome.lease };
+        return { ready: await this.waitReady(lease.pid), source: "owned", lease };
       } catch (err) {
-        if (!this._ops.isAlive(outcome.lease.pid)) this.removeLease(outcome.lease.nonce);
+        if (!lastAttempt && err instanceof EditorSessionError && err.reason === "exited") return undefined;
         throw err;
       }
+    }
+    try {
+      return { ready: await this.waitReady(lease.pid), source: "started", lease };
+    } catch (err) {
+      if (!this._ops.isAlive(lease.pid)) this.removeLease(lease.nonce);
+      throw err;
     }
   }
 
@@ -314,48 +321,24 @@ export class EditorSession<TReady = unknown> {
    * `close --owned-only`: politely close the editor only when our valid lease names it. A foreign
    * editor (no lease, a stale lease, a reused pid, another machine) is never touched.
    */
-  async closeOwned(options: { timeoutMs?: number; force?: boolean } = {}): Promise<CloseOwnedResult> {
+  async closeOwned(options: CloseOptions = {}): Promise<CloseOwnedResult> {
     const lease = this.readLease();
     if (lease === undefined) return { kind: "not-owned", staleLeaseRemoved: false };
-    if (!(await this.isLive(lease))) {
-      return { kind: "not-owned", staleLeaseRemoved: this.removeStaleLease() };
-    }
-    const pid = lease.pid;
-    const requestClose = this._options.adapter.editor?.requestClose;
-    const delivered = requestClose ? await requestClose(pid, this.projectRoot) : await this._ops.requestClose(pid);
-
-    // An undelivered request (e.g. WM_CLOSE to a windowless process) is not worth waiting for.
-    let exited = delivered
-      ? await this.waitForExit(pid, options.timeoutMs ?? DEFAULT_SESSION_CLOSE_TIMEOUT_MS)
-      : !this._ops.isAlive(pid);
-    let forced = false;
-    if (!exited && options.force === true) {
-      // Re-check identity right before the kill: the pid must still be the editor we leased.
-      if (await this.isLive(lease)) {
-        forced = true;
-        await this._ops.forceKill(pid);
-        exited = await this.waitForExit(pid, 5_000);
-      } else {
-        exited = true;
-      }
-    }
-    if (!exited) return { kind: "still-running", pid };
-    this.removeLease(lease.nonce);
-    return { kind: "closed", pid, forced };
+    if (!(await this.isLive(lease))) return { kind: "not-owned", staleLeaseRemoved: this.removeStaleLease(lease) };
+    return this.closeLease(lease, options);
   }
 
   /**
    * `open` with a window: if our headless editor holds the project, close it first so the caller
    * can open the GUI. A foreign editor is left alone (the caller's usual "already open" handling).
    */
-  async prepareWindowOpen(options: { timeoutMs?: number; force?: boolean } = {}): Promise<PrepareWindowResult> {
+  async prepareWindowOpen(options: CloseOptions = {}): Promise<PrepareWindowResult> {
     const lease = await this.ownedSession();
     if (lease === undefined) return { kind: "proceed" };
     if (lease.mode === "window") return { kind: "already-open", pid: lease.pid };
     this.status("Closing the headless editor started by the CLI...");
-    const closed = await this.closeOwned(options);
-    if (closed.kind === "still-running") return closed;
-    return closed.kind === "closed" ? { kind: "proceed", stoppedPid: closed.pid } : { kind: "proceed" };
+    const closed = await this.closeLease(lease, options);
+    return closed.kind === "closed" ? { kind: "proceed", stoppedPid: closed.pid } : closed;
   }
 
   // ── internals ────────────────────────────────────────────────────────────────────────────────
@@ -371,13 +354,37 @@ export class EditorSession<TReady = unknown> {
     return spec;
   }
 
+  /** Close the editor of a lease already verified live. */
+  private async closeLease(
+    lease: SessionLease,
+    options: CloseOptions,
+  ): Promise<Extract<CloseOwnedResult, { kind: "closed" | "still-running" }>> {
+    const { pid } = lease;
+    const requestClose = this._options.adapter.editor?.requestClose;
+    const delivered = requestClose ? await requestClose(pid, this.projectRoot) : await this._ops.requestClose(pid);
+    // An undelivered request (e.g. WM_CLOSE to a windowless process) is not worth waiting for.
+    let exited = delivered
+      ? await this.waitForExit(pid, options.timeoutMs ?? DEFAULT_SESSION_CLOSE_TIMEOUT_MS)
+      : !this._ops.isAlive(pid);
+    let forced = false;
+    // Re-check identity right before the kill: the pid must still be the editor we leased.
+    if (!exited && options.force === true && (await this.isLive(lease))) {
+      forced = true;
+      await this._ops.forceKill(pid);
+      exited = await this.waitForExit(pid, 5_000);
+    }
+    if (!exited && this._ops.isAlive(pid)) return { kind: "still-running", pid };
+    this.removeLease(lease.nonce);
+    return { kind: "closed", pid, forced };
+  }
+
   private async resolveBinary(): Promise<string> {
     const source = this._options.editorBinary;
     let binary: string | undefined;
     try {
       binary = typeof source === "function" ? await source() : source;
     } catch (err) {
-      throw new EditorSessionError("no-editor-binary", `could not find the editor: ${errorText(err)}`, { cause: err });
+      throw new EditorSessionError("no-editor-binary", `could not find the editor: ${errorMessage(err)}`, { cause: err });
     }
     if (!binary) throw new EditorSessionError("no-editor-binary", "no editor binary given");
     return binary;
@@ -406,7 +413,15 @@ export class EditorSession<TReady = unknown> {
     }
   }
 
-  private async launch(binary: string, engineArgs: string[], mode: EditorSessionMode): Promise<SessionLease> {
+  private async launch(binary: string, spec: EditorLaunchSpec, mode: EditorSessionMode): Promise<SessionLease> {
+    let engineArgs: string[];
+    try {
+      engineArgs = spec.args(this.projectRoot, mode);
+    } catch (err) {
+      throw new EditorSessionError("launch-failed", `cannot build the editor command line: ${errorMessage(err)}`, {
+        cause: err,
+      });
+    }
     const idleSeconds = this._options.idleSeconds ?? DEFAULT_SESSION_IDLE_SECONDS;
     const nonce = randomBytes(16).toString("hex");
     const env = { ...process.env, ...this._options.env, ...buildSessionEnv(nonce, idleSeconds) };
@@ -419,7 +434,7 @@ export class EditorSession<TReady = unknown> {
         hideWindow: mode === "headless",
       });
     } catch (err) {
-      throw new EditorSessionError("launch-failed", `could not start ${binary}: ${errorText(err)}`, { cause: err });
+      throw new EditorSessionError("launch-failed", `could not start ${binary}: ${errorMessage(err)}`, { cause: err });
     }
     const processStart = await this._ops.processStart(pid);
     const lease: SessionLease = {
@@ -435,17 +450,6 @@ export class EditorSession<TReady = unknown> {
     writeFileAtomicSync(this.leasePath, Buffer.from(JSON.stringify(lease, null, 2) + "\n", "utf-8"));
     if (idleSeconds > 0) this.status(`Editor started (pid ${pid}); it quits after ${idleSeconds}s without tool calls.`);
     return lease;
-  }
-
-  /** Wait for an editor leased by another call; undefined when it died first (the caller may relaunch once). */
-  private async waitForLeased(lease: SessionLease, lastAttempt: boolean): Promise<TReady | undefined> {
-    this.status("Waiting for the editor started by another CLI call...");
-    try {
-      return await this.waitReady(lease.pid);
-    } catch (err) {
-      if (!lastAttempt && err instanceof EditorSessionError && err.reason === "exited") return undefined;
-      throw err;
-    }
   }
 
   private async waitReady(pid?: number): Promise<TReady> {
@@ -467,7 +471,7 @@ export class EditorSession<TReady = unknown> {
   }
 
   private async isLive(lease: SessionLease): Promise<boolean> {
-    if (lease.hostId.toLowerCase() !== this._hostId.toLowerCase()) return false;
+    if (!this.isThisHost(lease)) return false;
     if (!this._ops.isAlive(lease.pid)) return false;
     // Pid reuse: the recorded start time must still match. Unknown on either side = unverifiable,
     // which is treated as NOT ours — a lease never authorizes closing a process we cannot identify.
@@ -475,16 +479,13 @@ export class EditorSession<TReady = unknown> {
     return (await this._ops.processStart(lease.pid)) === lease.processStart;
   }
 
-  /** Remove a lease that is not live (only one from this machine). Returns true when removed. */
-  private removeStaleLease(): boolean {
-    const lease = this.readLease();
-    if (lease === undefined) {
-      // An unparseable leftover is removed too; a well-formed foreign-host lease is not ours to judge.
-      if (!fs.existsSync(this.leasePath)) return false;
-      return unlinkQuietly(this.leasePath);
-    }
-    if (lease.hostId.toLowerCase() !== this._hostId.toLowerCase()) return false;
-    return this.removeLease(lease.nonce);
+  private isThisHost(lease: SessionLease): boolean {
+    return lease.hostId.toLowerCase() === this._hostId.toLowerCase();
+  }
+
+  /** Remove a lease that is not live — only one written on this machine. Returns true when removed. */
+  private removeStaleLease(lease: SessionLease): boolean {
+    return this.isThisHost(lease) && this.removeLease(lease.nonce);
   }
 
   /** Compare-and-delete: remove the lease only while it still carries `nonce`. */
@@ -505,6 +506,13 @@ export class EditorSession<TReady = unknown> {
   private status(message: string): void {
     this._options.onStatus?.(message);
   }
+}
+
+interface CloseOptions {
+  /** How long to wait for the editor to exit after the polite request. Default 30 s. */
+  timeoutMs?: number;
+  /** Kill the editor when it does not exit in time (only after re-verifying the lease). */
+  force?: boolean;
 }
 
 type StartOutcome =
@@ -554,170 +562,17 @@ export async function waitForReady<T>(options: WaitForReadyOptions<T>): Promise<
   }
 }
 
-/** The MCP server's ping endpoint (a system tool, the same for every engine). */
-export const MCP_PING_PATH = "/api/system-tools/ping";
-
-export type McpProbeResult = { ok: true; baseUrl: string; data: unknown } | { ok: false; reason: string };
-
-/** One POST to `<baseUrl>/api/system-tools/ping`. Never throws. */
-export async function probeMcpServer(
-  baseUrl: string,
-  options: { token?: string; timeoutMs: number; fetchImpl?: typeof fetch },
-): Promise<McpProbeResult> {
-  const doFetch = options.fetchImpl ?? fetch;
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (options.token) headers["Authorization"] = `Bearer ${options.token}`;
-  const base = baseUrl.replace(/\/+$/, "");
-  try {
-    const response = await doFetch(`${base}${MCP_PING_PATH}`, {
-      method: "POST",
-      headers,
-      body: "{}",
-      signal: AbortSignal.timeout(options.timeoutMs),
-    });
-    const text = await response.text();
-    if (!response.ok) return { ok: false, reason: `HTTP ${response.status}` };
-    let data: unknown = text;
-    try {
-      data = JSON.parse(text);
-    } catch {
-      /* plain-text answer */
-    }
-    return { ok: true, baseUrl, data };
-  } catch (err) {
-    return { ok: false, reason: errorText(err) };
-  }
-}
-
-/**
- * The standard readiness probe for {@link EditorSessionOptions.probeReady}: ping every URL at once
- * and resolve the first that answers (undefined when none does).
- */
-export function mcpReadinessProbe(options: {
-  urls: readonly string[];
-  token?: string;
-  timeoutMs?: number;
-  fetchImpl?: typeof fetch;
-}): () => Promise<string | undefined> {
-  const timeoutMs = options.timeoutMs ?? 2_000;
-  return () =>
-    new Promise<string | undefined>((resolve) => {
-      let pending = options.urls.length;
-      if (pending === 0) resolve(undefined);
-      for (const url of options.urls) {
-        void probeMcpServer(url, { ...options, timeoutMs }).then((result) => {
-          if (result.ok) resolve(result.baseUrl);
-          else if (--pending === 0) resolve(undefined);
-        });
-      }
-    });
-}
-
 // ── default OS process primitives ─────────────────────────────────────────────────────────────
-
-const isWindows = process.platform === "win32";
-
-/** True when `pid` names a running process (EPERM = exists, not ours to signal). */
-export function isProcessAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return isErrno(err, "EPERM");
-  }
-}
-
-/**
- * An opaque token for the start time of `pid` (Linux `/proc/<pid>/stat` starttime, macOS
- * `ps -o lstart=`, Windows `Get-Process` StartTime ticks); undefined when it cannot be read.
- */
-export async function readProcessStart(pid: number): Promise<string | undefined> {
-  if (!Number.isInteger(pid) || pid <= 0) return undefined;
-  if (process.platform === "linux") {
-    try {
-      const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf-8");
-      // Field 22 (starttime); the command name (field 2) may contain spaces, so split after its ")".
-      const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-      const ticks = fields[19];
-      return ticks ? `linux:${ticks}` : undefined;
-    } catch {
-      return undefined;
-    }
-  }
-  if (isWindows) {
-    const script = `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`;
-    for (const host of powerShellHostCandidates()) {
-      try {
-        const out = (await execFileText(host, ["-NoProfile", "-NonInteractive", "-Command", script], 30_000)).trim();
-        return /^\d+$/.test(out) ? `win:${out}` : undefined;
-      } catch (err) {
-        const code = (err as NodeJS.ErrnoException).code;
-        if (code === "ENOENT" || code === "EACCES") continue; // this host is missing — try the next
-        return undefined;
-      }
-    }
-    return undefined;
-  }
-  try {
-    const out = (await execFileText("ps", ["-o", "lstart=", "-p", String(pid)], 10_000)).trim();
-    return out ? `ps:${out}` : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function execFileText(file: string, args: string[], timeoutMs: number): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile(file, args, { timeout: timeoutMs, windowsHide: true, encoding: "utf-8" }, (err, stdout) => {
-      if (err) reject(err);
-      else resolve(stdout);
-    });
-  });
-}
-
-async function signalProcess(pid: number, force: boolean): Promise<boolean> {
-  if (!isProcessAlive(pid)) return true;
-  try {
-    if (isWindows) {
-      await execFileText("taskkill", [...(force ? ["/F"] : []), "/PID", String(pid)], 10_000);
-    } else {
-      process.kill(pid, force ? "SIGKILL" : "SIGTERM");
-    }
-    return true;
-  } catch {
-    return !isProcessAlive(pid); // it may have exited between the check and the signal
-  }
-}
 
 /** The real OS primitives. */
 export const defaultSessionProcessOps: SessionProcessOps = {
-  spawnDetached: (command, args, options) =>
-    new Promise<number>((resolve, reject) => {
-      const child = spawn(command, [...args], {
-        cwd: options.cwd,
-        env: options.env,
-        detached: true,
-        stdio: "ignore",
-        windowsHide: options.hideWindow,
-      });
-      child.once("error", reject);
-      child.once("spawn", () => {
-        child.unref();
-        if (child.pid === undefined) reject(new Error("the process started without a pid"));
-        else resolve(child.pid);
-      });
-    }),
+  spawnDetached,
   isAlive: isProcessAlive,
   processStart: readProcessStart,
-  requestClose: (pid) => signalProcess(pid, false),
-  forceKill: (pid) => signalProcess(pid, true),
+  requestClose: (pid) => terminateProcess(pid, false),
+  forceKill: (pid) => terminateProcess(pid, true),
   sleep,
 };
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 function unlinkQuietly(file: string): boolean {
   try {
@@ -726,8 +581,4 @@ function unlinkQuietly(file: string): boolean {
   } catch {
     return false;
   }
-}
-
-function errorText(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }

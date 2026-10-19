@@ -6,7 +6,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   EditorSession,
   EditorSessionError,
+  SESSION_DIR_NAME,
   SESSION_ENV,
+  SESSION_LEASE_FILE_NAME,
+  SESSION_LOCK_FILE_NAME,
   buildSessionEnv,
   parseSessionLease,
   waitForReady,
@@ -15,6 +18,7 @@ import {
   type SessionProcessOps,
 } from "../src/editor-session.js";
 import { godotAdapter, unityAdapter, type EngineAdapter } from "../src/engine-adapter.js";
+import { MCP_PING_PATH, mcpReadinessProbe } from "../src/mcp-ping.js";
 
 /** An in-memory process table standing in for the OS. One world is shared by all sessions of a test. */
 class FakeWorld {
@@ -114,8 +118,31 @@ function writeLease(lease: Partial<SessionLease> & { pid: number }): void {
     processStart: world.procs.get(lease.pid)?.start ?? "gone",
     ...lease,
   };
-  fs.mkdirSync(path.join(root, ".ai-game-dev"), { recursive: true });
-  fs.writeFileSync(path.join(root, ".ai-game-dev", "session.json"), JSON.stringify(full));
+  fs.mkdirSync(sessionDir(), { recursive: true });
+  fs.writeFileSync(path.join(sessionDir(), SESSION_LEASE_FILE_NAME), JSON.stringify(full));
+}
+
+function sessionDir(): string {
+  return path.join(root, SESSION_DIR_NAME);
+}
+
+/** A startup lock held by a peer (fresh, or aged to `mtime`). */
+function writeLockFile(mtime?: Date): string {
+  const lockPath = path.join(sessionDir(), SESSION_LOCK_FILE_NAME);
+  fs.mkdirSync(sessionDir(), { recursive: true });
+  fs.writeFileSync(lockPath, JSON.stringify({ pid: 1, startedAt: new Date().toISOString(), hostId: "host-a", nonce: "x" }));
+  if (mtime) fs.utimesSync(lockPath, mtime, mtime);
+  return lockPath;
+}
+
+/** The EditorSessionError reason a promise rejects with (fails the test if it resolves). */
+async function reasonOf(promise: Promise<unknown>): Promise<string> {
+  const err = await promise.then(
+    () => undefined,
+    (e: unknown) => e,
+  );
+  expect(err).toBeInstanceOf(EditorSessionError);
+  return (err as EditorSessionError).reason;
 }
 
 describe("EditorSession.ensure", () => {
@@ -250,27 +277,22 @@ describe("EditorSession.ensure", () => {
     await sleep(80);
     const lease = s.readLease()!;
     world.procs.get(lease.pid)!.alive = false;
-    const err = await pending.catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(EditorSessionError);
-    expect((err as EditorSessionError).reason).toBe("exited");
+    expect(await reasonOf(pending)).toBe("exited");
     expect(s.readLease()).toBeUndefined();
     expect(world.spawns).toHaveLength(1);
   });
 
   it("not-ready after the timeout", async () => {
     world.readyAfterMs = undefined;
-    const err = await session({ readyTimeoutMs: 100 }).ensure().catch((e: unknown) => e);
-    expect((err as EditorSessionError).reason).toBe("not-ready");
+    expect(await reasonOf(session({ readyTimeoutMs: 100 }).ensure())).toBe("not-ready");
   });
 
   it("launch failure and a missing binary are typed errors", async () => {
     const failing = session({
       processOps: { ...world.ops(), spawnDetached: async () => Promise.reject(new Error("ENOENT")) },
     });
-    expect(((await failing.ensure().catch((e: unknown) => e)) as EditorSessionError).reason).toBe("launch-failed");
-    expect(((await session({ editorBinary: undefined }).ensure().catch((e: unknown) => e)) as EditorSessionError).reason).toBe(
-      "no-editor-binary",
-    );
+    expect(await reasonOf(failing.ensure())).toBe("launch-failed");
+    expect(await reasonOf(session({ editorBinary: undefined }).ensure())).toBe("no-editor-binary");
     const throwing = session({
       editorBinary: () => {
         throw new Error("Unity 6000.6 is not installed");
@@ -284,29 +306,17 @@ describe("EditorSession.ensure", () => {
   it("an adapter without an editor spec is unsupported", async () => {
     const adapter: EngineAdapter = { ...unityAdapter, engine: "brutal" };
     delete (adapter as { editor?: unknown }).editor;
-    const err = (await session({ adapter }).ensure().catch((e: unknown) => e)) as EditorSessionError;
-    expect(err.reason).toBe("unsupported");
+    expect(await reasonOf(session({ adapter }).ensure())).toBe("unsupported");
   });
 
   it("lock-busy when the startup lock stays held by a live peer", async () => {
-    fs.mkdirSync(path.join(root, ".ai-game-dev"), { recursive: true });
-    fs.writeFileSync(
-      path.join(root, ".ai-game-dev", "session.lock"),
-      JSON.stringify({ pid: 1, startedAt: new Date().toISOString(), hostId: "host-a", nonce: "x" }),
-    );
-    const err = (await session({ lockTiming: { acquireBudgetMs: 100, maxBackoffMs: 10 } })
-      .ensure()
-      .catch((e: unknown) => e)) as EditorSessionError;
-    expect(err.reason).toBe("lock-busy");
+    writeLockFile();
+    expect(await reasonOf(session({ lockTiming: { acquireBudgetMs: 100, maxBackoffMs: 10 } }).ensure())).toBe("lock-busy");
     expect(world.spawns).toHaveLength(0);
   });
 
   it("recovers a stale startup lock left by a crashed CLI", async () => {
-    const lockPath = path.join(root, ".ai-game-dev", "session.lock");
-    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-    fs.writeFileSync(lockPath, JSON.stringify({ pid: 1, startedAt: "x", hostId: "host-a", nonce: "y" }));
-    const old = new Date(Date.now() - 120_000);
-    fs.utimesSync(lockPath, old, old);
+    const lockPath = writeLockFile(new Date(Date.now() - 120_000));
     const result = await session().ensure();
     expect(result.source).toBe("started");
     expect(fs.existsSync(lockPath)).toBe(false);
@@ -409,6 +419,32 @@ describe("EditorSession.prepareWindowOpen", () => {
     const s = session();
     const { lease } = await s.ensure();
     expect(await s.prepareWindowOpen({ timeoutMs: 30 })).toEqual({ kind: "still-running", pid: lease!.pid });
+  });
+});
+
+describe("mcpReadinessProbe", () => {
+  it("resolves the first URL that answers the ping and aborts the others", async () => {
+    const aborted: string[] = [];
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      expect(url.endsWith(MCP_PING_PATH)).toBe(true);
+      if (url.startsWith("http://slow")) {
+        return new Promise<Response>((_, reject) =>
+          init!.signal!.addEventListener("abort", () => {
+            aborted.push(url);
+            reject(new Error("aborted"));
+          }),
+        );
+      }
+      if (url.startsWith("http://down")) throw new Error("ECONNREFUSED");
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+    const probe = mcpReadinessProbe({ urls: ["http://slow:1", "http://down:2", "http://up:3/"], fetchImpl });
+    expect(await probe()).toBe("http://up:3/");
+    await sleep(5);
+    expect(aborted).toEqual([`http://slow:1${MCP_PING_PATH}`]);
+    expect(await mcpReadinessProbe({ urls: ["http://down:2"], fetchImpl })()).toBeUndefined();
+    expect(await mcpReadinessProbe({ urls: [], fetchImpl })()).toBeUndefined();
   });
 });
 

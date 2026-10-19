@@ -338,10 +338,6 @@ export {
   buildSessionEnv,
   parseSessionLease,
   waitForReady,
-  probeMcpServer,
-  mcpReadinessProbe,
-  isProcessAlive,
-  readProcessStart,
   defaultSessionProcessOps,
   SESSION_DIR_NAME,
   SESSION_LEASE_FILE_NAME,
@@ -351,8 +347,10 @@ export {
   DEFAULT_SESSION_READY_TIMEOUT_MS,
   DEFAULT_SESSION_READY_INTERVAL_MS,
   DEFAULT_SESSION_CLOSE_TIMEOUT_MS,
-  MCP_PING_PATH,
 } from "./editor-session.js";
+export { isProcessAlive, readProcessStart } from "./process.js";
+export { probeMcpServer, mcpReadinessProbe, MCP_PING_PATH } from "./mcp-ping.js";
+export type { McpProbeResult } from "./mcp-ping.js";
 export type {
   SessionLease,
   SessionProcessOps,
@@ -364,7 +362,6 @@ export type {
   PrepareWindowResult,
   WaitForReadyOptions,
   WaitForReadyResult,
-  McpProbeResult,
 } from "./editor-session.js";
 
 // ── agents registry ─────────────────────────────────────────────────────────────────────────────

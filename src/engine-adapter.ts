@@ -121,18 +121,27 @@ export interface EditorLaunchSpec {
   findRunningEditor?(projectRoot: string): Promise<boolean>;
 }
 
-/** The single `*.uproject` in an Unreal project root (the editor's first argument). */
+/** Names of the files directly in `dir` ending in `ext` (case-insensitive); `[]` when unreadable. */
+export function filesWithExt(dir: string, ext: string): string[] {
+  try {
+    const lower = ext.toLowerCase();
+    return fs
+      .readdirSync(dir, { withFileTypes: true })
+      .filter((e) => e.isFile() && e.name.toLowerCase().endsWith(lower))
+      .map((e) => e.name);
+  } catch {
+    return [];
+  }
+}
+
+/** The `*.uproject` in an Unreal project root (the editor's first argument; the first by name if several). */
 export function findUprojectFile(projectRoot: string): string {
   const root = path.resolve(projectRoot);
-  const found = fs
-    .readdirSync(root, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".uproject"))
-    .map((entry) => entry.name)
-    .sort();
-  if (found.length === 0) {
+  const first = filesWithExt(root, ".uproject").sort()[0];
+  if (first === undefined) {
     throw new Error(`no *.uproject file in ${root}`);
   }
-  return path.join(root, found[0]!);
+  return path.join(root, first);
 }
 
 /** The RID string (`<os>-<arch>`) for a platform/arch — the GameDev-MCP-Server release-asset RID. */

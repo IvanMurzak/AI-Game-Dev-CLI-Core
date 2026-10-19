@@ -4,7 +4,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
-import { EditorSession, isProcessAlive, readProcessStart } from "../src/editor-session.js";
+import { EditorSession } from "../src/editor-session.js";
+import { isProcessAlive, readProcessStart } from "../src/process.js";
 import { unityAdapter } from "../src/engine-adapter.js";
 
 /**
@@ -22,7 +23,7 @@ const editorPids: number[] = [];
 beforeAll(() => {
   // The runners import dist/ (plain node, outside vitest's transpiler): rebuild when stale.
   const out = path.join(repoRoot, "dist", "editor-session.js");
-  const sources = ["editor-session.ts", "credential-lock.ts", "engine-adapter.ts", "index.ts"].map((f) =>
+  const sources = ["editor-session.ts", "process.ts", "credential-lock.ts", "engine-adapter.ts", "index.ts"].map((f) =>
     path.join(repoRoot, "src", f),
   );
   if (!fs.existsSync(out) || sources.some((s) => fs.statSync(s).mtimeMs > fs.statSync(out).mtimeMs)) {
