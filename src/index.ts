@@ -320,8 +320,49 @@ export {
   brutalAdapter,
   SERVER_BINARY_BASENAME,
   SERVER_ARG_NAMES,
+  findUprojectFile,
 } from "./engine-adapter.js";
-export type { EngineAdapter, EngineId, ProjectMarkerSpec, StdioArgsParams } from "./engine-adapter.js";
+export type {
+  EngineAdapter,
+  EngineId,
+  ProjectMarkerSpec,
+  StdioArgsParams,
+  EditorLaunchSpec,
+  EditorSessionMode,
+} from "./engine-adapter.js";
+
+// ── editor sessions (Code-Exec §4.6): reuse / start the editor, lease, startup lock, readiness ──
+export {
+  EditorSession,
+  EditorSessionError,
+  buildSessionEnv,
+  parseSessionLease,
+  waitForReady,
+  defaultSessionProcessOps,
+  SESSION_DIR_NAME,
+  SESSION_LEASE_FILE_NAME,
+  SESSION_LOCK_FILE_NAME,
+  SESSION_ENV,
+  DEFAULT_SESSION_IDLE_SECONDS,
+  DEFAULT_SESSION_READY_TIMEOUT_MS,
+  DEFAULT_SESSION_READY_INTERVAL_MS,
+  DEFAULT_SESSION_CLOSE_TIMEOUT_MS,
+} from "./editor-session.js";
+export { isProcessAlive, readProcessStart } from "./process.js";
+export { probeMcpServer, mcpReadinessProbe, MCP_PING_PATH } from "./mcp-ping.js";
+export type { McpProbeResult } from "./mcp-ping.js";
+export type {
+  SessionLease,
+  SessionProcessOps,
+  EditorSessionErrorReason,
+  EditorSessionOptions,
+  EnsureSource,
+  EnsureResult,
+  CloseOwnedResult,
+  PrepareWindowResult,
+  WaitForReadyOptions,
+  WaitForReadyResult,
+} from "./editor-session.js";
 
 // ── agents registry ─────────────────────────────────────────────────────────────────────────────
 export {

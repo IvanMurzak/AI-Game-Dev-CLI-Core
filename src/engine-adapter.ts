@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { normalizeServerBase } from "./token-refresher.js";
@@ -81,6 +82,66 @@ export interface EngineAdapter {
    * URL, a canonical `/mcp` URL, and a bare host all collapse to the same AS root.
    */
   loginServerTarget(connectionUrl: string): string;
+  /**
+   * How a CLI starts and stops this engine's editor for an {@link ../editor-session.EditorSession}
+   * (Code-Exec plan §4.6). Absent for engines whose editor a CLI never launches (Brutal). Optional
+   * so adapters defined outside this package keep compiling.
+   */
+  readonly editor?: EditorLaunchSpec;
+}
+
+/** How an editor session runs: without a window (the `exec` default) or as a normal GUI editor. */
+export type EditorSessionMode = "headless" | "window";
+
+/**
+ * The engine-specific half of an editor session. Everything else — the reuse policy, the lease,
+ * the startup lock, the readiness wait, the idle/owner environment — is generic and lives in
+ * `editor-session.ts`.
+ *
+ * The editor BINARY is deliberately not here: each CLI already resolves it its own way (Unity
+ * Hub + `ProjectVersion.txt`, Godot `findGodotBinary`, Unreal `EngineAssociation`) and passes the
+ * result to the session as `editorBinary`.
+ */
+export interface EditorLaunchSpec {
+  /** The editor command-line arguments that open `projectRoot` in `mode` (no binary). */
+  args(projectRoot: string, mode: EditorSessionMode): string[];
+  /**
+   * Ask a running editor to quit gracefully (saving as the plugin is configured to). Resolve
+   * `true` when the request was delivered. Default when absent: the OS polite-quit signal —
+   * `SIGTERM` on POSIX, `taskkill /PID` (no `/F`, i.e. `WM_CLOSE`) on Windows. Note that
+   * `WM_CLOSE` never reaches a windowless (headless) process, so an engine that can quit through
+   * its plugin should implement this.
+   */
+  requestClose?(pid: number, projectRoot: string): Promise<boolean>;
+  /**
+   * Whether an editor NOT started by a CLI session (e.g. the user's GUI) has this project open.
+   * Such an editor is reused and never closed. Optional: the readiness probe already detects an
+   * editor whose MCP server answers; this hook additionally catches one that is still loading.
+   */
+  findRunningEditor?(projectRoot: string): Promise<boolean>;
+}
+
+/** Names of the files directly in `dir` ending in `ext` (case-insensitive); `[]` when unreadable. */
+export function filesWithExt(dir: string, ext: string): string[] {
+  try {
+    const lower = ext.toLowerCase();
+    return fs
+      .readdirSync(dir, { withFileTypes: true })
+      .filter((e) => e.isFile() && e.name.toLowerCase().endsWith(lower))
+      .map((e) => e.name);
+  } catch {
+    return [];
+  }
+}
+
+/** The `*.uproject` in an Unreal project root (the editor's first argument; the first by name if several). */
+export function findUprojectFile(projectRoot: string): string {
+  const root = path.resolve(projectRoot);
+  const first = filesWithExt(root, ".uproject").sort()[0];
+  if (first === undefined) {
+    throw new Error(`no *.uproject file in ${root}`);
+  }
+  return path.join(root, first);
 }
 
 /** The RID string (`<os>-<arch>`) for a platform/arch — the GameDev-MCP-Server release-asset RID. */
@@ -154,6 +215,10 @@ export const unityAdapter: EngineAdapter = {
   serverBinaryPath: (root, platform, arch) =>
     path.join(unityAdapter.serverInstallDir(root, platform, arch), serverExecutableName(platform)),
   loginServerTarget: toAuthServerRoot,
+  // Headless keeps graphics (no `-nographics`): cameras still render for screenshots (plan §3).
+  editor: {
+    args: (root, mode) => [...(mode === "headless" ? ["-batchmode"] : []), "-projectPath", path.resolve(root)],
+  },
 };
 
 /**
@@ -172,6 +237,12 @@ export const unrealAdapter: EngineAdapter = {
   serverBinaryPath: (root, platform, arch) =>
     path.join(unrealAdapter.serverInstallDir(root, platform, arch), serverExecutableName(platform)),
   loginServerTarget: toAuthServerRoot,
+  editor: {
+    args: (root, mode) => [
+      findUprojectFile(root),
+      ...(mode === "headless" ? ["-RenderOffscreen", "-unattended", "-nosplash"] : []),
+    ],
+  },
 };
 
 /**
@@ -190,6 +261,9 @@ export const godotAdapter: EngineAdapter = {
   serverBinaryPath: (root, platform) =>
     path.join(godotAdapter.serverInstallDir(root), serverExecutableName(platform)),
   loginServerTarget: toAuthServerRoot,
+  editor: {
+    args: (root, mode) => [...(mode === "headless" ? ["--headless"] : []), "--editor", "--path", path.resolve(root)],
+  },
 };
 
 /**

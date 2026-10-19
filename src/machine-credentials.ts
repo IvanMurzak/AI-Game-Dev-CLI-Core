@@ -684,7 +684,7 @@ export function resetPowerShellHostCache(): void {
  * The string-type guard matters: on a NON-ZERO EXIT Node can put the numeric exit status on
  * `code`, and a numeric `code` must never be read as a spawn failure.
  */
-function isHostStartFailure(err: unknown): boolean {
+export function isHostStartFailure(err: unknown): boolean {
   const code = (err as NodeJS.ErrnoException | undefined)?.code;
   return typeof code === "string" && (code === "ENOENT" || code === "ENOTDIR" || code === "EACCES");
 }
@@ -736,6 +736,15 @@ function dpapiInvocation(action: "Protect" | "Unprotect", input: Buffer): { args
     args: ["-NoProfile", "-NonInteractive", "-Command", script],
     env: { ...process.env, AIGD_DPAPI_IN: input.toString("base64") },
   };
+}
+
+/**
+ * The PowerShell hosts to try for a one-off script, the one last seen to start first (the same
+ * cached, self-invalidating resolution the DPAPI codec uses). Advance past a host only when
+ * {@link isHostStartFailure} says it could not start.
+ */
+export function powerShellHostsInOrder(): string[] {
+  return orderedHosts(resolvePowerShellHosts());
 }
 
 /** Hosts in try-order: the known-startable one first (it may have been uninstalled since). */

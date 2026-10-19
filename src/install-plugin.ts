@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import type { EngineAdapter, ProjectMarkerSpec } from "./engine-adapter.js";
+import { filesWithExt, type EngineAdapter, type ProjectMarkerSpec } from "./engine-adapter.js";
 import { resolveProjectPathLadder } from "./validation.js";
 
 /**
@@ -129,19 +129,6 @@ function existsFile(candidate: string): boolean {
     return fs.statSync(candidate).isFile();
   } catch {
     return false;
-  }
-}
-
-/** Names of the files directly in `dir` whose name ends with `ext` (case-insensitive); [] when unreadable. */
-function filesWithExt(dir: string, ext: string): string[] {
-  try {
-    const lower = ext.toLowerCase();
-    return fs
-      .readdirSync(dir, { withFileTypes: true })
-      .filter((e) => e.isFile() && e.name.toLowerCase().endsWith(lower))
-      .map((e) => e.name);
-  } catch {
-    return [];
   }
 }
 

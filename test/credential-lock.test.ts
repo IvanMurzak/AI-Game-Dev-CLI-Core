@@ -132,6 +132,19 @@ describe("acquire / release", () => {
     expect(first?.nonce).not.toBe(second?.nonce);
   });
 
+  it("a custom lockFileName guards its own file and intent, never the credential lock", async () => {
+    const lock = lockAt({ lockFileName: "session.lock" });
+    expect(lock.lockPath).toBe(path.join(dir, "session.lock"));
+    expect(lock.takeoverIntentPath).toBe(path.join(dir, "session.lock.takeover"));
+    const credentialLock = lockAt();
+    await lock.acquire();
+    await credentialLock.acquire(); // independent: not blocked by the session lock
+    credentialLock.release();
+    lock.release();
+    expect(fs.existsSync(path.join(dir, "session.lock"))).toBe(false);
+    expect(lockAt().takeoverIntentPath).toBe(path.join(dir, CREDENTIALS_LOCK_TAKEOVER_FILE_NAME));
+  });
+
   it("creates the store directory when missing", async () => {
     const nested = path.join(dir, "does", "not", "exist");
     const lock = new MachineCredentialLock(nested, { hostId: FIXTURE_HOST });
