@@ -1,3 +1,6 @@
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -11,6 +14,7 @@ import {
   serverExecutableName,
   defaultStdioArgs,
   toAuthServerRoot,
+  findUprojectFile,
 } from "../src/index.js";
 
 describe("engine-adapter contract", () => {
@@ -125,5 +129,43 @@ describe("loginServerTarget / toAuthServerRoot — b2 MED-2 (never record a pinn
 
   it("leaves an empty input empty", () => {
     expect(toAuthServerRoot("")).toBe("");
+  });
+});
+
+describe("editor launch spec (Code-Exec §4.6)", () => {
+  const root = path.join(os.tmpdir(), "adapter-editor-args");
+
+  it("Unity: -batchmode (graphics kept) headless, plain -projectPath with a window", () => {
+    expect(unityAdapter.editor!.args(root, "headless")).toEqual(["-batchmode", "-projectPath", path.resolve(root)]);
+    expect(unityAdapter.editor!.args(root, "window")).toEqual(["-projectPath", path.resolve(root)]);
+    expect(unityAdapter.editor!.args(root, "headless")).not.toContain("-nographics");
+  });
+
+  it("Godot: --headless --editor --path / --editor --path", () => {
+    expect(godotAdapter.editor!.args(root, "headless")).toEqual(["--headless", "--editor", "--path", path.resolve(root)]);
+    expect(godotAdapter.editor!.args(root, "window")).toEqual(["--editor", "--path", path.resolve(root)]);
+  });
+
+  it("Unreal: the .uproject first, -RenderOffscreen -unattended -nosplash headless", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "uproject-"));
+    try {
+      fs.writeFileSync(path.join(dir, "MyGame.uproject"), "{}");
+      const uproject = path.join(dir, "MyGame.uproject");
+      expect(unrealAdapter.editor!.args(dir, "headless")).toEqual([uproject, "-RenderOffscreen", "-unattended", "-nosplash"]);
+      expect(unrealAdapter.editor!.args(dir, "window")).toEqual([uproject]);
+      expect(findUprojectFile(dir)).toBe(uproject);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+    const empty = fs.mkdtempSync(path.join(os.tmpdir(), "uproject-none-"));
+    try {
+      expect(() => unrealAdapter.editor!.args(empty, "headless")).toThrow(/uproject/);
+    } finally {
+      fs.rmSync(empty, { recursive: true, force: true });
+    }
+  });
+
+  it("Brutal has no editor launch spec (its editor is not started by a CLI)", () => {
+    expect(brutalAdapter.editor).toBeUndefined();
   });
 });

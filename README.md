@@ -21,6 +21,9 @@ engine-specific adapters over it. The shared modules land here through the `auth
     the single typed seam that carries every per-engine difference: `serverName`, project markers,
     `stdioSupported` + `stdioArgs`, the server install-dir layout, `loginServerTarget`, and the OAuth
     `clientId`. **No engine specifics live anywhere else in the package.**
+  - **editor sessions** — `EditorSession` (Code-Exec §4.6): reuse a live editor or start one
+    headless/windowed with the `AIGD_SESSION_*` env, a `.ai-game-dev/session.json` lease (only leased
+    editors are ever closed), a per-project startup lock, and `waitForReady` / `mcpReadinessProbe`.
   - **agent-config writers** — `JsonAiAgentConfig` / `TomlAiAgentConfig`, byte-for-byte parity with
     the C# `com.IvanMurzak.McpPlugin.AgentConfig`, gated by `test/golden-vectors/AgentConfig.GoldenVectors.json`,
     plus the engine-neutral `agentRegistry`.

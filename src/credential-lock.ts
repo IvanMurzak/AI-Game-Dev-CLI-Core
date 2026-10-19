@@ -192,6 +192,14 @@ export class CredentialLockBusyError extends Error {
 export interface MachineCredentialLockOptions {
   /** Stable machine identifier written into the lock content. Default: `os.hostname()`. */
   hostId?: string;
+  /**
+   * File name of the lock inside the base directory; the takeover intent becomes
+   * `<lockFileName>.takeover`. Default {@link CREDENTIALS_LOCK_FILE_NAME} (with
+   * {@link CREDENTIALS_LOCK_TAKEOVER_FILE_NAME}) — the credential store MUST keep the default, it
+   * is the cross-language contract. Other guarded resources (the editor-session startup lock)
+   * reuse the identical protocol under their own name.
+   */
+  lockFileName?: string;
   /** TEST-ONLY override of {@link LOCK_STALE_MS}. */
   staleMs?: number;
   /** TEST-ONLY override of {@link FOREIGN_LOCK_STALE_MS}. */
@@ -239,8 +247,12 @@ export class MachineCredentialLock {
 
   constructor(baseDirectory?: string, options: MachineCredentialLockOptions = {}) {
     const dir = baseDirectory ?? path.join(os.homedir(), MACHINE_STORE_DIR_NAME);
-    this._lockPath = path.join(dir, CREDENTIALS_LOCK_FILE_NAME);
-    this._intentPath = path.join(dir, CREDENTIALS_LOCK_TAKEOVER_FILE_NAME);
+    const lockFileName = options.lockFileName;
+    this._lockPath = path.join(dir, lockFileName ?? CREDENTIALS_LOCK_FILE_NAME);
+    this._intentPath = path.join(
+      dir,
+      lockFileName === undefined ? CREDENTIALS_LOCK_TAKEOVER_FILE_NAME : `${lockFileName}.takeover`,
+    );
     this._hostId = options.hostId ?? os.hostname();
     this._staleMs = options.staleMs ?? LOCK_STALE_MS;
     this._foreignStaleMs = options.foreignStaleMs ?? FOREIGN_LOCK_STALE_MS;

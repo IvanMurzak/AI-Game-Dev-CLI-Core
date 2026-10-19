@@ -9,6 +9,36 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
 
 ## Unreleased
 
+### Added — editor sessions (`EditorSession`, Code-Exec §4.6)
+
+- **`EditorSession`** — the shared policy behind `exec` / `open --headless` / `close --owned-only`
+  for the Unity, Godot and Unreal CLIs. `ensure({ mode })` reuses any live editor of the project
+  (ours or the user's, never closed by us); otherwise it starts one (headless by default, `window`
+  optional) with `AIGD_SESSION_IDLE_SECONDS` / `AIGD_SESSION_OWNER=cli` / `AIGD_SESSION_NONCE` in
+  its environment and waits for the readiness probe. `closeOwned({ timeoutMs, force })` closes only
+  an editor named by a valid lease; `prepareWindowOpen()` stops our headless editor before a GUI
+  open. Errors are `EditorSessionError` with a `reason` (`unsupported`, `no-editor-binary`,
+  `launch-failed`, `exited`, `not-ready`, `lock-busy`).
+- **Lease** `<project>/.ai-game-dev/session.json` (`pid`, `nonce`, `engine`, `mode`, `startedAt`,
+  `ownedBy: "cli"`, `hostId`, `processStart`), written atomically. A lease is valid only on the
+  same host, with the pid alive and its OS process start time unchanged (a reused pid never
+  matches; an unverifiable start time is treated as not ours). Stale leases are removed by
+  compare-and-delete on the nonce.
+- **One start per project**: the decide-and-launch step runs under
+  `<project>/.ai-game-dev/session.lock` (the `MachineCredentialLock` protocol); concurrent cold
+  callers wait for the editor the winner started instead of launching a second one.
+- **Readiness helpers**: `waitForReady` (generic poll with a stop reason), `probeMcpServer` and
+  `mcpReadinessProbe` (`POST /api/system-tools/ping`, first answering URL wins). Process helpers:
+  `isProcessAlive`, `readProcessStart`, `defaultSessionProcessOps`.
+- **`EngineAdapter.editor?: EditorLaunchSpec`** (optional — adapters defined elsewhere keep
+  compiling): `args(projectRoot, mode)`, optional `requestClose(pid, projectRoot)` and
+  `findRunningEditor(projectRoot)`. Built in: Unity `-batchmode -projectPath` (graphics kept) /
+  `-projectPath`; Godot `--headless --editor --path` / `--editor --path`; Unreal
+  `<uproject> -RenderOffscreen -unattended -nosplash` / `<uproject>` (new `findUprojectFile`).
+  Brutal has none. The editor binary stays with each CLI (passed as `editorBinary`).
+- `MachineCredentialLockOptions.lockFileName` — reuse the lock protocol under another file name
+  (intent `<name>.takeover`). The credential store keeps the default.
+
 ### Added — Brutal engine adapter
 
 - **New engine `brutal`** (the BRUTAL C# framework, a .NET 10 project). `EngineId` and
