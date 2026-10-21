@@ -218,6 +218,7 @@ export {
   normalizeServerBase,
   buildRefreshForm,
   buildRefreshResult,
+  isClientIdMismatch,
 } from "./token-refresher.js";
 export type {
   TokenRefresher,
@@ -233,7 +234,15 @@ export {
   MachineCredentialProvider,
   LoginRequiredError,
   DEFAULT_REFRESH_SKEW_MS,
+  DEFAULT_TRANSIENT_RETRY_DELAY_MS,
+  TRANSIENT_REFRESH_COOLDOWN_MS,
+  FIRST_PARTY_REFRESH_CLIENT_IDS,
 } from "./credential-provider.js";
+export {
+  PersistedDeadFamilyMemo,
+  DEAD_FAMILY_MEMO_FILE_NAME,
+  hashRefreshToken,
+} from "./dead-family-memo.js";
 export type {
   MachineCredentialProviderOptions,
   CredentialPlane,

@@ -29,10 +29,39 @@ import { tokenUrl, type DeviceTokenResponse } from "./oauth-device-flow.js";
  * `login required`.
  */
 
-/** The result of a refresh attempt — a value, never a throw. */
+/**
+ * The result of a refresh attempt — a value, never a throw. A failure carries the OAuth `error`
+ * code as `reason`, the server's `error_description` (when sent) as `description`, and
+ * `transient: true` when the outcome says nothing about the token itself (network error, timeout,
+ * 5xx/429/408, an unparseable body) — the provider retries those promptly so a lost-response
+ * retry lands inside the server's rotation grace window instead of after it.
+ */
 export type TokenRefreshResult =
   | { ok: true; accessToken: string; refreshToken?: string; expiresAt?: string }
-  | { ok: false; reason: string };
+  | { ok: false; reason: string; description?: string; transient?: boolean };
+
+/**
+ * True when the server refused the refresh ONLY because the presented `client_id` is not the one
+ * the refresh token was minted under. The AS checks this on a live, unrevoked, unexpired token and
+ * writes nothing (AI-Game-Dev-Server `grant_refresh_token`), so the token is still good for its
+ * real mint client — this is NOT a dead family.
+ */
+export function isClientIdMismatch(result: TokenRefreshResult): boolean {
+  return (
+    !result.ok &&
+    result.reason === "invalid_grant" &&
+    typeof result.description === "string" &&
+    /client_id does not match/i.test(result.description)
+  );
+}
+
+/** The body could not be parsed as JSON (an HTML proxy/error page) — never a verdict on the token. */
+const INVALID_TOKEN_RESPONSE = "invalid token response";
+
+/** HTTP statuses whose failure says nothing about the presented token (retry, never "dead"). */
+function isTransientStatus(statusCode: number): boolean {
+  return statusCode >= 500 || statusCode === 429 || statusCode === 408;
+}
 
 /**
  * One refresh request (04 §3): the family's rotating refresh token plus the **stored `clientId`
@@ -94,10 +123,31 @@ export function buildRefreshResult(
   now: () => number = Date.now,
 ): TokenRefreshResult {
   if (parsed == null) {
-    return { ok: false, reason: "empty token response" };
+    // An empty body on an error status (a bare 502 from a proxy) says nothing about the token.
+    return isSuccessStatus
+      ? { ok: false, reason: "empty token response" }
+      : { ok: false, reason: "empty token response", transient: true };
   }
   if (!isSuccessStatus || !parsed.access_token) {
-    return { ok: false, reason: parsed.error ?? `refresh failed (HTTP ${statusCode})` };
+    const failure: TokenRefreshResult = {
+      ok: false,
+      reason: parsed.error ?? `refresh failed (HTTP ${statusCode})`,
+    };
+    if (typeof parsed.error_description === "string" && parsed.error_description.trim()) {
+      failure.description = parsed.error_description.trim();
+    }
+    // A definitive OAuth error code on a 4xx is a verdict on the token; a 5xx/429/408 or a
+    // non-OAuth body (no `error` code, an HTML page) is not.
+    if (
+      !isSuccessStatus &&
+      (isTransientStatus(statusCode) ||
+        parsed.error === undefined ||
+        parsed.error === INVALID_TOKEN_RESPONSE ||
+        parsed.error === "temporarily_unavailable")
+    ) {
+      failure.transient = true;
+    }
+    return failure;
   }
   const result: TokenRefreshResult = { ok: true, accessToken: parsed.access_token };
   if (parsed.refresh_token) {
@@ -179,13 +229,14 @@ export class HttpTokenRefresher implements TokenRefresher {
         try {
           parsed = JSON.parse(text) as DeviceTokenResponse;
         } catch {
-          parsed = { error: "invalid token response" };
+          parsed = { error: INVALID_TOKEN_RESPONSE };
         }
       }
       return buildRefreshResult(response.ok, response.status, parsed, this._now);
     } catch (err) {
-      // Fail closed on any network/abort error — the store is never touched here.
-      return { ok: false, reason: describeErrorWithCause(err) };
+      // Fail closed on any network/abort error — the store is never touched here. Transient unless
+      // the CALLER cancelled (a deliberate abort must not be retried behind its back).
+      return { ok: false, reason: describeErrorWithCause(err), transient: !signal?.aborted };
     } finally {
       clearTimeout(timer);
       if (signal) signal.removeEventListener("abort", onAbort);

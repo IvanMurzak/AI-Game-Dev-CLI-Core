@@ -6,6 +6,7 @@ import {
   REFRESH_HTTP_TIMEOUT,
   buildRefreshForm,
   buildRefreshResult,
+  isClientIdMismatch,
   normalizeServerBase,
   tokenUrl,
 } from "../src/index.js";
@@ -178,5 +179,66 @@ describe("HttpTokenRefresher", () => {
     // constant, not a private number.
     expect(REFRESH_HTTP_TIMEOUT).toBe(15_000);
     expect(REFRESH_HTTP_TIMEOUT).toBeLessThan(LOCK_STALE_MS);
+  });
+});
+
+describe("refresh failure classification (description, transient, client-id mismatch)", () => {
+  const respond = (status: number, body: string) =>
+    new HttpTokenRefresher({
+      defaultServerBaseUrl: "https://ai-game.dev",
+      fetchImpl: vi.fn(async () => new Response(body, { status })) as unknown as typeof fetch,
+    }).refresh({ refreshToken: "r", clientId: "unity-mcp-cli" });
+
+  it("carries the server's error_description; a 4xx OAuth error is a definitive verdict", async () => {
+    const result = await respond(
+      400,
+      JSON.stringify({ error: "invalid_grant", error_description: "client_id does not match the refresh token" }),
+    );
+    expect(result).toEqual({
+      ok: false,
+      reason: "invalid_grant",
+      description: "client_id does not match the refresh token",
+    });
+    expect(isClientIdMismatch(result)).toBe(true);
+  });
+
+  it("isClientIdMismatch is false for every other invalid_grant and for success", () => {
+    expect(isClientIdMismatch({ ok: false, reason: "invalid_grant", description: "refresh token has expired" })).toBe(false);
+    expect(isClientIdMismatch({ ok: false, reason: "invalid_grant" })).toBe(false);
+    expect(isClientIdMismatch({ ok: true, accessToken: "a" })).toBe(false);
+  });
+
+  it("marks 5xx / 429 / non-JSON / empty error bodies transient", async () => {
+    expect(await respond(503, JSON.stringify({ error: "server_error" }))).toMatchObject({ ok: false, transient: true });
+    expect(await respond(429, JSON.stringify({ error: "slow_down" }))).toMatchObject({ transient: true });
+    expect(await respond(502, "<html>Bad Gateway</html>")).toMatchObject({
+      reason: "invalid token response",
+      transient: true,
+    });
+    expect(await respond(502, "")).toMatchObject({ reason: "empty token response", transient: true });
+  });
+
+  it("a network error is transient; a CALLER abort is not (never retried behind its back)", async () => {
+    const failing = new HttpTokenRefresher({
+      defaultServerBaseUrl: "https://ai-game.dev",
+      fetchImpl: vi.fn(async () => {
+        throw new Error("ECONNRESET");
+      }) as unknown as typeof fetch,
+    });
+    expect(await failing.refresh({ refreshToken: "r", clientId: "c" })).toMatchObject({ ok: false, transient: true });
+
+    const controller = new AbortController();
+    controller.abort();
+    const aborted = new HttpTokenRefresher({
+      defaultServerBaseUrl: "https://ai-game.dev",
+      fetchImpl: vi.fn(async (_u: unknown, init?: RequestInit) => {
+        if (init?.signal?.aborted) throw new DOMException("aborted", "AbortError");
+        throw new Error("unreachable");
+      }) as unknown as typeof fetch,
+    });
+    expect(await aborted.refresh({ refreshToken: "r", clientId: "c", signal: controller.signal })).toMatchObject({
+      ok: false,
+      transient: false,
+    });
   });
 });
