@@ -1,5 +1,6 @@
 import { CredentialLockBusyError, MachineCredentialLock } from "./credential-lock.js";
 import { PersistedDeadFamilyMemo } from "./dead-family-memo.js";
+import { engineAdapters } from "./engine-adapter.js";
 import {
   MachineCredentialStoreUnreadableError,
   effectiveFamilies,
@@ -7,7 +8,14 @@ import {
   type MachineCredentialStore,
   type MachineTokenFamily,
 } from "./machine-credentials.js";
-import { isClientIdMismatch, type TokenRefresher, type TokenRefreshResult } from "./token-refresher.js";
+import { errorMessage } from "./network-error.js";
+import { sleep } from "./process.js";
+import {
+  isClientIdMismatch,
+  isClientIdMismatchText,
+  type TokenRefresher,
+  type TokenRefreshResult,
+} from "./token-refresher.js";
 
 /**
  * `MachineCredentialProvider` — **the single TypeScript entry point for machine-credential access
@@ -79,30 +87,21 @@ export const TRANSIENT_REFRESH_COOLDOWN_MS = 5_000;
 /** Delay before the one in-call retry of a transient refresh failure. */
 export const DEFAULT_TRANSIENT_RETRY_DELAY_MS = 1_000;
 
-/**
- * The first-party OAuth client ids a family with NO stored `clientId` may have been minted under
- * (rule 7): the engine plugins and CLIs, the enroll redeem's synthetic `agd_enroll`, the App.
- */
-export const FIRST_PARTY_REFRESH_CLIENT_IDS: readonly string[] = [
-  "unity-mcp-plugin",
-  "unity-mcp-cli",
-  "godot-mcp-plugin",
-  "godot-cli",
-  "unreal-mcp-plugin",
-  "unreal-mcp-cli",
-  "agd_enroll",
-  "ai-game-dev-app",
-];
-
 /** The synthetic client id the enroll redeem mints plugin credentials under. */
 const ENROLL_CLIENT_ID = "agd_enroll";
 
-/** Each engine CLI's sibling plugin — the most likely mint client of a collapsed v1 store. */
-const SIBLING_PLUGIN_CLIENT_ID: Readonly<Record<string, string>> = {
-  "unity-mcp-cli": "unity-mcp-plugin",
-  "godot-cli": "godot-mcp-plugin",
-  "unreal-mcp-cli": "unreal-mcp-plugin",
-};
+/**
+ * The first-party OAuth client ids a family with NO stored `clientId` may have been minted under
+ * (rule 7): every engine adapter's plugin and CLI ids, the enroll redeem's synthetic
+ * `agd_enroll`, and the App.
+ */
+export const FIRST_PARTY_REFRESH_CLIENT_IDS: readonly string[] = [
+  ...Object.values(engineAdapters).flatMap((adapter) =>
+    adapter.pluginClientId ? [adapter.pluginClientId, adapter.clientId] : [adapter.clientId],
+  ),
+  ENROLL_CLIENT_ID,
+  "ai-game-dev-app",
+];
 
 /**
  * Wall-clock budget for the rule-7 client-id fallback inside one lock hold: no further candidate
@@ -110,9 +109,6 @@ const SIBLING_PLUGIN_CLIENT_ID: Readonly<Record<string, string>> = {
  * the last request runs to `REFRESH_HTTP_TIMEOUT`.
  */
 const CLIENT_ID_FALLBACK_BUDGET_MS = 20_000;
-
-/** A recorded reason naming a client-id mismatch is never a dead-family verdict (rule 7). */
-const CLIENT_ID_MISMATCH_REASON = /client_id does not match/i;
 
 /**
  * Which credential a caller needs — resolved to a concrete store family by the provider:
@@ -372,20 +368,6 @@ export class MachineCredentialProvider {
       this._deadFamilies.delete(name);
     }
 
-    // Rule 5 across processes: an earlier process (this CLI's previous run, an engine plugin, the
-    // App) already got the dead verdict for exactly this token — adopt it without a network call
-    // and without a second telemetry event (it fired with the original verdict).
-    const persisted =
-      snapshot.refreshToken !== undefined ? this._persistedMemo?.match(snapshot.refreshToken) : undefined;
-    if (persisted !== undefined && !CLIENT_ID_MISMATCH_REASON.test(persisted.reason)) {
-      const reason = persisted.reason || "invalid_grant";
-      this._deadFamilies.set(name, { reason, refreshToken: snapshot.refreshToken });
-      this._onWarning(
-        `Account credential family '${name}' was already declared invalid (${reason}); sign-in required.`,
-      );
-      return { kind: "dead", reason };
-    }
-
     // Rule 6: at most one network attempt per family per skew window per provider/process — but a
     // transient failure only holds the family back for the short transient cooldown.
     const last = this._lastAttempt.get(name);
@@ -400,13 +382,28 @@ export class MachineCredentialProvider {
       };
     }
 
+    // Rule 5 across processes: an earlier process (this CLI's previous run, an engine plugin, the
+    // App) already got the dead verdict for exactly this token — adopt it without a network call
+    // and without a second telemetry event (it fired with the original verdict). A recorded
+    // client-id mismatch is not a verdict (rule 7).
+    const persisted =
+      snapshot.refreshToken !== undefined ? this._persistedMemo?.match(snapshot.refreshToken) : undefined;
+    if (persisted !== undefined && !isClientIdMismatchText(persisted.reason)) {
+      const reason = persisted.reason || "invalid_grant";
+      this._deadFamilies.set(name, { reason, refreshToken: snapshot.refreshToken });
+      this._onWarning(
+        `Account credential family '${name}' was already declared invalid (${reason}); sign-in required.`,
+      );
+      return { kind: "dead", reason };
+    }
+
     let outcome = await this.lockedAttempt(name, snapshot, signal);
     if (outcome.kind === "failed" && outcome.transient && !signal?.aborted) {
       // One prompt retry: if the server rotated and only the response was lost, this re-presents
       // the same token seconds later — inside the server's grace window, so it gets the same
       // successor back. The critical section re-reads the store first, so a peer's rotation in
       // the meantime is adopted instead.
-      await delay(this._transientRetryDelayMs);
+      await sleep(this._transientRetryDelayMs);
       outcome = await this.lockedAttempt(name, snapshot, signal);
     }
 
@@ -429,8 +426,7 @@ export class MachineCredentialProvider {
 
     // Genuinely dead: mark signed-out for this process, ONE telemetry event, never delete
     // anything (another family in the file may still be alive), never loop.
-    this.markFamilyDead(name, outcome);
-    return { kind: "dead", reason: describeFailure(outcome.reason, outcome.description) };
+    return { kind: "dead", reason: this.markFamilyDead(name, outcome) };
   }
 
   /** {@link criticalSection} under the lock; a contended lock becomes the `busy` outcome. */
@@ -506,21 +502,15 @@ export class MachineCredentialProvider {
       };
     }
 
-    this._lastAttempt.set(name, { at: this._clock(), transient: false });
-    // Rule 7: only a family with NO stored clientId may be re-presented under another client id.
-    const candidates = storedClientId
-      ? [clientId]
-      : [clientId, ...this._fallbackClientIds.filter((id) => id !== clientId)];
+    const attempt = { at: this._clock(), transient: false };
+    this._lastAttempt.set(name, attempt);
+    // Rule 7: only a family with NO stored clientId (so `clientId` is the component default,
+    // which the fallback list never contains) may be re-presented under another client id.
+    const candidates = storedClientId ? [clientId] : [clientId, ...this._fallbackClientIds];
     const startedAt = Date.now();
-    let result: TokenRefreshResult | undefined;
+    let result!: TokenRefreshResult;
     let presentedClientId = clientId;
     for (const candidate of candidates) {
-      if (
-        result !== undefined &&
-        (!isClientIdMismatch(result) || Date.now() - startedAt > CLIENT_ID_FALLBACK_BUDGET_MS)
-      ) {
-        break;
-      }
       presentedClientId = candidate;
       try {
         result = await this._refresher.refresh({
@@ -531,18 +521,18 @@ export class MachineCredentialProvider {
         });
       } catch (err) {
         // Defensive: a well-behaved refresher fails closed, but never let a throw corrupt anything.
-        this._lastFailureReason = err instanceof Error ? err.message : String(err);
+        this._lastFailureReason = errorMessage(err);
         this._onWarning(`Token refresh error (${this._lastFailureReason}).`);
         return { kind: "failed", reason: this._lastFailureReason };
       }
-    }
-    if (result === undefined) {
-      return { kind: "failed", reason: "no refresh attempted" };
+      if (!isClientIdMismatch(result) || Date.now() - startedAt > CLIENT_ID_FALLBACK_BUDGET_MS) {
+        break;
+      }
     }
 
     if (!result.ok || !result.accessToken) {
       const reason = result.ok ? "empty access token" : result.reason;
-      this._lastFailureReason = result.ok ? reason : describeFailure(reason, result.description);
+      this._lastFailureReason = describeFailure(reason, result.ok ? undefined : result.description);
       // D2 REVISED (defensive): `invalid_target` on refresh is terminal exactly like
       // `invalid_grant` — same dead-family outcome kind, its own raw reason preserved
       // end-to-end (telemetry/warning show `invalid_target`, never a remap). Our refresher
@@ -558,9 +548,7 @@ export class MachineCredentialProvider {
         };
       }
       const transient = !result.ok && result.transient === true;
-      if (transient) {
-        this._lastAttempt.set(name, { at: this._clock(), transient: true });
-      }
+      attempt.transient = transient;
       this._onWarning(`Account credential refresh failed (${this._lastFailureReason}).`);
       return { kind: "failed", reason: this._lastFailureReason, transient };
     }
@@ -599,7 +587,7 @@ export class MachineCredentialProvider {
       // Disk-write failure: the atomic write left any existing good file intact. The command
       // can proceed on the in-memory token.
       this._onWarning(
-        `Persisting refreshed credential failed (${err instanceof Error ? err.message : String(err)}); using in-memory token.`,
+        `Persisting refreshed credential failed (${errorMessage(err)}); using in-memory token.`,
       );
       return { kind: "refreshed", family: rotated, document: null };
     }
@@ -608,26 +596,31 @@ export class MachineCredentialProvider {
   /**
    * Mark a family dead (rule 5): memoized in memory AND in the hash-only sidecar, exactly ONE
    * structured telemetry event, one warning. A client-id mismatch is never persisted: the token is
-   * still alive for its real mint client, which must not be told it is dead.
+   * still alive for its real mint client, which must not be told it is dead. Returns the
+   * surfaced reason (`invalid_grant: <description>`).
    */
   private markFamilyDead(
     name: CredentialFamilyName,
     failure: { reason: string; description?: string; presentedRefreshToken: string },
-  ): void {
-    if (this._deadFamilies.has(name)) {
-      return;
-    }
+  ): string {
     const detail = describeFailure(failure.reason, failure.description);
+    if (this._deadFamilies.has(name)) {
+      return detail;
+    }
     this._deadFamilies.set(name, { reason: detail, refreshToken: failure.presentedRefreshToken });
-    if (!CLIENT_ID_MISMATCH_REASON.test(detail)) {
+    if (!isClientIdMismatchText(failure.description)) {
       this._persistedMemo?.write(failure.presentedRefreshToken, detail, this._clock());
     }
-    const event: CredentialTelemetryEvent = { type: "family-dead", family: name, reason: failure.reason };
-    if (failure.description !== undefined) event.description = failure.description;
-    this._onTelemetry(event);
+    this._onTelemetry({
+      type: "family-dead",
+      family: name,
+      reason: failure.reason,
+      ...(failure.description !== undefined && { description: failure.description }),
+    });
     this._onWarning(
       `Account credential family '${name}' is no longer valid (${detail}); sign-in required. Other families are untouched.`,
     );
+    return detail;
   }
 
   private failureToError(outcome: RefreshOutcome): Error {
@@ -701,7 +694,7 @@ export class MachineCredentialProvider {
       return this._store.readState();
     } catch (err) {
       this._onWarning(
-        `Reading the machine credential store failed: ${err instanceof Error ? err.message : String(err)}`,
+        `Reading the machine credential store failed: ${errorMessage(err)}`,
       );
       return null;
     }
@@ -770,11 +763,8 @@ function describeFailure(reason: string, description: string | undefined): strin
  * then the rest in the given order — only ids from `ids`, never the default itself.
  */
 function orderFallbackClientIds(ids: readonly string[], defaultClientId: string | undefined): readonly string[] {
-  const sibling = defaultClientId ? SIBLING_PLUGIN_CLIENT_ID[defaultClientId] : undefined;
+  const sibling = Object.values(engineAdapters).find((adapter) => adapter.clientId === defaultClientId)?.pluginClientId;
   const preferred = [sibling, ENROLL_CLIENT_ID].filter((id): id is string => id !== undefined && ids.includes(id));
   return [...new Set([...preferred, ...ids])].filter((id) => id.trim() !== "" && id !== defaultClientId);
 }
 
-function delay(ms: number): Promise<void> {
-  return ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve();
-}

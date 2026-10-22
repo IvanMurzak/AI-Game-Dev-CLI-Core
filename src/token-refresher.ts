@@ -47,12 +47,12 @@ export type TokenRefreshResult =
  * real mint client — this is NOT a dead family.
  */
 export function isClientIdMismatch(result: TokenRefreshResult): boolean {
-  return (
-    !result.ok &&
-    result.reason === "invalid_grant" &&
-    typeof result.description === "string" &&
-    /client_id does not match/i.test(result.description)
-  );
+  return !result.ok && result.reason === "invalid_grant" && isClientIdMismatchText(result.description);
+}
+
+/** True when a server description / recorded reason names a client-id mismatch. */
+export function isClientIdMismatchText(text: string | undefined): boolean {
+  return text !== undefined && /client_id does not match/i.test(text);
 }
 
 /** The body could not be parsed as JSON (an HTML proxy/error page) — never a verdict on the token. */
@@ -124,9 +124,7 @@ export function buildRefreshResult(
 ): TokenRefreshResult {
   if (parsed == null) {
     // An empty body on an error status (a bare 502 from a proxy) says nothing about the token.
-    return isSuccessStatus
-      ? { ok: false, reason: "empty token response" }
-      : { ok: false, reason: "empty token response", transient: true };
+    return { ok: false, reason: "empty token response", ...(!isSuccessStatus && { transient: true }) };
   }
   if (!isSuccessStatus || !parsed.access_token) {
     const failure: TokenRefreshResult = {

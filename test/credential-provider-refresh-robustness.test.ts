@@ -163,7 +163,7 @@ describe("client-id fallback for a family that stores no clientId (rule 7)", () 
     const p = provider(store, refresher);
 
     await expect(p.getAccessToken()).rejects.toBeInstanceOf(LoginRequiredError);
-    expect(refresher.calls).toHaveLength(1 + FIRST_PARTY_REFRESH_CLIENT_IDS.length - 1);
+    expect(refresher.calls).toHaveLength(FIRST_PARTY_REFRESH_CLIENT_IDS.length); // the default + every other first-party id
     expect(new Set(refresher.calls.map((c) => c.clientId)).size).toBe(refresher.calls.length);
     // The token is alive for its (unknown) mint client: no sidecar verdict that would silence it.
     expect(fs.existsSync(memoPath(store))).toBe(false);

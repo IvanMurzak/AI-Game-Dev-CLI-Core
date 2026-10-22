@@ -219,6 +219,7 @@ export {
   buildRefreshForm,
   buildRefreshResult,
   isClientIdMismatch,
+  isClientIdMismatchText,
 } from "./token-refresher.js";
 export type {
   TokenRefresher,
