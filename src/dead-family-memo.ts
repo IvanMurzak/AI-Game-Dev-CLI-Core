@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { writeFileAtomicSync } from "./atomic-file.js";
+import { isClientIdMismatchText } from "./token-refresher.js";
 
 /**
  * Sidecar file name inside the machine store directory — the SAME file MCP-Plugin-dotnet's
@@ -35,23 +36,30 @@ export class PersistedDeadFamilyMemo {
     this.filePath = path.join(baseDirectory, DEAD_FAMILY_MEMO_FILE_NAME);
   }
 
-  /** The recorded reason when the sidecar declares `refreshToken` dead; `undefined` otherwise. */
+  /**
+   * The recorded reason when the sidecar declares `refreshToken` dead; `undefined` otherwise. A
+   * recorded client-id mismatch is never a verdict (rule 7), whoever wrote it.
+   */
   match(refreshToken: string): { reason: string } | undefined {
     try {
       const parsed: unknown = JSON.parse(fs.readFileSync(this.filePath, "utf-8"));
       if (typeof parsed !== "object" || parsed === null) return undefined;
       const record = parsed as Record<string, unknown>;
       if (record.refreshTokenSha256 !== hashRefreshToken(refreshToken)) return undefined;
-      return { reason: typeof record.reason === "string" ? record.reason : "" };
+      const reason = typeof record.reason === "string" ? record.reason : "";
+      return isClientIdMismatchText(reason) ? undefined : { reason };
     } catch {
       return undefined;
     }
   }
 
-  /** Record `refreshToken` (hashed) as dead. Atomic temp-and-rename, owner-only. */
+  /**
+   * Record `refreshToken` (hashed) as dead. Atomic temp-and-rename, owner-only. A client-id mismatch
+   * is never recorded (rule 7): the token is still alive for its real mint client.
+   */
   write(refreshToken: string, reason: string, atMs: number): void {
     try {
-      if (!fs.existsSync(path.dirname(this.filePath))) return;
+      if (isClientIdMismatchText(reason) || !fs.existsSync(path.dirname(this.filePath))) return;
       const document = {
         version: 1,
         refreshTokenSha256: hashRefreshToken(refreshToken),
