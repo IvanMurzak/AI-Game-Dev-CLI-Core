@@ -401,11 +401,11 @@ export class MachineCredentialProvider {
 
     // Rule 5 across processes: an earlier process (this CLI's previous run, an engine plugin, the
     // App) already got the dead verdict for exactly this token — adopt it without a network call
-    // and without a second telemetry event (it fired with the original verdict). A recorded
-    // client-id mismatch is not a verdict (rule 7).
+    // and without a second telemetry event (it fired with the original verdict). `match` already
+    // drops a recorded client-id mismatch (rule 7).
     const persisted =
       snapshot.refreshToken !== undefined ? this._persistedMemo?.match(snapshot.refreshToken) : undefined;
-    if (persisted !== undefined && !isClientIdMismatchText(persisted.reason)) {
+    if (persisted !== undefined) {
       const reason = persisted.reason || "invalid_grant";
       this._deadFamilies.set(name, { reason, refreshToken: snapshot.refreshToken });
       this._onWarning(
