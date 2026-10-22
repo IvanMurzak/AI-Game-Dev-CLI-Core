@@ -1,0 +1,27 @@
+src/engine-adapter.ts
+  s_48def0c32da233::t_04fca149b096d0 66-70,221,244,270
+src/index.ts
+  s_48def0c32da233::t_04fca149b096d0 222
+src/token-refresher.ts
+  s_48def0c32da233::t_04fca149b096d0 50-55,127
+src/credential-provider.ts
+  s_48def0c32da233::t_04fca149b096d0 3,11-18,90-92,95-96,99-102,385-399,406,429,505-509,511,524,528-530,535,551,590,599-600,605-606,608,611,614-619,623,697,766
+test/credential-provider-refresh-robustness.test.ts
+  s_48def0c32da233::t_04fca149b096d0 166
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6e456cec01e35ea705a0a481883f9a1e0dc4b014",
+  "prompts": {},
+  "sessions": {
+    "s_48def0c32da233": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1b12596e-6fac-4b72-8f4f-08fe9abbc79c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ivan Murzak <Ivan.D.Murzak@gmail.com>"
+    }
+  }
+}
