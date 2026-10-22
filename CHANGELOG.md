@@ -7,6 +7,46 @@ Versions are set at publish time by the `release.yml` workflow input (`gh workfl
 MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not auto-resolve
 `0.4.0` — adopt deliberately).
 
+## Unreleased
+
+### Fixed — credential refresh robustness (production `invalid_grant` loops)
+
+- **Client-id fallback for families that store no `clientId`.** An old engine plugin that predates
+  the `families` schema rewrites `credentials.json` as pure v1 (dropping the plugin family's
+  `clientId`), and enroll credentials from servers older than a6 carry none either. The CLIs read
+  those as a client-less family and refreshed them with their OWN id (`unity-mcp-cli`,
+  `godot-cli`), which the server refuses with `client_id does not match the refresh token` — a
+  check it makes on a live token without writing anything. `MachineCredentialProvider` now presents
+  the other first-party ids on exactly that answer (the CLI's sibling plugin first, then
+  `agd_enroll`, then the rest of `FIRST_PARTY_REFRESH_CLIENT_IDS`), within one lock hold and a 20 s
+  budget, and records the id that worked on the family. A family with a stored `clientId` is never
+  re-presented under another id. A mismatch on every candidate is reported as "the saved sign-in
+  was issued to another application … sign in again" — never as a family death (no `family-dead`
+  telemetry, nothing persisted). New option `fallbackClientIds` (`[]` disables); the candidates
+  come from the engine adapters (new optional `EngineAdapter.pluginClientId`).
+- **Dead-family verdicts persist across processes.** The verdict is written as the hash-only sidecar
+  `plugin-dead-family.json` next to the store (`{version, refreshTokenSha256, reason,
+  declaredDeadAt}` — the same file MCP-Plugin-dotnet's `PersistedDeadFamilyMemo` uses), so the
+  next CLI run no longer re-presents a token the server already declared dead. A client-id mismatch
+  is never persisted, and a recorded mismatch verdict is ignored. New exports
+  `PersistedDeadFamilyMemo`, `DEAD_FAMILY_MEMO_FILE_NAME`, `hashRefreshToken`; option
+  `persistDeadFamilyMemo` (default `true`).
+- **Transient refresh failures are retried inside the server's rotation grace window.** A network
+  error, timeout, 5xx/429/408 or non-JSON body is now `transient` on `TokenRefreshResult` (a
+  throwing refresher counts as transient too, and a transient response is never a dead verdict even
+  when it carries `invalid_grant`). When the caller needs a new token (expired, or a reactive
+  `refresh()`), the provider retries once after ~1 s — re-reading the store first, so a peer's
+  rotation is adopted, and presenting the client id whose attempt failed transiently first, so the
+  retry hits the server's same-client grace. Then the family is held back for
+  `TRANSIENT_REFRESH_COOLDOWN_MS` (5 s) instead of the whole 60 s skew window — a lost rotation
+  response no longer turns into `reuse detected; token family revoked`. New option
+  `transientRetryDelayMs`.
+- **Clearer sign-in messages.** `TokenRefreshResult` failures carry the server's `error_description`
+  (`description`; also on the `family-dead` telemetry event). A dead family raises
+  `LoginRequiredError("login required: the saved sign-in is no longer valid (invalid_grant: refresh
+  token has expired); sign in again")`; an expired token whose refresh failed transiently says
+  "retry shortly" instead.
+
 ## 0.7.1 — 2026-10-19
 
 Follow-ups to `EditorSession` from the Unity, Godot and Unreal CLI integrations. New options are

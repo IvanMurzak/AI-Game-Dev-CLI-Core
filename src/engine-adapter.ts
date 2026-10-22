@@ -63,6 +63,11 @@ export interface EngineAdapter {
   readonly engine: EngineId;
   /** OAuth product client id (`unity-mcp-cli` / `unreal-mcp-cli` / `godot-cli` / `brutal-cli`). */
   readonly clientId: string;
+  /**
+   * OAuth client id of this engine's in-editor plugin (`unity-mcp-plugin` / …), when known — the
+   * most likely mint client of a credential that stores none (an old plugin's collapsed v1 store).
+   */
+  readonly pluginClientId?: string;
   /** The canonical MCP server-entry name written under an agent config's body path. */
   readonly serverName: string;
   /** Ordered project-root marker probes (T5); the first match identifies the project. */
@@ -213,6 +218,7 @@ export function toAuthServerRoot(connectionUrl: string): string {
 export const unityAdapter: EngineAdapter = {
   engine: "unity",
   clientId: "unity-mcp-cli",
+  pluginClientId: "unity-mcp-plugin",
   serverName: "ai-game-developer",
   markers: [{ kind: "file", relativePath: path.join("Packages", "manifest.json") }],
   stdioSupported: true,
@@ -235,6 +241,7 @@ export const unityAdapter: EngineAdapter = {
 export const unrealAdapter: EngineAdapter = {
   engine: "unreal",
   clientId: "unreal-mcp-cli",
+  pluginClientId: "unreal-mcp-plugin",
   serverName: "unreal-mcp",
   markers: [{ kind: "ext", ext: ".uproject" }],
   stdioSupported: true,
@@ -260,6 +267,7 @@ export const unrealAdapter: EngineAdapter = {
 export const godotAdapter: EngineAdapter = {
   engine: "godot",
   clientId: "godot-cli",
+  pluginClientId: "godot-mcp-plugin",
   serverName: "ai-game-developer",
   markers: [{ kind: "file", relativePath: "project.godot" }],
   stdioSupported: false,
