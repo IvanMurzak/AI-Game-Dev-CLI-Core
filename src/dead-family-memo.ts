@@ -53,10 +53,13 @@ export class PersistedDeadFamilyMemo {
     }
   }
 
-  /** Record `refreshToken` (hashed) as dead. Atomic temp-and-rename, owner-only. */
+  /**
+   * Record `refreshToken` (hashed) as dead. Atomic temp-and-rename, owner-only. A client-id mismatch
+   * is never recorded (rule 7): the token is still alive for its real mint client.
+   */
   write(refreshToken: string, reason: string, atMs: number): void {
     try {
-      if (!fs.existsSync(path.dirname(this.filePath))) return;
+      if (isClientIdMismatchText(reason) || !fs.existsSync(path.dirname(this.filePath))) return;
       const document = {
         version: 1,
         refreshTokenSha256: hashRefreshToken(refreshToken),

@@ -12,7 +12,6 @@ import { errorMessage } from "./network-error.js";
 import { sleep } from "./process.js";
 import {
   isClientIdMismatch,
-  isClientIdMismatchText,
   type TokenRefresher,
   type TokenRefreshResult,
 } from "./token-refresher.js";
@@ -637,9 +636,9 @@ export class MachineCredentialProvider {
 
   /**
    * Mark a family dead (rule 5): memoized in memory AND in the hash-only sidecar, exactly ONE
-   * structured telemetry event, one warning. A client-id mismatch is never persisted: the token is
-   * still alive for its real mint client, which must not be told it is dead. Returns the
-   * surfaced reason (`invalid_grant: <description>`).
+   * structured telemetry event, one warning. A client-id mismatch is never persisted (the memo
+   * drops it): the token is still alive for its real mint client, which must not be told it is
+   * dead. Returns the surfaced reason (`invalid_grant: <description>`).
    */
   private markFamilyDead(
     name: CredentialFamilyName,
@@ -650,9 +649,7 @@ export class MachineCredentialProvider {
       return detail;
     }
     this._deadFamilies.set(name, { reason: detail, refreshToken: failure.presentedRefreshToken });
-    if (!isClientIdMismatchText(failure.description)) {
-      this._persistedMemo?.write(failure.presentedRefreshToken, detail, this._clock());
-    }
+    this._persistedMemo?.write(failure.presentedRefreshToken, detail, this._clock());
     this._onTelemetry({
       type: "family-dead",
       family: name,
