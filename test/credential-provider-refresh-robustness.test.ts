@@ -254,6 +254,22 @@ describe("transient refresh failures (rule 6: retry inside the server grace wind
     expect(refresher.calls.map((c) => c.refreshToken)).toEqual(["old-r", "old-r"]);
   });
 
+  it("the retry re-presents the token under the fallback id that failed transiently FIRST (same-client grace)", async () => {
+    const store = freshStore(collapsedV1());
+    // The sibling plugin is the mint client; its first presentation rotated server-side but the
+    // response was lost. Presenting the now-rotated token under unity-mcp-cli first would miss the
+    // server's same-client grace window and revoke the family.
+    let pluginCalls = 0;
+    const refresher = scriptedRefresher((r) => {
+      if (r.clientId !== "unity-mcp-plugin") return MISMATCH;
+      pluginCalls += 1;
+      return pluginCalls === 1 ? NETWORK : ROTATED;
+    });
+
+    expect(await provider(store, refresher).getAccessToken()).toBe("fresh-a");
+    expect(refresher.calls.map((c) => c.clientId)).toEqual(["unity-mcp-cli", "unity-mcp-plugin", "unity-mcp-plugin"]);
+  });
+
   it("the in-call retry adopts a peer's rotation instead of re-presenting the old token", async () => {
     const store = freshStore(collapsedV1());
     const refresher = scriptedRefresher(() => {
@@ -296,5 +312,50 @@ describe("transient refresh failures (rule 6: retry inside the server grace wind
     now += TRANSIENT_REFRESH_COOLDOWN_MS + 1;
     await expect(p.getAccessToken()).rejects.toBeInstanceOf(LoginRequiredError);
     expect(refresher.calls).toHaveLength(1);
+  });
+
+  it("a still-valid token is returned at once — no in-call retry blocking the proactive path", async () => {
+    const store = freshStore({ ...collapsedV1(), expiresAt: iso(30_000) }); // inside the skew, not expired
+    const refresher = scriptedRefresher(() => NETWORK);
+
+    expect(await provider(store, refresher).getAccessToken()).toBe("old-a");
+    expect(refresher.calls).toHaveLength(1);
+  });
+
+  it("a 5xx that carries invalid_grant stays transient — never a dead verdict, never persisted", async () => {
+    const store = freshStore(collapsedV1());
+    const events: CredentialTelemetryEvent[] = [];
+    const refresher = scriptedRefresher(() => ({ ok: false, reason: "invalid_grant", transient: true }));
+
+    await expect(provider(store, refresher, { onTelemetry: (e) => events.push(e) }).getAccessToken()).rejects.toThrow(
+      /retry shortly/,
+    );
+    expect(events).toHaveLength(0);
+    expect(fs.existsSync(memoPath(store))).toBe(false);
+  });
+
+  it("a THROWING refresher is treated as transient (prompt retry), not as a 60 s lock-out", async () => {
+    const store = freshStore(collapsedV1());
+    let calls = 0;
+    const refresher: TokenRefresher = {
+      refresh: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error("ECONNRESET");
+        return ROTATED;
+      },
+    };
+    expect(await provider(store, refresher).getAccessToken()).toBe("fresh-a");
+    expect(calls).toBe(2);
+  });
+});
+
+describe("client-id mismatch exhaustion is not a family death (rule 7)", () => {
+  it("no family-dead telemetry and a message that names the real problem", async () => {
+    const store = freshStore(collapsedV1());
+    const events: CredentialTelemetryEvent[] = [];
+    await expect(
+      provider(store, scriptedRefresher(() => MISMATCH), { onTelemetry: (e) => events.push(e) }).getAccessToken(),
+    ).rejects.toThrow(/issued to another application \(invalid_grant: client_id does not match the refresh token\)/);
+    expect(events).toHaveLength(0);
   });
 });

@@ -222,6 +222,16 @@ export class MachineCredentialProvider {
     CredentialFamilyName,
     { reason: string; refreshToken: string | undefined }
   >();
+  /**
+   * Rule 7 + transient: the client id whose presentation of `refreshToken` failed transiently. The
+   * server may have rotated under that id and lost the response; the next presentation of the
+   * same token must use that id FIRST — re-presenting a rotated token under another id misses the
+   * server's same-client grace window and revokes the whole family ("reuse detected").
+   */
+  private readonly _transientClientIds = new Map<
+    CredentialFamilyName,
+    { refreshToken: string; clientId: string }
+  >();
   private _lastFailureReason: string | undefined;
 
   constructor(
@@ -298,7 +308,11 @@ export class MachineCredentialProvider {
       return resolved.family.accessToken;
     }
 
-    const outcome = await this.refreshFamily(resolved.name, resolved.family, options.signal);
+    // The in-call transient retry only when the caller cannot proceed without a new token — a
+    // still-valid token is returned at once and the next call retries after the short cooldown.
+    const outcome = await this.refreshFamily(resolved.name, resolved.family, options.signal, {
+      retryTransient: this.isExpired(resolved.family),
+    });
     if ((outcome.kind === "refreshed" || outcome.kind === "adopted") && outcome.family.accessToken) {
       return outcome.family.accessToken;
     }
@@ -337,7 +351,9 @@ export class MachineCredentialProvider {
       throw new LoginRequiredError("no refresh token");
     }
 
-    const outcome = await this.refreshFamily(resolved.name, resolved.family, options.signal);
+    const outcome = await this.refreshFamily(resolved.name, resolved.family, options.signal, {
+      retryTransient: true,
+    });
     if (outcome.kind === "refreshed" || outcome.kind === "adopted") {
       return this.servedDocument(
         outcome.document ?? this.inMemoryDocument(current, resolved.name, outcome.family),
@@ -356,7 +372,8 @@ export class MachineCredentialProvider {
   private async refreshFamily(
     name: CredentialFamilyName,
     snapshot: MachineTokenFamily,
-    signal?: AbortSignal,
+    signal: AbortSignal | undefined,
+    options: { retryTransient: boolean },
   ): Promise<RefreshOutcome> {
     // Rule 5, "never loop": a family this process saw die stays dead — unless the credential was
     // replaced since (a fresh login by another surface), which re-arms the family.
@@ -398,13 +415,15 @@ export class MachineCredentialProvider {
     }
 
     let outcome = await this.lockedAttempt(name, snapshot, signal);
-    if (outcome.kind === "failed" && outcome.transient && !signal?.aborted) {
+    if (options.retryTransient && outcome.kind === "failed" && outcome.transient && !signal?.aborted) {
       // One prompt retry: if the server rotated and only the response was lost, this re-presents
       // the same token seconds later — inside the server's grace window, so it gets the same
       // successor back. The critical section re-reads the store first, so a peer's rotation in
       // the meantime is adopted instead.
       await sleep(this._transientRetryDelayMs);
-      outcome = await this.lockedAttempt(name, snapshot, signal);
+      if (!signal?.aborted) {
+        outcome = await this.lockedAttempt(name, snapshot, signal);
+      }
     }
 
     if (outcome.kind !== "invalid-grant") {
@@ -506,7 +525,11 @@ export class MachineCredentialProvider {
     this._lastAttempt.set(name, attempt);
     // Rule 7: only a family with NO stored clientId (so `clientId` is the component default,
     // which the fallback list never contains) may be re-presented under another client id.
-    const candidates = storedClientId ? [clientId] : [clientId, ...this._fallbackClientIds];
+    let candidates = storedClientId ? [clientId] : [clientId, ...this._fallbackClientIds];
+    const pending = this._transientClientIds.get(name);
+    if (pending?.refreshToken === refreshToken && candidates.includes(pending.clientId)) {
+      candidates = [pending.clientId, ...candidates.filter((id) => id !== pending.clientId)];
+    }
     const startedAt = Date.now();
     let result!: TokenRefreshResult;
     let presentedClientId = clientId;
@@ -520,14 +543,21 @@ export class MachineCredentialProvider {
           signal,
         });
       } catch (err) {
-        // Defensive: a well-behaved refresher fails closed, but never let a throw corrupt anything.
-        this._lastFailureReason = errorMessage(err);
-        this._onWarning(`Token refresh error (${this._lastFailureReason}).`);
-        return { kind: "failed", reason: this._lastFailureReason };
+        // Defensive: a well-behaved refresher fails closed, but a throw is no verdict on the token
+        // either — treat it like the transient network failure it almost always is.
+        this._onWarning(`Token refresh error (${errorMessage(err)}).`);
+        result = { ok: false, reason: errorMessage(err), transient: !signal?.aborted };
+        break;
       }
       if (!isClientIdMismatch(result) || Date.now() - startedAt > CLIENT_ID_FALLBACK_BUDGET_MS) {
         break;
       }
+    }
+
+    if (!result.ok && result.transient === true) {
+      this._transientClientIds.set(name, { refreshToken, clientId: presentedClientId });
+    } else {
+      this._transientClientIds.delete(name);
     }
 
     if (!result.ok || !result.accessToken) {
@@ -539,7 +569,16 @@ export class MachineCredentialProvider {
       // sends no `resource` on refresh (rule 3, token-refresher.ts), so this cannot fire
       // today; the mapping exists so any future resource-bearing refresh inherits sane
       // terminal behavior instead of retry-forever via the generic `failed` path.
-      if (!result.ok && (reason === "invalid_grant" || reason === "invalid_target")) {
+      //
+      // Never a verdict: a TRANSIENT failure (a 5xx that happens to carry `invalid_grant`), or a
+      // client-id mismatch — the token is live for its real mint client (rule 7).
+      const mismatch = isClientIdMismatch(result);
+      if (
+        !result.ok &&
+        !result.transient &&
+        !mismatch &&
+        (reason === "invalid_grant" || reason === "invalid_target")
+      ) {
         return {
           kind: "invalid-grant",
           reason,
@@ -550,6 +589,9 @@ export class MachineCredentialProvider {
       const transient = !result.ok && result.transient === true;
       attempt.transient = transient;
       this._onWarning(`Account credential refresh failed (${this._lastFailureReason}).`);
+      if (mismatch) {
+        this._lastFailureReason = `the saved sign-in was issued to another application (${this._lastFailureReason}); sign in again`;
+      }
       return { kind: "failed", reason: this._lastFailureReason, transient };
     }
 
