@@ -9,6 +9,8 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
 
 ## Unreleased
 
+## 0.7.2 — 2026-10-23
+
 ### Fixed — credential refresh robustness (production `invalid_grant` loops)
 
 - **Client-id fallback for families that store no `clientId`.** An old engine plugin that predates
