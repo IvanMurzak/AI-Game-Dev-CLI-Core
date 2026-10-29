@@ -103,10 +103,10 @@ export type AccountSwitchDecision =
  * The D6/F7 account-switch guard primitive: compare the new mint's `subject` against the stored
  * document's BEFORE any write. Only a genuine mismatch of two KNOWN subjects requires
  * confirmation — when either side is unknown (subject-less v1 / pre-O5 enroll credentials, or an
- * unreadable/missing store) the guard cannot judge and the write proceeds (F7.3: the guard
- * becomes fully effective once every mint path carries `sub`).
+ * unreadable/missing store, absent a `fallbackStoredSubject`) the guard cannot judge and the write
+ * proceeds (F7.3: the guard becomes fully effective once every mint path carries `sub`).
  *
- * `fallbackStoredSubject` is compared when the store names no account
+ * `fallbackStoredSubject` is compared instead when the store names no account
  * ({@link AccountSwitchGuardOptions.fallbackStoredSubject}).
  */
 export function evaluateAccountSwitch(
@@ -139,7 +139,9 @@ export interface AccountSwitchGuardOptions {
    * The account the surface is signed in as (the App's session subject). When the store names no
    * account (missing, unreadable, subject-less), a mint for another one asks `confirmAccountSwitch`
    * with this as `storedSubject`. A confirmed switch away from it writes as a login to an
-   * account-less store does: merged in, no store family revoked (none names an account).
+   * account-less store does: merged in (families of an unknown account are kept, not revoked), and
+   * re-verified under the lock against the store alone, so a store naming any other account written
+   * while the question waited (the fallback account included) aborts the commit.
    */
   fallbackStoredSubject?: string | undefined;
   confirmAccountSwitch?:
@@ -199,8 +201,8 @@ export async function runAccountSwitchGuard(
     return { kind: "declined", storedSubject: decision.storedSubject, newSubject: decision.newSubject };
   }
 
-  // Confirmed away from the fallback account: the store names no account, so nothing in it is that
-  // account's to revoke or replace; the write is the plain one, re-verified against the store alone.
+  // Confirmed away from the fallback account: the store names no account, so nothing in it is provably
+  // that account's to revoke or replace; the write is the plain one, re-verified against the store alone.
   if (premiseSubject === undefined) {
     return { kind: "proceed", confirmedSwitch: false, premiseSubject };
   }
@@ -398,7 +400,7 @@ export interface CommitAgentLoginOptions {
    */
   credentials: MachineCredentials;
   /** See {@link AccountSwitchGuardOptions.fallbackStoredSubject}. Omit to ask about the store only. */
-  fallbackStoredSubject?: string;
+  fallbackStoredSubject?: string | undefined;
   /** D6/F7 confirmation callback. ABSENT ⇒ a subject mismatch is DECLINED (fail closed). */
   confirmAccountSwitch?: (info: {
     storedSubject: string;
