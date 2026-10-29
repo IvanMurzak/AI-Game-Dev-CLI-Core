@@ -105,13 +105,16 @@ export type AccountSwitchDecision =
  * confirmation — when either side is unknown (subject-less v1 / pre-O5 enroll credentials, or an
  * unreadable/missing store) the guard cannot judge and the write proceeds (F7.3: the guard
  * becomes fully effective once every mint path carries `sub`).
+ *
+ * `fallbackStoredSubject` is the account the surface itself is signed in as (the App's session),
+ * compared instead when the store names no account: a switch away from it is asked the same way.
  */
 export function evaluateAccountSwitch(
   stored: MachineCredentials | null,
   newSubject: string | undefined,
+  fallbackStoredSubject?: string,
 ): AccountSwitchDecision {
-  const storedSubject =
-    typeof stored?.subject === "string" && stored.subject.length > 0 ? stored.subject : undefined;
+  const storedSubject = nonEmptySubject(stored?.subject) ?? nonEmptySubject(fallbackStoredSubject);
   if (!storedSubject || !newSubject || storedSubject === newSubject) {
     return { kind: "proceed" };
   }
@@ -132,6 +135,12 @@ export interface AccountSwitchGuardOptions {
   clientId: string;
   /** The freshly minted credentials being committed (subject compared; tokens revoked on decline). */
   credentials: MachineCredentials;
+  /**
+   * The account the surface is signed in as (the App's session subject), asked about when the store
+   * names no account ({@link evaluateAccountSwitch}). A confirmed switch away from it writes as a
+   * login to an account-less store does: merged in, no store family revoked (none names an account).
+   */
+  fallbackStoredSubject?: string | undefined;
   confirmAccountSwitch?:
     | ((info: { storedSubject: string; newSubject: string }) => boolean | Promise<boolean>)
     | undefined;
@@ -166,7 +175,7 @@ export async function runAccountSwitchGuard(
   const state = safeReadState(store);
   const stored = state?.status === "ok" ? state.credentials : null;
   const premiseSubject = nonEmptySubject(stored?.subject);
-  const decision = evaluateAccountSwitch(stored, credentials.subject);
+  const decision = evaluateAccountSwitch(stored, credentials.subject, options.fallbackStoredSubject);
   if (decision.kind === "proceed") {
     return { kind: "proceed", confirmedSwitch: false, premiseSubject };
   }
@@ -189,6 +198,11 @@ export async function runAccountSwitchGuard(
     return { kind: "declined", storedSubject: decision.storedSubject, newSubject: decision.newSubject };
   }
 
+  // Confirmed away from the fallback account: the store names no account, so nothing in it is that
+  // account's to revoke or replace; the write is the plain one, re-verified against the store alone.
+  if (premiseSubject === undefined) {
+    return { kind: "proceed", confirmedSwitch: false, premiseSubject };
+  }
   // F7.2 confirm: revoke the OLD account's families (best effort) before the store is replaced.
   if (stored) {
     for (const [, family] of Object.entries(effectiveFamilies(stored))) {
@@ -382,6 +396,12 @@ export interface CommitAgentLoginOptions {
    * refresh tokens, expiry, `serverTarget`, and `subject` (from the JWT `sub`).
    */
   credentials: MachineCredentials;
+  /**
+   * The account the login surface is signed in as (the App's session subject): when the store names
+   * no account, a mint for another one asks `confirmAccountSwitch` with this as `storedSubject`
+   * ({@link AccountSwitchGuardOptions.fallbackStoredSubject}). Omit to ask about the store only.
+   */
+  fallbackStoredSubject?: string;
   /** D6/F7 confirmation callback. ABSENT ⇒ a subject mismatch is DECLINED (fail closed). */
   confirmAccountSwitch?: (info: {
     storedSubject: string;

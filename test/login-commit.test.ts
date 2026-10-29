@@ -84,6 +84,23 @@ describe("evaluateAccountSwitch (D6/F7 guard primitive)", () => {
       newSubject: "usr_B",
     });
   });
+
+  it("compares the fallback stored subject only when the store names no account", () => {
+    const asked = { kind: "confirm-required", storedSubject: "usr_APP", newSubject: "usr_B" };
+    expect(evaluateAccountSwitch(null, "usr_B", "usr_APP")).toEqual(asked);
+    expect(evaluateAccountSwitch({}, "usr_B", "usr_APP")).toEqual(asked);
+    expect(evaluateAccountSwitch({ subject: "" }, "usr_B", "usr_APP")).toEqual(asked);
+    expect(evaluateAccountSwitch(null, "usr_APP", "usr_APP")).toEqual({ kind: "proceed" });
+    expect(evaluateAccountSwitch(null, undefined, "usr_APP")).toEqual({ kind: "proceed" });
+    expect(evaluateAccountSwitch(null, "usr_B", "")).toEqual({ kind: "proceed" });
+    // The store's own account always wins over the fallback.
+    expect(evaluateAccountSwitch({ subject: "usr_B" }, "usr_B", "usr_APP")).toEqual({ kind: "proceed" });
+    expect(evaluateAccountSwitch({ subject: "usr_C" }, "usr_B", "usr_APP")).toEqual({
+      kind: "confirm-required",
+      storedSubject: "usr_C",
+      newSubject: "usr_B",
+    });
+  });
 });
 
 describe("commitAgentLogin — the F1/F2 two-lock-hold sequence (04 §4)", () => {
@@ -294,6 +311,133 @@ describe("commitAgentLogin — the D6/F7 account-switch guard", () => {
     expect(stored.families?.plugin?.accessToken).toBe("plug-a");
     expect(JSON.stringify(stored)).not.toContain("b-agent");
     expect(JSON.stringify(stored)).not.toContain("b-plug");
+  });
+});
+
+describe("commitAgentLogin — fallbackStoredSubject (the surface's own account, the store naming none)", () => {
+  /** A store with families of no known account (a subject-less v1 credential). */
+  const SUBJECTLESS: MachineCredentials = { accessToken: "v1-a", refreshToken: "v1-r", serverTarget: "https://ai-game.dev" };
+
+  for (const [label, seed] of [["no store", undefined], ["a subject-less store", SUBJECTLESS]] as const) {
+    it(`${label} + decline: asks about the fallback account, revokes the mint, writes nothing`, async () => {
+      const store = freshStore(seed);
+      const filePath = path.join(store.baseDirectory, CREDENTIALS_FILE_NAME);
+      const before = fs.existsSync(filePath) ? fs.readFileSync(filePath) : undefined;
+      const revoked: string[] = [];
+      const confirm = vi.fn(async () => false);
+
+      const result = await commitAgentLogin({
+        store,
+        exchangeClient: scriptedExchange(EXCHANGE_OK),
+        clientId: "app-dcr",
+        credentials: AGENT_CREDS, // usr_A, while the App is signed in as usr_APP
+        fallbackStoredSubject: "usr_APP",
+        confirmAccountSwitch: confirm,
+        revokeToken: (token) => {
+          revoked.push(token);
+          return true;
+        },
+      });
+
+      expect(confirm).toHaveBeenCalledTimes(1);
+      expect(confirm).toHaveBeenCalledWith({ storedSubject: "usr_APP", newSubject: "usr_A" });
+      expect(result).toEqual({ status: "switch-declined", storedSubject: "usr_APP", newSubject: "usr_A" });
+      expect(revoked).toEqual(["agent-r"]);
+      expect(fs.existsSync(filePath) ? fs.readFileSync(filePath) : undefined).toEqual(before);
+    });
+  }
+
+  it("confirm: asked once, the login is written as to an account-less store (merged, no store family revoked)", async () => {
+    const store = freshStore(SUBJECTLESS);
+    const revoked: string[] = [];
+    const confirm = vi.fn(async () => true);
+
+    const result = await commitAgentLogin({
+      store,
+      exchangeClient: scriptedExchange(EXCHANGE_OK),
+      clientId: "app-dcr",
+      credentials: AGENT_CREDS,
+      fallbackStoredSubject: "usr_APP",
+      confirmAccountSwitch: confirm,
+      revokeToken: (token) => {
+        revoked.push(token);
+        return true;
+      },
+    });
+
+    expect(result.status).toBe("committed");
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(revoked).toEqual([]);
+    const stored = store.read()!;
+    expect(stored.subject).toBe("usr_A");
+    expect(stored.families?.agent?.accessToken).toBe("agent-a");
+    expect(stored.families?.plugin?.accessToken).toBe("plug-a");
+  });
+
+  it("no confirm callback declines (fail closed), as for a store-named account", async () => {
+    const store = freshStore();
+    const result = await commitAgentLogin({
+      store,
+      exchangeClient: scriptedExchange(EXCHANGE_OK),
+      clientId: "app-dcr",
+      credentials: AGENT_CREDS,
+      fallbackStoredSubject: "usr_APP",
+      revokeToken: () => true,
+    });
+    expect(result.status).toBe("switch-declined");
+    expect(store.read()).toBeNull();
+  });
+
+  it("is not asked when the store names an account: the store's account is the one compared", async () => {
+    const sameAsMint = freshStore({ subject: "usr_A", accessToken: "x", refreshToken: "y" });
+    const confirm = vi.fn(async () => false);
+    const proceeded = await commitAgentLogin({
+      store: sameAsMint,
+      exchangeClient: scriptedExchange(EXCHANGE_OK),
+      clientId: "app-dcr",
+      credentials: AGENT_CREDS,
+      fallbackStoredSubject: "usr_APP",
+      confirmAccountSwitch: confirm,
+      revokeToken: () => true,
+    });
+    expect(proceeded.status).toBe("committed");
+    expect(confirm).not.toHaveBeenCalled();
+
+    const other = freshStore({ subject: "usr_C", accessToken: "x", refreshToken: "y" });
+    const declined = await commitAgentLogin({
+      store: other,
+      exchangeClient: scriptedExchange(EXCHANGE_OK),
+      clientId: "app-dcr",
+      credentials: AGENT_CREDS,
+      fallbackStoredSubject: "usr_APP",
+      confirmAccountSwitch: confirm,
+      revokeToken: () => true,
+    });
+    expect(declined).toEqual({ status: "switch-declined", storedSubject: "usr_C", newSubject: "usr_A" });
+    expect(confirm).toHaveBeenCalledWith({ storedSubject: "usr_C", newSubject: "usr_A" });
+  });
+
+  it("a store naming another account written while the fallback question waited aborts; nothing replaced", async () => {
+    const store = freshStore();
+    const intruder: MachineCredentials = { subject: "usr_C", accessToken: "c-a", refreshToken: "c-r" };
+
+    const result = await commitAgentLogin({
+      store,
+      exchangeClient: scriptedExchange(EXCHANGE_OK),
+      clientId: "app-dcr",
+      credentials: AGENT_CREDS,
+      fallbackStoredSubject: "usr_APP",
+      confirmAccountSwitch: async () => {
+        store.write(intruder);
+        return true;
+      },
+      revokeToken: () => true,
+      onWarning: () => {},
+    });
+
+    expect(result).toEqual({ status: "aborted", reason: "guard-premise-changed" });
+    expect(store.read()?.subject).toBe("usr_C");
+    expect(store.read()?.accessToken).toBe("c-a");
   });
 });
 
