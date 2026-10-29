@@ -106,8 +106,8 @@ export type AccountSwitchDecision =
  * unreadable/missing store) the guard cannot judge and the write proceeds (F7.3: the guard
  * becomes fully effective once every mint path carries `sub`).
  *
- * `fallbackStoredSubject` is the account the surface itself is signed in as (the App's session),
- * compared instead when the store names no account: a switch away from it is asked the same way.
+ * `fallbackStoredSubject` is compared when the store names no account
+ * ({@link AccountSwitchGuardOptions.fallbackStoredSubject}).
  */
 export function evaluateAccountSwitch(
   stored: MachineCredentials | null,
@@ -136,9 +136,10 @@ export interface AccountSwitchGuardOptions {
   /** The freshly minted credentials being committed (subject compared; tokens revoked on decline). */
   credentials: MachineCredentials;
   /**
-   * The account the surface is signed in as (the App's session subject), asked about when the store
-   * names no account ({@link evaluateAccountSwitch}). A confirmed switch away from it writes as a
-   * login to an account-less store does: merged in, no store family revoked (none names an account).
+   * The account the surface is signed in as (the App's session subject). When the store names no
+   * account (missing, unreadable, subject-less), a mint for another one asks `confirmAccountSwitch`
+   * with this as `storedSubject`. A confirmed switch away from it writes as a login to an
+   * account-less store does: merged in, no store family revoked (none names an account).
    */
   fallbackStoredSubject?: string | undefined;
   confirmAccountSwitch?:
@@ -396,11 +397,7 @@ export interface CommitAgentLoginOptions {
    * refresh tokens, expiry, `serverTarget`, and `subject` (from the JWT `sub`).
    */
   credentials: MachineCredentials;
-  /**
-   * The account the login surface is signed in as (the App's session subject): when the store names
-   * no account, a mint for another one asks `confirmAccountSwitch` with this as `storedSubject`
-   * ({@link AccountSwitchGuardOptions.fallbackStoredSubject}). Omit to ask about the store only.
-   */
+  /** See {@link AccountSwitchGuardOptions.fallbackStoredSubject}. Omit to ask about the store only. */
   fallbackStoredSubject?: string;
   /** D6/F7 confirmation callback. ABSENT ⇒ a subject mismatch is DECLINED (fail closed). */
   confirmAccountSwitch?: (info: {
