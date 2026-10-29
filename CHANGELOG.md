@@ -9,6 +9,20 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
 
 ## Unreleased
 
+### Added — the account-switch question about the surface's own account (minor: 0.8.0)
+
+- **`fallbackStoredSubject` on `commitAgentLogin` (and `runAccountSwitchGuard`), a third
+  `evaluateAccountSwitch` parameter.** The account the login surface is signed in as (the App's
+  session subject). When the machine store names no account (missing, unreadable, or subject-less), a
+  mint for another account asks `confirmAccountSwitch` with it as `storedSubject`, exactly as a
+  store-named account is asked: a decline revokes the mint and writes nothing (`switch-declined`), no
+  callback declines. A confirmed switch writes as a login to an account-less store does (merged in;
+  families of an unknown account are kept, not revoked). A store naming any account other than the new
+  one, the fallback account included, written while the question waited aborts the commit
+  (`guard-premise-changed`): nothing is replaced and the surface asks again on retry. A store that names
+  an account is compared as before and the fallback is ignored. Omitted: unchanged behaviour. Consumers
+  that rely on the question must require `^0.8.0`.
+
 ## 0.7.2 — 2026-10-23
 
 ### Fixed — credential refresh robustness (production `invalid_grant` loops)
