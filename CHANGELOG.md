@@ -9,6 +9,16 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
 
 ## Unreleased
 
+### Changed — a branded page after browser sign-in (patch)
+
+- **The loopback redirect page is restyled and outcome-aware.** After the browser hands the sign-in
+  back, it now shows a dark, AI Game Dev–branded card instead of a bare white page, with one of three
+  outcomes taken from the redirect: authorized (the app finishes the sign-in), cancelled (`access_denied`), or failed (any other
+  error, or no `code`). Still
+  self-contained (inline CSS and SVG, no script or remote asset) and now served with
+  `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'`, `Referrer-Policy:
+  no-referrer` and `Cache-Control: no-store`. The redirect's error text is never echoed into the page.
+
 ### Added — the account-switch question about the surface's own account (minor: 0.8.0)
 
 - **`fallbackStoredSubject` on `commitAgentLogin` (and `runAccountSwitchGuard`), a third

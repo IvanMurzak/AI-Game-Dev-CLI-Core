@@ -4,6 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo, Socket } from "node:net";
 
 import type { MachineCredentials } from "./machine-credentials.js";
+import { LOOPBACK_PAGE_CSP, LOOPBACK_PAGES, loopbackPageOutcome } from "./loopback-page.js";
 import { describeAuthNetworkError, errorMessage } from "./network-error.js";
 import {
   ClientRegistrationStore,
@@ -85,12 +86,6 @@ export const DEFAULT_CALLBACK_PATH = "/callback";
 
 /** Default wait (ms) for the browser round-trip before the listener times out (5 minutes). */
 export const DEFAULT_AUTHCODE_TIMEOUT_MS = 300_000;
-
-/** A minimal page shown in the user's browser once the redirect is captured. */
-const SUCCESS_HTML =
-  "<!doctype html><html><head><meta charset=\"utf-8\"><title>Sign-in complete</title></head>" +
-  "<body style=\"font-family:system-ui,sans-serif;text-align:center;padding-top:4rem\">" +
-  "<h1>Sign-in complete</h1><p>You can close this window and return to the terminal.</p></body></html>";
 
 /** Trim a trailing slash so `{base}/oauth/...` resolves cleanly. */
 function trimTrailingSlash(url: string): string {
@@ -246,16 +241,21 @@ export const createLoopbackListener: LoopbackListenerFactory = async ({ host, pa
       res.end("Not found");
       return;
     }
+    const code = requestUrl.searchParams.get("code") ?? undefined;
+    const error = requestUrl.searchParams.get("error") ?? undefined;
     res.statusCode = 200;
     res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Content-Security-Policy", LOOPBACK_PAGE_CSP);
+    res.setHeader("Referrer-Policy", "no-referrer");
+    res.setHeader("Cache-Control", "no-store");
     res.setHeader("Connection", "close");
-    res.end(SUCCESS_HTML);
+    res.end(LOOPBACK_PAGES[loopbackPageOutcome(error, code)]);
     if (!settled) {
       settled = true;
       resolveRedirect({
-        code: requestUrl.searchParams.get("code") ?? undefined,
+        code,
         state: requestUrl.searchParams.get("state") ?? undefined,
-        error: requestUrl.searchParams.get("error") ?? undefined,
+        error,
         errorDescription: requestUrl.searchParams.get("error_description") ?? undefined,
       });
     }
