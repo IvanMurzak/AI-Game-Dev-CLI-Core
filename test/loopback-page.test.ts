@@ -8,6 +8,7 @@ describe("loopback page", () => {
     expect(loopbackPageOutcome("access_denied", undefined)).toBe("denied");
     expect(loopbackPageOutcome("server_error", undefined)).toBe("error");
     expect(loopbackPageOutcome(undefined, undefined)).toBe("error");
+    expect(loopbackPageOutcome("server_error", "abc")).toBe("error");
   });
 
   it("is self-contained: no script and no remote asset", () => {
@@ -25,6 +26,8 @@ describe("loopback page", () => {
       );
       const html = await res.text();
       expect(res.headers.get("content-security-policy")).toBe("default-src 'none'; style-src 'unsafe-inline'");
+      expect(res.headers.get("referrer-policy")).toBe("no-referrer");
+      expect(res.headers.get("cache-control")).toBe("no-store");
       expect(html).toContain("Sign-in cancelled");
       expect(html).not.toContain("evil");
       await expect(wait).resolves.toMatchObject({ error: "access_denied" });
@@ -37,7 +40,7 @@ describe("loopback page", () => {
     const listener = await createLoopbackListener({ host: "127.0.0.1", path: "/callback", timeoutMs: 2000 });
     try {
       const res = await fetch(`${listener.redirectUri}?code=abc&state=xyz`);
-      expect(await res.text()).toContain("You’re signed in");
+      expect(await res.text()).toContain("You’re all set");
     } finally {
       listener.close();
     }

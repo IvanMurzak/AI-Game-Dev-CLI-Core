@@ -21,9 +21,9 @@ const LOGO =
 
 const PAGES: Record<LoopbackPageOutcome, { readonly title: string; readonly heading: string; readonly text: string; readonly icon: string }> = {
   success: {
-    title: "Signed in — AI Game Dev",
-    heading: "You’re signed in",
-    text: "Head back to the app or terminal where you started. You can close this tab.",
+    title: "Authorized — AI Game Dev",
+    heading: "You’re all set",
+    text: "Head back to the app or terminal where you started — it finishes signing you in. You can close this tab.",
     icon: '<path d="m7 12.5 3.3 3.3L17.5 8.5"/>',
   },
   denied: {
@@ -82,7 +82,7 @@ function render(outcome: LoopbackPageOutcome): string {
     '<!doctype html><html lang="en"><head><meta charset="utf-8">' +
     '<meta name="viewport" content="width=device-width,initial-scale=1">' +
     `<title>${page.title}</title><style>${STYLES}</style></head><body>` +
-    `<main class="card ${outcome}" role="status">` +
+    `<main class="card ${outcome}">` +
     `<div class="brand">${LOGO}AI Game Dev</div>` +
     `<div class="badge"><svg viewBox="0 0 24 24" aria-hidden="true">${page.icon}</svg></div>` +
     `<h1>${page.heading}</h1><p>${page.text}</p>` +
