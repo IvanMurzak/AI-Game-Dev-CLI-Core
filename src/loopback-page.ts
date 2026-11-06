@@ -19,27 +19,24 @@ const LOGO =
   '<linearGradient id="b" gradientUnits="userSpaceOnUse" x1="512" y1="190" x2="512" y2="785"><stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#AABBD0"/></linearGradient></defs>' +
   '<path d="M512 194 512 504 366 785H185Z" fill="url(#l)"/><path d="M512 194 839 785H658L512 504Z" fill="url(#r)"/><path d="M512 194V294L223 767 185 785Z" fill="url(#b)"/></svg>';
 
-const ICONS: Record<LoopbackPageOutcome, string> = {
-  success: '<path d="m7 12.5 3.3 3.3L17.5 8.5"/>',
-  denied: '<path d="M8 8l8 8M16 8l-8 8"/>',
-  error: '<path d="M12 7.5v5.5M12 16.5h.01"/>',
-};
-
-const COPY: Record<LoopbackPageOutcome, { readonly title: string; readonly heading: string; readonly text: string }> = {
+const PAGES: Record<LoopbackPageOutcome, { readonly title: string; readonly heading: string; readonly text: string; readonly icon: string }> = {
   success: {
     title: "Signed in — AI Game Dev",
     heading: "You’re signed in",
     text: "Head back to the app or terminal where you started. You can close this tab.",
+    icon: '<path d="m7 12.5 3.3 3.3L17.5 8.5"/>',
   },
   denied: {
     title: "Sign-in cancelled — AI Game Dev",
     heading: "Sign-in cancelled",
     text: "The request was declined, so nothing was shared. You can close this tab and start again whenever you’re ready.",
+    icon: '<path d="M8 8l8 8M16 8l-8 8"/>',
   },
   error: {
     title: "Sign-in failed — AI Game Dev",
     heading: "Sign-in didn’t finish",
     text: "Something went wrong on the way back. Close this tab and start the sign-in again from the app or terminal.",
+    icon: '<path d="M12 7.5v5.5M12 16.5h.01"/>',
   },
 };
 
@@ -70,23 +67,32 @@ const STYLES =
   "@keyframes pop{from{opacity:0;transform:scale(.6)}}" +
   "@media (prefers-reduced-motion:reduce){.card,.badge{animation:none}}";
 
-/** Map the redirect's `error` parameter to the page outcome (`access_denied` = the user said no). */
-export function loopbackPageOutcome(error: string | undefined): LoopbackPageOutcome {
-  if (!error) return "success";
-  return error === "access_denied" ? "denied" : "error";
+/**
+ * Map the redirect to the page outcome: `access_denied` = the user said no, any other error or a
+ * redirect without a code = failed. (The code's `state` and exchange are checked later, by the flow.)
+ */
+export function loopbackPageOutcome(error: string | undefined, code: string | undefined): LoopbackPageOutcome {
+  if (error === "access_denied") return "denied";
+  return error || !code ? "error" : "success";
 }
 
-/** The full HTML document for an outcome. */
-export function renderLoopbackPage(outcome: LoopbackPageOutcome): string {
-  const copy = COPY[outcome];
+function render(outcome: LoopbackPageOutcome): string {
+  const page = PAGES[outcome];
   return (
     '<!doctype html><html lang="en"><head><meta charset="utf-8">' +
     '<meta name="viewport" content="width=device-width,initial-scale=1">' +
-    `<title>${copy.title}</title><style>${STYLES}</style></head><body>` +
+    `<title>${page.title}</title><style>${STYLES}</style></head><body>` +
     `<main class="card ${outcome}" role="status">` +
     `<div class="brand">${LOGO}AI Game Dev</div>` +
-    `<div class="badge"><svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[outcome]}</svg></div>` +
-    `<h1>${copy.heading}</h1><p>${copy.text}</p>` +
+    `<div class="badge"><svg viewBox="0 0 24 24" aria-hidden="true">${page.icon}</svg></div>` +
+    `<h1>${page.heading}</h1><p>${page.text}</p>` +
     "</main></body></html>"
   );
 }
+
+/** The three documents, built once: the listener only ever serves one of them. */
+export const LOOPBACK_PAGES: Readonly<Record<LoopbackPageOutcome, string>> = {
+  success: render("success"),
+  denied: render("denied"),
+  error: render("error"),
+};

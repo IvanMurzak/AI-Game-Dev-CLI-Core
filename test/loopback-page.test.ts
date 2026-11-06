@@ -1,17 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { createLoopbackListener } from "../src/oauth-authcode-flow.js";
-import { loopbackPageOutcome, renderLoopbackPage } from "../src/loopback-page.js";
+import { LOOPBACK_PAGES, loopbackPageOutcome } from "../src/loopback-page.js";
 
 describe("loopback page", () => {
   it("maps the redirect error to an outcome", () => {
-    expect(loopbackPageOutcome(undefined)).toBe("success");
-    expect(loopbackPageOutcome("access_denied")).toBe("denied");
-    expect(loopbackPageOutcome("server_error")).toBe("error");
+    expect(loopbackPageOutcome(undefined, "abc")).toBe("success");
+    expect(loopbackPageOutcome("access_denied", undefined)).toBe("denied");
+    expect(loopbackPageOutcome("server_error", undefined)).toBe("error");
+    expect(loopbackPageOutcome(undefined, undefined)).toBe("error");
   });
 
   it("is self-contained: no script and no remote asset", () => {
-    for (const outcome of ["success", "denied", "error"] as const) {
-      const html = renderLoopbackPage(outcome);
+    for (const html of Object.values(LOOPBACK_PAGES)) {
       expect(html).not.toMatch(/<script|<link|https?:\/\/(?!www\.w3\.org)/i);
     }
   });

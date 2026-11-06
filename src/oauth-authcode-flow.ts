@@ -4,7 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo, Socket } from "node:net";
 
 import type { MachineCredentials } from "./machine-credentials.js";
-import { LOOPBACK_PAGE_CSP, loopbackPageOutcome, renderLoopbackPage } from "./loopback-page.js";
+import { LOOPBACK_PAGE_CSP, LOOPBACK_PAGES, loopbackPageOutcome } from "./loopback-page.js";
 import { describeAuthNetworkError, errorMessage } from "./network-error.js";
 import {
   ClientRegistrationStore,
@@ -241,6 +241,7 @@ export const createLoopbackListener: LoopbackListenerFactory = async ({ host, pa
       res.end("Not found");
       return;
     }
+    const code = requestUrl.searchParams.get("code") ?? undefined;
     const error = requestUrl.searchParams.get("error") ?? undefined;
     res.statusCode = 200;
     res.setHeader("Content-Type", "text/html; charset=utf-8");
@@ -248,11 +249,11 @@ export const createLoopbackListener: LoopbackListenerFactory = async ({ host, pa
     res.setHeader("Referrer-Policy", "no-referrer");
     res.setHeader("Cache-Control", "no-store");
     res.setHeader("Connection", "close");
-    res.end(renderLoopbackPage(loopbackPageOutcome(error)));
+    res.end(LOOPBACK_PAGES[loopbackPageOutcome(error, code)]);
     if (!settled) {
       settled = true;
       resolveRedirect({
-        code: requestUrl.searchParams.get("code") ?? undefined,
+        code,
         state: requestUrl.searchParams.get("state") ?? undefined,
         error,
         errorDescription: requestUrl.searchParams.get("error_description") ?? undefined,
