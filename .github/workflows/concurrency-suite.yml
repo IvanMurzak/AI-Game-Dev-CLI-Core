@@ -47,8 +47,10 @@ run-name: ${{ github.event_name == 'workflow_dispatch' && format('chain {0} cli-
 
 # Ordinary runs keep the ref-keyed, cancelling group. Dispatched chain legs are keyed on the lock
 # (+ workflow, so ci.yml's leg for the same lock is a different group) and never cancelled.
+# A push to main never shares a group: a run that skips on docs-only sees only its own commit, so if
+# it cancelled or displaced the previous push's run, that code would never get a full run on main.
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && format('chain-{0}-{1}', inputs.lock_hash8, github.workflow) || format('x2-{0}-{1}', github.workflow, github.ref) }}
+  group: ${{ github.event_name == 'workflow_dispatch' && format('chain-{0}-{1}', inputs.lock_hash8, github.workflow) || format('x2-{0}-{1}', github.workflow, github.event_name == 'push' && github.sha || github.ref) }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 permissions:
@@ -63,8 +65,36 @@ env:
   CHAIN_LOCK_HASH8: ${{ inputs.lock_hash8 }}
 
 jobs:
+  # Skips the jobs below on a documentation-only pull request, or a push of one. `paths-ignore` would
+  # leave the PR with no check at all, which the release train reads as unproven, so this job's check
+  # stays. The rule and its path list live in .github/scripts/docs-only.mjs. A skipped or failed gate
+  # leaves `docs_only` empty and the jobs run, so workflow_dispatch and chain legs always run in full,
+  # and so does a `train/`-labelled PR. Hosted runner on purpose: this repo is public.
+  changes:
+    name: Detect docs-only changes
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && !contains(format(' {0}', join(github.event.pull_request.labels.*.name, ' ')), ' train/'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v7
+        continue-on-error: true
+        timeout-minutes: 3
+        with:
+          fetch-depth: 2 # the commit and its parents: docs-only.mjs diffs HEAD^1..HEAD
+          persist-credentials: false # the script reads local trees only
+      - id: classify
+        continue-on-error: true
+        timeout-minutes: 1
+        env:
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: node .github/scripts/docs-only.mjs
+
   suite:
     name: concurrency suite (${{ matrix.os }})
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
     strategy:
       fail-fast: false
       matrix:

@@ -25,6 +25,8 @@ Node >= 22.14.0. The real-process concurrency suite is opt-in (`X2_CONCURRENCY=1
   `test/fixtures/` worker scripts; `test/golden-vectors/` — vendored from MCP-Plugin-dotnet.
 - `.github/workflows/` — `ci.yml` (typecheck + build + test, 3 OS), `concurrency-suite.yml`,
   `release.yml` (dispatch-only npm publish); `.github/scripts/chain_feed.py` is vendored, keep it byte-identical.
+  A documentation-only PR skips the heavy jobs of `ci.yml` and `concurrency-suite.yml`; the path list is in
+  `.github/scripts/docs-only.mjs`.
 
 ## Conventions
 
