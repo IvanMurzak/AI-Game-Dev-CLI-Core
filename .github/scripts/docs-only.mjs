@@ -48,8 +48,8 @@ function main() {
   if (head !== process.env.GITHUB_SHA) throw new Error(`HEAD ${head} is not GITHUB_SHA ${process.env.GITHUB_SHA}`);
   const files = changedFiles(repo, { event: process.env.GITHUB_EVENT_NAME, before: process.env.PUSH_BEFORE });
   const docsOnly = isDocsOnly(files);
-  const others = files.filter((file) => !isDocsPath(file));
-  console.log(`${files.length} changed file(s), ${others.length} outside the docs list${others.length ? `, e.g. ${others[0]}` : ""}`);
+  const other = files.find((file) => !isDocsPath(file));
+  console.log(`${files.length} changed file(s)${other ? `, e.g. ${other} is outside the docs list` : ""}`);
   console.log(`docs_only=${docsOnly}`);
   appendFileSync(process.env.GITHUB_OUTPUT, `docs_only=${docsOnly}\n`);
 }

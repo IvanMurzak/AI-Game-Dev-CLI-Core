@@ -94,7 +94,7 @@ describe("docs-only gate", () => {
 
   it("nothing on the list is published in the npm package", () => {
     const { files } = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as { files: string[] };
-    expect(files.filter((path) => isDocsPath(path) || path === "docs")).toEqual([]);
+    expect(files.filter((path) => isDocsPath(path) || isDocsPath(`${path}/`))).toEqual([]);
   });
 
   it("changedFiles lists only what the pull request changes, not what main gained", () => {
@@ -111,8 +111,9 @@ describe("docs-only gate", () => {
         renameSync(join(repo, "src/a.ts"), join(repo, "docs/a.ts"));
       },
       ({ repo }) => {
-        expect(changedFiles(repo, PR).sort()).toEqual(["docs/a.ts", "src/a.ts"]);
-        expect(isDocsOnly(changedFiles(repo, PR))).toBe(false);
+        const files = changedFiles(repo, PR);
+        expect(files.sort()).toEqual(["docs/a.ts", "src/a.ts"]);
+        expect(isDocsOnly(files)).toBe(false);
       },
     );
   });
