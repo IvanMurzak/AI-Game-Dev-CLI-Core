@@ -13,10 +13,11 @@
  * `--no-renames` because a rename from src/ into docs/ would otherwise list only its docs/ side.
  *
  * To skip CI for more paths, edit isDocsPath and its table in test/docs-only.test.ts. List only what
- * no build, test, packaging or generation step reads. These do not qualify:
+ * no skipped job reads. These do not qualify:
  *   README.md, LICENSE  published in the npm package (package.json `files`)
- *   CHANGELOG.md        the release train's version source for this package (software
- *                       `.chain/manifest.yml`, `version.source: changelog`), read at the locked sha
+ * CHANGELOG.md does: no CI job reads it. The release train takes this package's version from it
+ * (software `.chain/manifest.yml`, `version.source: changelog`) when it generates a lock, and CI
+ * under a lock runs in full.
  */
 
 import { execFileSync } from "node:child_process";
@@ -27,7 +28,7 @@ const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8" 
 
 /** @param {string} path repo-relative, forward slashes */
 export function isDocsPath(path) {
-  return path === "AGENTS.md" || path.startsWith("docs/");
+  return path === "AGENTS.md" || path === "CHANGELOG.md" || path.startsWith("docs/");
 }
 
 /** @param {readonly string[]} files */

@@ -64,12 +64,11 @@ function withMerge(change: (repo: string, write: (path: string) => void) => void
 
 // Each test spawns about 20 git processes, slow on the Windows runner.
 describe("docs-only gate", { timeout: 30_000 }, () => {
-  it("isDocsPath lists docs/ and the root AGENTS.md, nothing else", () => {
-    const skip = ["AGENTS.md", "docs/a.md", "docs/deep/image.png"];
+  it("isDocsPath lists docs/, the root AGENTS.md and CHANGELOG.md, nothing else", () => {
+    const skip = ["AGENTS.md", "CHANGELOG.md", "docs/a.md", "docs/deep/image.png"];
     const run = [
       "README.md", // published in the npm package
       "LICENSE", // published in the npm package
-      "CHANGELOG.md", // the release train's version source
       "package.json",
       "package-lock.json",
       "tsconfig.json",
@@ -80,6 +79,7 @@ describe("docs-only gate", { timeout: 30_000 }, () => {
       ".github/scripts/chain_feed.py",
       "src/index.ts",
       "src/AGENTS.md",
+      "src/CHANGELOG.md",
       "test/golden-vectors/project-keys.golden.json",
       "docs",
       "documents/a.md",
