@@ -63,8 +63,36 @@ env:
   CHAIN_LOCK_HASH8: ${{ inputs.lock_hash8 }}
 
 jobs:
+  # Skips the jobs below on a documentation-only pull request, or a push of one. `paths-ignore` would
+  # leave the PR with no check at all, which the release train reads as unproven, so this job's check
+  # stays. The rule and its path list live in .github/scripts/docs-only.mjs. A skipped or failed gate
+  # leaves `docs_only` empty and the jobs run, so workflow_dispatch and chain legs always run in full,
+  # and so does a `train/`-labelled PR. Hosted runner on purpose: this repo is public.
+  changes:
+    name: Detect docs-only changes
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && !contains(format(' {0}', join(github.event.pull_request.labels.*.name, ' ')), ' train/'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v7
+        continue-on-error: true
+        timeout-minutes: 3
+        with:
+          fetch-depth: 2 # the commit and its parents: docs-only.mjs diffs HEAD^1..HEAD
+          persist-credentials: false # the script reads local trees only
+      - id: classify
+        continue-on-error: true
+        timeout-minutes: 1
+        env:
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: node .github/scripts/docs-only.mjs
+
   suite:
     name: concurrency suite (${{ matrix.os }})
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
     strategy:
       fail-fast: false
       matrix:
