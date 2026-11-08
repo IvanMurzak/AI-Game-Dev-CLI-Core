@@ -47,8 +47,10 @@ run-name: ${{ github.event_name == 'workflow_dispatch' && format('chain {0} cli-
 
 # Ordinary runs keep the ref-keyed, cancelling group. Dispatched chain legs are keyed on the lock
 # (+ workflow, so ci.yml's leg for the same lock is a different group) and never cancelled.
+# A push to main never shares a group: a run that skips on docs-only sees only its own commit, so if
+# it cancelled or displaced the previous push's run, that code would never get a full run on main.
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && format('chain-{0}-{1}', inputs.lock_hash8, github.workflow) || format('x2-{0}-{1}', github.workflow, github.ref) }}
+  group: ${{ github.event_name == 'workflow_dispatch' && format('chain-{0}-{1}', inputs.lock_hash8, github.workflow) || format('x2-{0}-{1}', github.workflow, github.event_name == 'push' && github.sha || github.ref) }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 permissions:

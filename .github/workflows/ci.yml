@@ -31,8 +31,10 @@ run-name: ${{ github.event_name == 'workflow_dispatch' && format('chain {0} cli-
 # Ordinary runs: cancel superseded runs on the same ref (keeps PR feedback fast) — unchanged.
 # Dispatched chain legs: keyed on the LOCK (+ workflow, so this repo's two dispatched workflows
 # never share one group) and never cancelled, so two different locks run side by side.
+# A push to main never shares a group: a run that skips on docs-only sees only its own commit, so if
+# it cancelled or displaced the previous push's run, that code would never get a full run on main.
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && format('chain-{0}-{1}', inputs.lock_hash8, github.workflow) || format('ci-{0}-{1}', github.workflow, github.ref) }}
+  group: ${{ github.event_name == 'workflow_dispatch' && format('chain-{0}-{1}', inputs.lock_hash8, github.workflow) || format('ci-{0}-{1}', github.workflow, github.event_name == 'push' && github.sha || github.ref) }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 permissions:

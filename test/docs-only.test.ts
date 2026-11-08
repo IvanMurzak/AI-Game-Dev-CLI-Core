@@ -8,6 +8,8 @@ import { changedFiles, isDocsOnly, isDocsPath } from "../.github/scripts/docs-on
 const repoRoot = join(import.meta.dirname, "..");
 const script = join(repoRoot, ".github", "scripts", "docs-only.mjs");
 const PR = { event: "pull_request" };
+// A hook exports GIT_DIR and GIT_INDEX_FILE: inherited, they would point these tests at the real repo.
+for (const name of Object.keys(process.env)) if (name.startsWith("GIT_")) delete process.env[name];
 
 type Git = (...args: string[]) => string;
 
@@ -60,7 +62,8 @@ function withMerge(change: (repo: string, write: (path: string) => void) => void
   });
 }
 
-describe("docs-only gate", () => {
+// Each test spawns about 20 git processes, slow on the Windows runner.
+describe("docs-only gate", { timeout: 30_000 }, () => {
   it("isDocsPath lists docs/ and the root AGENTS.md, nothing else", () => {
     const skip = ["AGENTS.md", "docs/a.md", "docs/deep/image.png"];
     const run = [
