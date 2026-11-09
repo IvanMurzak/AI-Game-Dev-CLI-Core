@@ -17,7 +17,8 @@
  *   README.md, LICENSE  published in the npm package (package.json `files`)
  * CHANGELOG.md does: no CI job reads it. The release train takes this package's version from it
  * (software `.chain/manifest.yml`, `version.source: changelog`) when it generates a lock, and CI
- * under a lock runs in full.
+ * under a lock runs in full. So do the root .claude/ and .agents/ (agent settings and skills): the
+ * ".claude/skills" and ".agents/skills" in src/ are paths in the user's project.
  */
 
 import { execFileSync } from "node:child_process";
@@ -28,7 +29,7 @@ const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8" 
 
 /** @param {string} path repo-relative, forward slashes */
 export function isDocsPath(path) {
-  return path === "AGENTS.md" || path === "CHANGELOG.md" || path.startsWith("docs/");
+  return path === "AGENTS.md" || path === "CHANGELOG.md" || /^(docs|\.claude|\.agents)\//.test(path);
 }
 
 /** @param {readonly string[]} files */
