@@ -64,8 +64,8 @@ function withMerge(change: (repo: string, write: (path: string) => void) => void
 
 // Each test spawns about 20 git processes, slow on the Windows runner.
 describe("docs-only gate", { timeout: 30_000 }, () => {
-  it("isDocsPath lists docs/, the root AGENTS.md and CHANGELOG.md, nothing else", () => {
-    const skip = ["AGENTS.md", "CHANGELOG.md", "docs/a.md", "docs/deep/image.png"];
+  it("isDocsPath lists docs/, .claude/, .agents/, the root AGENTS.md and CHANGELOG.md, nothing else", () => {
+    const skip = ["AGENTS.md", "CHANGELOG.md", "docs/a.md", "docs/deep/image.png", ".claude/settings.json", ".claude/skills/x/SKILL.md", ".agents/skills/x/SKILL.md"];
     const run = [
       "README.md", // published in the npm package
       "LICENSE", // published in the npm package
@@ -84,6 +84,10 @@ describe("docs-only gate", { timeout: 30_000 }, () => {
       "docs",
       "documents/a.md",
       "agents.md",
+      ".claude", // a file, not the folder
+      "cli/.claude/settings.json",
+      ".claude-plugin/plugin.json",
+      ".github/agents/x.agent.md",
     ];
     for (const path of skip) expect(isDocsPath(path), path).toBe(true);
     for (const path of run) expect(isDocsPath(path), path).toBe(false);
