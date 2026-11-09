@@ -28,7 +28,7 @@ const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8" 
 
 /** @param {string} path repo-relative, forward slashes */
 export function isDocsPath(path) {
-  return path === "AGENTS.md" || path === "CHANGELOG.md" || path.startsWith("docs/") || path.startsWith(".claude/") || path.startsWith(".agents/");
+  return path === "AGENTS.md" || path === "CHANGELOG.md" || /^(docs|\.claude|\.agents)\//.test(path);
 }
 
 /** @param {readonly string[]} files */
