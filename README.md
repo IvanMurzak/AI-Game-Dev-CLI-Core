@@ -92,6 +92,21 @@ engine-specific adapters over it. The shared modules land here through the `auth
     a typed `CommitAbortReason` result — never a throw, never a mixed-account or resurrected
     store.
 
+- **Landed (the engine CLIs' command-line contract):**
+  - **exit codes, `--format` and the result envelope** — `ExitCode` / `EXIT_CODES` (0 Success, 1 Error,
+    2 Usage, 6 CommandFailed, 7 Unreachable, 8 TestsFailed, 14 Timeout, 17 Busy, 18 AwaitingInput),
+    `parseFormat` (`text|json|ndjson`, a `UsageError` otherwise), and `CommandOutput`: one envelope
+    `{success, command, data, errors[{code,message}], warnings}` written synchronously to stdout at most
+    once per process, `console.log` on stderr in machine formats, ndjson progress events, and an exit
+    safety net that still writes an envelope when a json/ndjson command exits without one.
+  - **the entry point** — `classifyCliError` (commander parse errors and `UsageError` → exit 2,
+    `--help` / `--version` → 0, anything else → 1) and `writeFailureEnvelope`.
+  - **the `commands` manifest** — `buildCommandManifest`, read from the commander tree.
+  - **the local-server fallback rule** — `decideLocalFallback`: a Cloud-mode command falls back to the
+    project's local server only on a machine that never signed in; a sign-in that cannot be used is
+    refused with `NOT_AUTHENTICATED` (exit 6).
+  - Nothing here exits the process except `exitAfterFlush`, which the CLI calls explicitly.
+
 A small semver utility slice is also exposed. The package has **zero runtime dependencies**.
 
 ## Requirements

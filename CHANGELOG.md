@@ -9,6 +9,48 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
 
 ## Unreleased
 
+### Added — the engine CLIs' command-line contract (minor: 0.9.0)
+
+- **One contract for `unity-mcp-cli`, `unreal-mcp-cli` and `godot-cli`, moved here from their three
+  copies** (new module `cli-contract`): `ExitCode` and `EXIT_CODES` (code, name, description),
+  `exitCodeToken`, `UsageError`; `OUTPUT_FORMATS`, `isMachineFormat`, `parseFormat`, `formatFromArgv`,
+  `commandNameFromArgv`; the envelope (`Envelope`, `renderEnvelope`, `writeEnvelope` — synchronous,
+  once per process) and `CommandOutput` (`progress` / `warn` / `record` / `emit` / `finish`, an exit
+  safety net, `console.log` / `console.info` on stderr in json/ndjson); `exitAfterFlush` / `CommandExit`;
+  the entry-point helpers `classifyCliError` and `writeFailureEnvelope`; and `buildCommandManifest`
+  for `commands --format json`. Library-safe: no side effect at import, `finish` sets
+  `process.exitCode` and only `exitAfterFlush` exits. Differences the three copies had, resolved:
+  - the manifest's `exitCodes[].name` is the `ExitCode` key (`CommandFailed`, as Unreal and Godot
+    printed; Unity printed `COMMAND_FAILED`), with one engine-neutral description per code;
+  - the manifest carries `globalOptions` (Unity), option `choices` (Unreal), leaves hidden commands and
+    options out (Unity), and lists commands in registration order (Godot sorted them);
+  - `parseFormat` trims and lower-cases (Unity) and reports `--format must be one of: …` (Unity's
+    wording); it throws a `UsageError` instead of exiting;
+  - `formatFromArgv` stops at `--`, trims and lower-cases (Unity); a failure envelope names the first
+    argument that is a known command (Unity), else the program name (Unreal, Godot; Unity used `""`);
+  - the envelope is written synchronously, once per process, with the exit safety net (Unity); Unreal and
+    Godot wrote it asynchronously and had no safety net;
+  - a commander error with exit code 0 is informational; every other commander error is a usage error (2).
+- **`decideLocalFallback`** (new module `local-fallback`): the sign-in rule for a Cloud-mode command
+  without its sign-in — `fallback` to the project's local server only when the machine store is
+  `missing`, otherwise `refuse-signed-in` (`NOT_AUTHENTICATED`, exit 6); `use-cloud` when the cloud has
+  what it needs. Plus `machineCredentialStatus` (a store that throws is `unreadable`, never `missing`)
+  and `signedInButUnusableMessage(cli)`.
+- **`killProcessTree`**, exported.
+
+### Fixed — quiet unreadable sign-in, editor children killed with the editor
+
+- **An unreadable or corrupted `credentials.json` no longer prints PowerShell's DPAPI exception.** The
+  codec's stderr is captured instead of inherited, and `readState()` reports one line —
+  `STORED_SIGN_IN_UNREADABLE_REASON`: "the stored ai-game.dev sign-in cannot be read; run login" — for
+  a blob DPAPI refuses and for a document that does not parse. The raw error stays on `cause`. When no
+  PowerShell host can start at all, the reason still names that remedy (`PowerShellHostUnavailableError`).
+- **A forced editor close kills the whole process tree.** `EditorSession`'s `forceKill` (and
+  `terminateProcess(pid, true)`) ran `taskkill /F /PID` on Windows and SIGKILL to the pid on POSIX, so
+  the editor's children (shader compilers, the console wrapper, workers) survived it. It now runs
+  `taskkill /PID <pid> /T /F`, and on POSIX signals the process group the detached editor leads
+  (falling back to the pid alone when it leads none).
+
 ### Changed — a branded page after browser sign-in (patch)
 
 - **The loopback redirect page is restyled and outcome-aware.** After the browser hands the sign-in
@@ -18,6 +60,8 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
   self-contained (inline CSS and SVG, no script or remote asset) and now served with
   `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'`, `Referrer-Policy:
   no-referrer` and `Cache-Control: no-store`. The redirect's error text is never echoed into the page.
+
+## 0.8.0 — 2026-11-05
 
 ### Added — the account-switch question about the surface's own account (minor: 0.8.0)
 

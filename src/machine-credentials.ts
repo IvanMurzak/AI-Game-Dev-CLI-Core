@@ -190,6 +190,26 @@ export const CODEC_ENCRYPT_FAILURE_REASON =
   "%SystemRoot%\\System32\\WindowsPowerShell\\v1.0 to PATH, or set AIGD_DPAPI_POWERSHELL to the " +
   "absolute path of powershell.exe (or pwsh.exe), then sign in again";
 
+/**
+ * The `reason` {@link MachineCredentialStore.readState} reports for a credential file that exists but
+ * cannot be decrypted or parsed (DPAPI refused the blob, a corrupted file, PowerShell blocked or too
+ * slow). One clear, actionable line: the raw codec error (PowerShell's exception text, the command
+ * line) rides only on `cause`, and the codec's stderr is captured, never inherited.
+ */
+export const STORED_SIGN_IN_UNREADABLE_REASON = "the stored ai-game.dev sign-in cannot be read; run login";
+
+/**
+ * Thrown by the DPAPI codec when no PowerShell host could be started at all. Distinct from a codec
+ * failure: signing in again would not help, so the store reports this message (it names the remedy)
+ * instead of {@link STORED_SIGN_IN_UNREADABLE_REASON}.
+ */
+export class PowerShellHostUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PowerShellHostUnavailableError";
+  }
+}
+
 export class MachineCredentialStoreUnwritableError extends Error {
   constructor(reason: string, cause?: unknown) {
     super(`machine credential store unwritable: ${reason}`, cause === undefined ? undefined : { cause });
@@ -431,11 +451,10 @@ export class MachineCredentialStore {
     try {
       plaintext = this._codec.decrypt(raw);
     } catch (err) {
+      // The raw codec error (PowerShell's exception text and command line) stays on `cause`.
       return {
         status: "unreadable",
-        reason:
-          "decrypting the credential file failed (DPAPI unavailable for this user/session, the " +
-          `PowerShell codec is blocked, or the blob is corrupted): ${errorMessage(err)}`,
+        reason: err instanceof PowerShellHostUnavailableError ? err.message : STORED_SIGN_IN_UNREADABLE_REASON,
         cause: err,
       };
     }
@@ -453,11 +472,7 @@ export class MachineCredentialStore {
       // (potential token material), and `reason` is a UI/telemetry surface that also rides
       // MachineCredentialStoreUnreadableError.message. The raw error stays on `cause` for
       // programmatic access only.
-      return {
-        status: "unreadable",
-        reason: "parsing the credential document failed (corrupted content)",
-        cause: err,
-      };
+      return { status: "unreadable", reason: STORED_SIGN_IN_UNREADABLE_REASON, cause: err };
     }
   }
 
@@ -810,6 +825,9 @@ function dpapiTransform(action: "Protect" | "Unprotect", input: Buffer): Buffer 
       stdout = execFileSync(host, args, {
         encoding: "utf-8",
         env,
+        // Capture stderr instead of inheriting it (execFileSync's default): a refused blob would
+        // otherwise print PowerShell's raw exception into the CLI's own stderr.
+        stdio: ["ignore", "pipe", "pipe"],
         timeout: dpapiTimeoutsMs.call,
         windowsHide: true,
       });
@@ -830,7 +848,7 @@ function dpapiTransform(action: "Protect" | "Unprotect", input: Buffer): Buffer 
     return Buffer.from(stdout.trim(), "base64");
   }
 
-  throw new Error(
+  throw new PowerShellHostUnavailableError(
     `no PowerShell host could be started for the DPAPI codec (tried: ${unstartable.join(", ")}). ` +
       "Add %SystemRoot%\\System32\\WindowsPowerShell\\v1.0 to PATH, or set " +
       `${DPAPI_POWERSHELL_HOST_ENV} to the absolute path of powershell.exe (or pwsh.exe).`,

@@ -130,7 +130,7 @@ export interface SessionProcessOps {
   processStart(pid: number): Promise<string | undefined>;
   /** The OS polite-quit request (SIGTERM / `taskkill` without `/F`). */
   requestClose(pid: number): Promise<boolean>;
-  /** Kill outright (SIGKILL / `taskkill /F`). */
+  /** Kill it and its descendants outright (SIGKILL to its process group / `taskkill /T /F`). */
   forceKill(pid: number): Promise<boolean>;
   sleep(ms: number): Promise<void>;
 }

@@ -66,16 +66,41 @@ export async function readProcessStart(pid: number): Promise<string | undefined>
 
 /**
  * Ask `pid` to quit: SIGTERM on POSIX, `taskkill /PID` (WM_CLOSE — never reaches a windowless
- * process) on Windows; with `force`, SIGKILL / `taskkill /F`. Resolves whether the request was
- * delivered (or the process is already gone).
+ * process) on Windows. With `force`, kill it and its descendants outright ({@link killProcessTree}).
+ * Resolves whether the request was delivered (or the process is already gone).
  */
 export async function terminateProcess(pid: number, force: boolean): Promise<boolean> {
+  if (force) return killProcessTree(pid);
   if (!isProcessAlive(pid)) return true;
   try {
     if (isWindows) {
-      await execFileText("taskkill", [...(force ? ["/F"] : []), "/PID", String(pid)], 10_000);
+      await execFileText("taskkill", ["/PID", String(pid)], 10_000);
     } else {
-      process.kill(pid, force ? "SIGKILL" : "SIGTERM");
+      process.kill(pid, "SIGTERM");
+    }
+    return true;
+  } catch {
+    return !isProcessAlive(pid); // it may have exited between the check and the signal
+  }
+}
+
+/**
+ * Kill `pid` and every process it started, outright, so an editor's children (shader compilers, the
+ * console wrapper, workers) do not outlive it: `taskkill /PID <pid> /T /F` on Windows; on POSIX
+ * SIGKILL to the process group `pid` leads ({@link spawnDetached} makes the editor a group leader),
+ * or to `pid` alone when it leads no group. Resolves whether `pid` is gone or the kill was delivered.
+ */
+export async function killProcessTree(pid: number): Promise<boolean> {
+  if (!isProcessAlive(pid)) return true;
+  try {
+    if (isWindows) {
+      await execFileText("taskkill", ["/PID", String(pid), "/T", "/F"], 10_000);
+    } else {
+      try {
+        process.kill(-pid, "SIGKILL");
+      } catch {
+        process.kill(pid, "SIGKILL"); // not a group leader (or a group member is not ours)
+      }
     }
     return true;
   } catch {

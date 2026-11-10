@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   CREDENTIALS_FILE_NAME,
+  STORED_SIGN_IN_UNREADABLE_REASON,
   MachineCredentialStore,
   MachineCredentialStoreUnreadableError,
   adoptToV2,
@@ -298,7 +299,7 @@ describe("structured 'store unreadable' state (04 §1)", () => {
       const state = store.readState();
       expect(state.status).toBe("unreadable");
       if (state.status === "unreadable") {
-        expect(state.reason).toMatch(/decrypt|pars/i);
+        expect(state.reason).toBe(STORED_SIGN_IN_UNREADABLE_REASON);
       }
 
       // The file exists — and that must never be read as signed-in — and is byte-for-byte intact.
