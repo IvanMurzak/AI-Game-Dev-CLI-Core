@@ -67,6 +67,8 @@ export {
   MachineCredentialStoreUnreadableError,
   MachineCredentialStoreUnwritableError,
   CODEC_ENCRYPT_FAILURE_REASON,
+  STORED_SIGN_IN_UNREADABLE_REASON,
+  STORED_SIGN_IN_READ_TIMEOUT_REASON,
   DPAPI_POWERSHELL_HOST_ENV,
   powerShellHostCandidates,
   resetPowerShellHostCache,
@@ -364,7 +366,7 @@ export {
   DEFAULT_SESSION_STARTUP_LOCK_WAIT_MS,
   DEFAULT_SESSION_FOREIGN_RECHECK_MS,
 } from "./editor-session.js";
-export { isProcessAlive, readProcessStart } from "./process.js";
+export { isProcessAlive, readProcessStart, killProcessTree } from "./process.js";
 export { probeMcpServer, mcpReadinessProbe, MCP_PING_PATH } from "./mcp-ping.js";
 export type { McpProbeResult } from "./mcp-ping.js";
 export type {
@@ -500,3 +502,51 @@ export type { ZipEntry } from "./unzip.js";
 export { renderTable, truncate } from "./ui.js";
 export { emitProgress } from "./progress.js";
 export type { ProgressEvent, ProgressCallback } from "./progress.js";
+
+// ── the engine CLIs' command-line contract (exit codes, --format, envelope, manifest) ────────────
+export {
+  ExitCode,
+  EXIT_CODES,
+  UsageError,
+  OUTPUT_FORMATS,
+  FORMAT_OPTION_DESCRIPTION,
+  isMachineFormat,
+  parseFormat,
+  formatFromArgv,
+  renderEnvelope,
+  writeEnvelope,
+  CommandOutput,
+  activeCommandOutput,
+  CommandExit,
+  exitAfterFlush,
+  classifyCliError,
+  writeFailureEnvelope,
+  buildCommandManifest,
+} from "./cli-contract.js";
+export type {
+  ExitCodeName,
+  ExitCodeValue,
+  ExitCodeInfo,
+  OutputFormat,
+  MachineFormat,
+  EnvelopeError,
+  Envelope,
+  CommandOutputOptions,
+  CliProgramLike,
+  CliFailure,
+  ManifestOptionSource,
+  ManifestArgumentSource,
+  ManifestCommandSource,
+  ManifestArgument,
+  ManifestOption,
+  ManifestCommand,
+  CommandManifest,
+} from "./cli-contract.js";
+
+// ── the local-server fallback rule for Cloud-mode projects ──────────────────────────────────────
+export {
+  decideLocalFallback,
+  machineCredentialStatus,
+  signedInButUnusableMessage,
+} from "./local-fallback.js";
+export type { CredentialStatus, LocalFallbackDecision } from "./local-fallback.js";

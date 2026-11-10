@@ -66,17 +66,45 @@ export async function readProcessStart(pid: number): Promise<string | undefined>
 
 /**
  * Ask `pid` to quit: SIGTERM on POSIX, `taskkill /PID` (WM_CLOSE — never reaches a windowless
- * process) on Windows; with `force`, SIGKILL / `taskkill /F`. Resolves whether the request was
- * delivered (or the process is already gone).
+ * process) on Windows. Resolves whether the request was delivered (or the process is already gone).
  */
-export async function terminateProcess(pid: number, force: boolean): Promise<boolean> {
+export function terminateProcess(pid: number): Promise<boolean> {
+  return deliver(pid, async () => {
+    if (isWindows) await execFileText("taskkill", ["/PID", String(pid)], 10_000);
+    else process.kill(pid, "SIGTERM");
+  });
+}
+
+/**
+ * Kill `pid` and every process it started, outright, so an editor's children (shader compilers, the
+ * console wrapper, workers) do not outlive it: `taskkill /PID <pid> /T /F` on Windows; on POSIX
+ * SIGKILL to the process group `pid` leads ({@link spawnDetached} makes the editor a group leader),
+ * or to `pid` alone when it leads no group. Resolves whether `pid` is gone or the kill was delivered.
+ */
+export function killProcessTree(pid: number): Promise<boolean> {
+  return deliver(pid, async () => {
+    if (isWindows) {
+      await execFileText("taskkill", ["/PID", String(pid), "/T", "/F"], 10_000);
+      return;
+    }
+    // Never signal group 1 (`kill(-1)` reaches every process we may signal) or our own process.
+    if (pid > 1 && pid !== process.pid) {
+      try {
+        process.kill(-pid, "SIGKILL");
+        return;
+      } catch {
+        // not a group leader (or no group member is ours): kill the pid alone
+      }
+    }
+    process.kill(pid, "SIGKILL");
+  });
+}
+
+/** Run `signal` against a live `pid`; true when it was delivered or the process is gone. */
+async function deliver(pid: number, signal: () => Promise<void>): Promise<boolean> {
   if (!isProcessAlive(pid)) return true;
   try {
-    if (isWindows) {
-      await execFileText("taskkill", [...(force ? ["/F"] : []), "/PID", String(pid)], 10_000);
-    } else {
-      process.kill(pid, force ? "SIGKILL" : "SIGTERM");
-    }
+    await signal();
     return true;
   } catch {
     return !isProcessAlive(pid); // it may have exited between the check and the signal

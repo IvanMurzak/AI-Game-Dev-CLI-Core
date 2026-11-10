@@ -7,7 +7,7 @@ import { isErrno, writeFileAtomicSync } from "./atomic-file.js";
 import { ACQUIRE_BUDGET, CredentialLockBusyError, MachineCredentialLock, takeoverFileName } from "./credential-lock.js";
 import type { EditorLaunchSpec, EditorSessionMode, EngineAdapter, EngineId } from "./engine-adapter.js";
 import { errorMessage } from "./network-error.js";
-import { isProcessAlive, readProcessStart, sleep, spawnDetached, terminateProcess } from "./process.js";
+import { isProcessAlive, killProcessTree, readProcessStart, sleep, spawnDetached, terminateProcess } from "./process.js";
 
 /**
  * Editor sessions for CLI commands that need a running editor (`exec`, `open --headless`,
@@ -130,7 +130,7 @@ export interface SessionProcessOps {
   processStart(pid: number): Promise<string | undefined>;
   /** The OS polite-quit request (SIGTERM / `taskkill` without `/F`). */
   requestClose(pid: number): Promise<boolean>;
-  /** Kill outright (SIGKILL / `taskkill /F`). */
+  /** Kill it and its descendants outright (SIGKILL to its process group / `taskkill /T /F`). */
   forceKill(pid: number): Promise<boolean>;
   sleep(ms: number): Promise<void>;
 }
@@ -867,8 +867,8 @@ export const defaultSessionProcessOps: SessionProcessOps = {
   spawnDetached,
   isAlive: isProcessAlive,
   processStart: readProcessStart,
-  requestClose: (pid) => terminateProcess(pid, false),
-  forceKill: (pid) => terminateProcess(pid, true),
+  requestClose: terminateProcess,
+  forceKill: killProcessTree,
   sleep,
 };
 
