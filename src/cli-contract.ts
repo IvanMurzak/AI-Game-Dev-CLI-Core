@@ -1,5 +1,8 @@
 import * as fs from "node:fs";
 
+import { isErrno } from "./atomic-file.js";
+import { errorMessage } from "./network-error.js";
+
 /**
  * The command-line contract shared by `unity-mcp-cli`, `unreal-mcp-cli` and `godot-cli`, so a
  * script or an agent reads every engine CLI the same way:
@@ -19,23 +22,16 @@ import * as fs from "node:fs";
 
 // ── exit codes ──────────────────────────────────────────────────────────────────────────────────
 
+/** The process exit codes; what each one means is in {@link EXIT_CODES}. */
 export const ExitCode = {
   Success: 0,
-  /** Unclassified error. */
   Error: 1,
-  /** Bad arguments: a misspelled flag, a wrong value. Nothing ran; fix the command line. */
   Usage: 2,
-  /** The command ran and failed: a tool error, compile errors, a test run without a verdict. */
   CommandFailed: 6,
-  /** The editor or its MCP server could not be started or reached. */
   Unreachable: 7,
-  /** The test run completed and reported failing tests. */
   TestsFailed: 8,
-  /** The command hit its timeout before a result. */
   Timeout: 14,
-  /** The editor or server is busy (HTTP 503) and did not run the call. */
   Busy: 17,
-  /** The editor is blocked by a modal dialog that waits for a human. */
   AwaitingInput: 18,
 } as const;
 
@@ -164,11 +160,6 @@ export function renderEnvelope(envelope: Envelope, format: MachineFormat): strin
 
 let stdoutEnvelopeWritten = false;
 
-/** Whether an envelope already went to stdout in this process. */
-export function isEnvelopeWritten(): boolean {
-  return stdoutEnvelopeWritten;
-}
-
 /**
  * Write the envelope to stdout synchronously, at most once per process (a later call is a no-op and
  * returns false). Synchronous because `process.stdout.write` to a pipe is asynchronous on macOS: a
@@ -188,10 +179,13 @@ function writeAllSync(fd: number, text: string): void {
     try {
       offset += fs.writeSync(fd, buffer, offset);
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EAGAIN") throw err;
+      if (!isErrno(err, "EAGAIN")) throw err;
+      Atomics.wait(pauseCell, 0, 0, 1); // a non-blocking pipe is full: let the reader drain it
     }
   }
 }
+
+const pauseCell = new Int32Array(new SharedArrayBuffer(4));
 
 /** @internal Reset the once-per-process envelope state — for this package's own tests only. */
 export function resetEnvelopeStateForTests(): void {
@@ -224,16 +218,17 @@ function onProcessExit(code: number): void {
   const output = active;
   if (!output?.machine || !output.writesProcessStdout || stdoutEnvelopeWritten) return;
   // A path that exited without an envelope (a shared validator, an unexpected error): stdout still gets one.
-  const errors = output.errors.length > 0 || code === ExitCode.Success
-    ? output.errors
-    : [{ code: exitCodeToken(code), message: "The command failed before it produced a result; see stderr for details." }];
-  writeEnvelope({ success: code === ExitCode.Success, command: output.command, data: null, errors, warnings: output.warnings }, output.format as MachineFormat);
+  if (output.errors.length === 0 && code !== ExitCode.Success) {
+    output.record(exitCodeToken(code), "The command failed before it produced a result; see stderr for details.");
+  }
+  output.emit(code);
 }
 
 /**
  * Collects one command run's errors and warnings and prints its envelope in json / ndjson; in text
  * the command prints its own result. In a machine format with the default writer, `console.log` and
- * `console.info` go to stderr, so stdout carries the envelope and nothing else.
+ * `console.info` go to stderr for the rest of the process (constructing one is the CLI's choice of
+ * format), so stdout carries the envelope and nothing else.
  *
  * It never exits the process: {@link finish} sets `process.exitCode`; a CLI that wants to stop at
  * once calls `process.exit` or {@link exitAfterFlush} itself. Engine CLIs subclass it to add their
@@ -242,8 +237,6 @@ function onProcessExit(code: number): void {
 export class CommandOutput<C extends string = string> {
   readonly warnings: string[] = [];
   readonly errors: EnvelopeError<C>[] = [];
-  /** True when the envelope goes to the process stdout (no custom writer). */
-  readonly writesProcessStdout: boolean;
   private readonly _stdout: ((text: string) => void) | undefined;
   private readonly _stderr: (text: string) => void;
 
@@ -254,7 +247,6 @@ export class CommandOutput<C extends string = string> {
   ) {
     this._stdout = options.stdout;
     this._stderr = options.stderr ?? ((text) => void process.stderr.write(text));
-    this.writesProcessStdout = options.stdout === undefined;
     active = this as CommandOutput<string>;
     if (this.machine && this.writesProcessStdout) {
       if (!safetyNetArmed) {
@@ -269,6 +261,11 @@ export class CommandOutput<C extends string = string> {
   /** json / ndjson: stdout is reserved for the envelope. */
   get machine(): boolean {
     return isMachineFormat(this.format);
+  }
+
+  /** True when the envelope goes to the process stdout (no custom writer). */
+  get writesProcessStdout(): boolean {
+    return this._stdout === undefined;
   }
 
   /** A progress line: a `{"type":"progress"}` event on stderr in ndjson; nothing in json or text. */
@@ -296,7 +293,7 @@ export class CommandOutput<C extends string = string> {
     const envelope: Envelope<unknown, C> = {
       success: exitCode === ExitCode.Success,
       command: this.command,
-      data: data ?? null,
+      data,
       errors: this.errors,
       warnings: this.warnings,
     };
@@ -390,7 +387,7 @@ export function classifyCliError(err: unknown): CliFailure {
   if (err instanceof UsageError) {
     return { exitCode: ExitCode.Usage, code: "USAGE", message: err.message, informational: false, printed: false };
   }
-  const message = (err instanceof Error ? err.message : "") || String(err);
+  const message = errorMessage(err) || String(err);
   return { exitCode: ExitCode.Error, code: "ERROR", message, informational: false, printed: false };
 }
 

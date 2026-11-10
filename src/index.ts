@@ -68,7 +68,6 @@ export {
   MachineCredentialStoreUnwritableError,
   CODEC_ENCRYPT_FAILURE_REASON,
   STORED_SIGN_IN_UNREADABLE_REASON,
-  PowerShellHostUnavailableError,
   DPAPI_POWERSHELL_HOST_ENV,
   powerShellHostCandidates,
   resetPowerShellHostCache,
@@ -507,17 +506,14 @@ export type { ProgressEvent, ProgressCallback } from "./progress.js";
 export {
   ExitCode,
   EXIT_CODES,
-  exitCodeToken,
   UsageError,
   OUTPUT_FORMATS,
   FORMAT_OPTION_DESCRIPTION,
   isMachineFormat,
   parseFormat,
   formatFromArgv,
-  commandNameFromArgv,
   renderEnvelope,
   writeEnvelope,
-  isEnvelopeWritten,
   CommandOutput,
   activeCommandOutput,
   CommandExit,
@@ -551,6 +547,5 @@ export {
   decideLocalFallback,
   machineCredentialStatus,
   signedInButUnusableMessage,
-  NOT_AUTHENTICATED,
 } from "./local-fallback.js";
 export type { CredentialStatus, LocalFallbackDecision } from "./local-fallback.js";

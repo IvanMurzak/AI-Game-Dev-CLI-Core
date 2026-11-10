@@ -6,11 +6,10 @@
 import { MachineCredentialStore, MachineCredentialStoreUnreadableError } from "../../dist/index.js";
 
 const store = new MachineCredentialStore();
-const state = store.readState();
-let readError;
+let result;
 try {
-  store.read();
+  result = { status: store.read() === null ? "missing" : "ok" };
 } catch (err) {
-  readError = err instanceof MachineCredentialStoreUnreadableError ? err.message : `unexpected: ${err}`;
+  result = { status: "unreadable", readError: err instanceof MachineCredentialStoreUnreadableError ? err.message : `unexpected: ${err}` };
 }
-process.stdout.write(JSON.stringify({ path: store.credentialsPath, status: state.status, reason: state.reason, readError }) + "\n");
+process.stdout.write(JSON.stringify({ path: store.credentialsPath, ...result }) + "\n");

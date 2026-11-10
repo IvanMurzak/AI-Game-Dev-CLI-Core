@@ -3,7 +3,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { isProcessAlive, killProcessTree, spawnDetached, terminateProcess } from "../src/process.js";
+import { defaultSessionProcessOps } from "../src/editor-session.js";
+import { isProcessAlive, killProcessTree, sleep, spawnDetached } from "../src/process.js";
 import { fixtures } from "./dist-build.js";
 
 /**
@@ -29,7 +30,7 @@ afterEach(() => {
 async function waitFor(predicate: () => boolean, timeoutMs: number): Promise<boolean> {
   for (const deadline = Date.now() + timeoutMs; Date.now() < deadline; ) {
     if (predicate()) return true;
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await sleep(50);
   }
   return predicate();
 }
@@ -59,9 +60,9 @@ describe("killProcessTree", () => {
     expect(await waitFor(() => !isProcessAlive(child), 10_000)).toBe(true);
   });
 
-  it("terminateProcess(force), the session's forceKill, is the tree kill", { timeout: 60_000 }, async () => {
+  it("the session's forceKill is the tree kill", { timeout: 60_000 }, async () => {
     const { parent, child } = await startEditorWithChild();
-    expect(await terminateProcess(parent, true)).toBe(true);
+    expect(await defaultSessionProcessOps.forceKill(parent)).toBe(true);
     expect(await waitFor(() => !isProcessAlive(parent), 10_000)).toBe(true);
     expect(await waitFor(() => !isProcessAlive(child), 10_000)).toBe(true);
   });

@@ -66,22 +66,13 @@ export async function readProcessStart(pid: number): Promise<string | undefined>
 
 /**
  * Ask `pid` to quit: SIGTERM on POSIX, `taskkill /PID` (WM_CLOSE — never reaches a windowless
- * process) on Windows. With `force`, kill it and its descendants outright ({@link killProcessTree}).
- * Resolves whether the request was delivered (or the process is already gone).
+ * process) on Windows. Resolves whether the request was delivered (or the process is already gone).
  */
-export async function terminateProcess(pid: number, force: boolean): Promise<boolean> {
-  if (force) return killProcessTree(pid);
-  if (!isProcessAlive(pid)) return true;
-  try {
-    if (isWindows) {
-      await execFileText("taskkill", ["/PID", String(pid)], 10_000);
-    } else {
-      process.kill(pid, "SIGTERM");
-    }
-    return true;
-  } catch {
-    return !isProcessAlive(pid); // it may have exited between the check and the signal
-  }
+export function terminateProcess(pid: number): Promise<boolean> {
+  return deliver(pid, async () => {
+    if (isWindows) await execFileText("taskkill", ["/PID", String(pid)], 10_000);
+    else process.kill(pid, "SIGTERM");
+  });
 }
 
 /**
@@ -90,18 +81,25 @@ export async function terminateProcess(pid: number, force: boolean): Promise<boo
  * SIGKILL to the process group `pid` leads ({@link spawnDetached} makes the editor a group leader),
  * or to `pid` alone when it leads no group. Resolves whether `pid` is gone or the kill was delivered.
  */
-export async function killProcessTree(pid: number): Promise<boolean> {
-  if (!isProcessAlive(pid)) return true;
-  try {
+export function killProcessTree(pid: number): Promise<boolean> {
+  return deliver(pid, async () => {
     if (isWindows) {
       await execFileText("taskkill", ["/PID", String(pid), "/T", "/F"], 10_000);
-    } else {
-      try {
-        process.kill(-pid, "SIGKILL");
-      } catch {
-        process.kill(pid, "SIGKILL"); // not a group leader (or a group member is not ours)
-      }
+      return;
     }
+    try {
+      process.kill(-pid, "SIGKILL");
+    } catch {
+      process.kill(pid, "SIGKILL"); // not a group leader (or a group member is not ours)
+    }
+  });
+}
+
+/** Run `signal` against a live `pid`; true when it was delivered or the process is gone. */
+async function deliver(pid: number, signal: () => Promise<void>): Promise<boolean> {
+  if (!isProcessAlive(pid)) return true;
+  try {
+    await signal();
     return true;
   } catch {
     return !isProcessAlive(pid); // it may have exited between the check and the signal

@@ -17,10 +17,10 @@ export type CredentialStatus = MachineCredentialStoreState["status"];
  */
 export type LocalFallbackDecision = "use-cloud" | "fallback" | "refuse-signed-in";
 
-/** The envelope error token and exit code of a `refuse-signed-in` decision. */
-export const NOT_AUTHENTICATED = { code: "NOT_AUTHENTICATED", exitCode: 6 } as const;
-
-/** The machine store's status; a store that cannot even be opened counts as `unreadable`, never `missing`. */
+/**
+ * The machine store's status; a store that cannot even be opened counts as `unreadable`, never `missing`.
+ * It reads (and on Windows decrypts) the store: a caller that already read it passes that status instead.
+ */
 export function machineCredentialStatus(store?: MachineCredentialStore): CredentialStatus {
   try {
     return (store ?? new MachineCredentialStore()).readState().status;

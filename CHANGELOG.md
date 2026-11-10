@@ -13,8 +13,7 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
 
 - **One contract for `unity-mcp-cli`, `unreal-mcp-cli` and `godot-cli`, moved here from their three
   copies** (new module `cli-contract`): `ExitCode` and `EXIT_CODES` (code, name, description),
-  `exitCodeToken`, `UsageError`; `OUTPUT_FORMATS`, `isMachineFormat`, `parseFormat`, `formatFromArgv`,
-  `commandNameFromArgv`; the envelope (`Envelope`, `renderEnvelope`, `writeEnvelope` — synchronous,
+  `UsageError`; `OUTPUT_FORMATS`, `isMachineFormat`, `parseFormat`, `formatFromArgv`; the envelope (`Envelope`, `renderEnvelope`, `writeEnvelope` — synchronous,
   once per process) and `CommandOutput` (`progress` / `warn` / `record` / `emit` / `finish`, an exit
   safety net, `console.log` / `console.info` on stderr in json/ndjson); `exitAfterFlush` / `CommandExit`;
   the entry-point helpers `classifyCliError` and `writeFailureEnvelope`; and `buildCommandManifest`
@@ -44,9 +43,9 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
   codec's stderr is captured instead of inherited, and `readState()` reports one line —
   `STORED_SIGN_IN_UNREADABLE_REASON`: "the stored ai-game.dev sign-in cannot be read; run login" — for
   a blob DPAPI refuses and for a document that does not parse. The raw error stays on `cause`. When no
-  PowerShell host can start at all, the reason still names that remedy (`PowerShellHostUnavailableError`).
+  PowerShell host can start at all, the reason still names that remedy.
 - **A forced editor close kills the whole process tree.** `EditorSession`'s `forceKill` (and
-  `terminateProcess(pid, true)`) ran `taskkill /F /PID` on Windows and SIGKILL to the pid on POSIX, so
+  the internal `terminateProcess(pid, true)`) ran `taskkill /F /PID` on Windows and SIGKILL to the pid on POSIX, so
   the editor's children (shader compilers, the console wrapper, workers) survived it. It now runs
   `taskkill /PID <pid> /T /F`, and on POSIX signals the process group the detached editor leads
   (falling back to the pid alone when it leads none).

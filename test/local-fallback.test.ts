@@ -4,7 +4,6 @@ import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
-  NOT_AUTHENTICATED,
   decideLocalFallback,
   machineCredentialStatus,
   signedInButUnusableMessage,
@@ -39,8 +38,7 @@ describe("decideLocalFallback", () => {
     expect(decideLocalFallback({ cloudSignInMissing: true, credentialStatus: "unreadable" })).toBe("refuse-signed-in");
   });
 
-  it("the refusal is NOT_AUTHENTICATED, exit 6, naming the CLI's login", () => {
-    expect(NOT_AUTHENTICATED).toEqual({ code: "NOT_AUTHENTICATED", exitCode: 6 });
+  it("the refusal message names the CLI's login", () => {
     expect(signedInButUnusableMessage("godot-cli")).toContain("Run `godot-cli login`");
   });
 });

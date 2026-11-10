@@ -1,12 +1,10 @@
 import { spawnSync } from "node:child_process";
 import * as path from "node:path";
-import { beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
-import { ensureDistBuilt, fixtures } from "./dist-build.js";
+import { fixtures } from "./dist-build.js";
 
 /** Real processes: the envelope must reach a pipe whole, once, even when the command exits at once. */
-
-beforeAll(ensureDistBuilt, 180_000);
 
 function run(scenario: string, format: string): { stdout: string; stderr: string; status: number | null } {
   const r = spawnSync(process.execPath, [path.join(fixtures, "contract-runner.mjs"), scenario, format], {
