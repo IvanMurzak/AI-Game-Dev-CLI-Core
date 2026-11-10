@@ -25,10 +25,14 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
     options out (Unity), and lists commands in registration order (Godot sorted them);
   - `parseFormat` trims and lower-cases (Unity) and reports `--format must be one of: …` (Unity's
     wording); it throws a `UsageError` instead of exiting;
-  - `formatFromArgv` stops at `--`, trims and lower-cases (Unity); a failure envelope names the first
-    argument that is a known command (Unity), else the program name (Unreal, Godot; Unity used `""`);
+  - `formatFromArgv` stops at `--`, trims and lower-cases (Unity), and the last `--format` wins (as in
+    commander; all three took the first); a failure envelope names the first argument that is a known
+    command (Unity), else the program name (Unreal, Godot; Unity used `""`); an error that reaches the
+    entry point while a json/ndjson command runs goes through that command's output (its name, warnings);
   - the envelope is written synchronously, once per process, with the exit safety net (Unity); Unreal and
-    Godot wrote it asynchronously and had no safety net;
+    Godot wrote it asynchronously and had no safety net; a Windows console still gets it through
+    `process.stdout.write` (UTF-8 converted for the console); `console.debug` / `console.dir` also go
+    to stderr in json/ndjson;
   - a commander error with exit code 0 is informational; every other commander error is a usage error (2).
 - **`decideLocalFallback`** (new module `local-fallback`): the sign-in rule for a Cloud-mode command
   without its sign-in — `fallback` to the project's local server only when the machine store is
@@ -42,13 +46,14 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
 - **An unreadable or corrupted `credentials.json` no longer prints PowerShell's DPAPI exception.** The
   codec's stderr is captured instead of inherited, and `readState()` reports one line —
   `STORED_SIGN_IN_UNREADABLE_REASON`: "the stored ai-game.dev sign-in cannot be read; run login" — for
-  a blob DPAPI refuses and for a document that does not parse. The raw error stays on `cause`. When no
+  a blob DPAPI refuses and for a document that does not parse; a PowerShell that did not answer in time
+  reports `STORED_SIGN_IN_READ_TIMEOUT_REASON` (retry). The raw error stays on `cause`. When no
   PowerShell host can start at all, the reason still names that remedy.
 - **A forced editor close kills the whole process tree.** `EditorSession`'s `forceKill` (and
   the internal `terminateProcess(pid, true)`) ran `taskkill /F /PID` on Windows and SIGKILL to the pid on POSIX, so
   the editor's children (shader compilers, the console wrapper, workers) survived it. It now runs
   `taskkill /PID <pid> /T /F`, and on POSIX signals the process group the detached editor leads
-  (falling back to the pid alone when it leads none).
+  (falling back to the pid alone when it leads none; never group 1 or this process).
 
 ### Changed — a branded page after browser sign-in (patch)
 

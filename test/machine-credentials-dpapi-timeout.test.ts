@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   DPAPI_POWERSHELL_HOST_ENV,
+  STORED_SIGN_IN_READ_TIMEOUT_REASON,
   MachineCredentialStore,
   MachineCredentialStoreUnwritableError,
   commitAgentLogin,
@@ -160,7 +161,10 @@ describe.skipIf(isWindows)("DPAPI codec cold start (GlitchTip #1260)", { timeout
     const store = new MachineCredentialStore(freshDir(), dpapiCredentialCodec);
     fs.writeFileSync(store.credentialsPath, Buffer.from("not-really-a-dpapi-blob"));
 
-    expect(store.readState().status).toBe("unreadable");
+    const state = store.readState();
+    expect(state.status).toBe("unreadable");
+    // A timeout is transient: the reason says retry, not login.
+    if (state.status === "unreadable") expect(state.reason).toBe(STORED_SIGN_IN_READ_TIMEOUT_REASON);
     expect(calls(dir)).toBe(1);
   });
 });

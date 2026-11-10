@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import { inspect } from "node:util";
 
 import { isErrno } from "./atomic-file.js";
 import { errorMessage } from "./network-error.js";
@@ -116,16 +117,18 @@ export function parseFormat<F extends string = never>(raw: string | undefined, e
 
 /**
  * The `--format` named on a raw argv (`--format json` / `--format=json`, trimmed and lower-cased),
- * up to a `--`; lets the entry point answer a failure no command handled with an envelope.
+ * up to a `--`; the last one wins, as in commander. Lets the entry point answer a failure no
+ * command handled with an envelope.
  */
 export function formatFromArgv(argv: readonly string[]): string | undefined {
+  let format: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === "--") break;
     const value = arg === "--format" ? argv[i + 1] : arg.startsWith("--format=") ? arg.slice("--format=".length) : undefined;
-    if (value !== undefined) return value.trim().toLowerCase();
+    if (value !== undefined) format = value.trim().toLowerCase();
   }
-  return undefined;
+  return format;
 }
 
 /** The first argument before a `--` that names one of `commandNames`. */
@@ -163,12 +166,16 @@ let stdoutEnvelopeWritten = false;
 /**
  * Write the envelope to stdout synchronously, at most once per process (a later call is a no-op and
  * returns false). Synchronous because `process.stdout.write` to a pipe is asynchronous on macOS: a
- * `process.exit` right after it could cut the JSON short.
+ * `process.exit` right after it could cut the JSON short. A Windows console gets it through
+ * `process.stdout.write`, which converts UTF-8 for the console (raw bytes would print non-ASCII
+ * text in the console's code page); that write is synchronous.
  */
 export function writeEnvelope(envelope: Envelope, format: MachineFormat): boolean {
   if (stdoutEnvelopeWritten) return false;
   stdoutEnvelopeWritten = true;
-  writeAllSync(1, renderEnvelope(envelope, format));
+  const text = renderEnvelope(envelope, format);
+  if (process.platform === "win32" && process.stdout.isTTY) process.stdout.write(text);
+  else writeAllSync(1, text);
   return true;
 }
 
@@ -255,6 +262,8 @@ export class CommandOutput<C extends string = string> {
       }
       console.log = console.error;
       console.info = console.error;
+      console.debug = console.error;
+      console.dir = (item: unknown, options?: object) => console.error(inspect(item, options));
     }
   }
 
@@ -387,19 +396,34 @@ export function classifyCliError(err: unknown): CliFailure {
   if (err instanceof UsageError) {
     return { exitCode: ExitCode.Usage, code: "USAGE", message: err.message, informational: false, printed: false };
   }
-  const message = errorMessage(err) || String(err);
+  const message = describeThrown(err);
   return { exitCode: ExitCode.Error, code: "ERROR", message, informational: false, printed: false };
 }
 
+/** The message of anything thrown; never throws itself (e.g. for a null-prototype object). */
+function describeThrown(err: unknown): string {
+  try {
+    return errorMessage(err) || String(err);
+  } catch {
+    return Object.prototype.toString.call(err);
+  }
+}
+
 /**
- * When `argv` asks for json / ndjson and no envelope went out yet, write a failure envelope naming
- * the command found on `argv` (else the program). Returns whether one was written.
+ * When no envelope went out yet, write a failure envelope: through the running command's output
+ * when one runs in json / ndjson (keeping its name and warnings), else when `argv` asks for json /
+ * ndjson, naming the command found on `argv` (else the program). Returns whether one was written.
  */
 export function writeFailureEnvelope(
   program: CliProgramLike,
-  failure: { code: string; message: string },
+  failure: { code: string; message: string; exitCode?: number },
   argv: readonly string[] = process.argv.slice(2),
 ): boolean {
+  if (stdoutEnvelopeWritten) return false;
+  if (active?.machine && active.writesProcessStdout) {
+    active.record(failure.code, failure.message);
+    return active.emit(failure.exitCode ?? ExitCode.Error);
+  }
   const format = formatFromArgv(argv);
   if (!isMachineFormat(format)) return false;
   const command = commandNameFromArgv(argv, program.commands.map((c) => c.name())) ?? program.name();

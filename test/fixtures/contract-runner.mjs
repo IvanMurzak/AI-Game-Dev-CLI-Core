@@ -3,7 +3,7 @@
 //
 // Usage: node contract-runner.mjs <scenario> <format>
 
-import { CommandOutput, ExitCode, exitAfterFlush, CommandExit } from "../../dist/index.js";
+import { CommandOutput, ExitCode, exitAfterFlush, CommandExit, writeFailureEnvelope } from "../../dist/index.js";
 
 const [scenario, format] = process.argv.slice(2);
 const out = new CommandOutput("demo", format);
@@ -12,6 +12,8 @@ switch (scenario) {
   // A shared validator exits on its own: the safety net still leaves one envelope on stdout.
   case "exit-without-envelope":
     console.log("a log line that must not reach stdout");
+    console.debug("a debug line");
+    console.dir({ dir: true });
     process.exit(ExitCode.CommandFailed);
     break;
   // The command emits, then exits at once: exactly one envelope, never cut short.
@@ -35,6 +37,12 @@ switch (scenario) {
     } catch (err) {
       if (!(err instanceof CommandExit)) throw err;
     }
+    break;
+  // An error no command handled, after the command started: its envelope keeps the command's name and warnings.
+  case "entry-failure-with-active":
+    out.warn("w");
+    writeFailureEnvelope({ name: () => "demo-cli", commands: [] }, { code: "USAGE", message: "bad flag", exitCode: ExitCode.Usage });
+    process.exit(ExitCode.Usage);
     break;
   default:
     throw new Error(`unknown scenario ${scenario}`);

@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { writeFileAtomicSync } from "./atomic-file.js";
+import { isErrno, writeFileAtomicSync } from "./atomic-file.js";
 import { errorMessage } from "./network-error.js";
 
 /**
@@ -197,6 +197,10 @@ export const CODEC_ENCRYPT_FAILURE_REASON =
  * line) rides only on `cause`, and the codec's stderr is captured, never inherited.
  */
 export const STORED_SIGN_IN_UNREADABLE_REASON = "the stored ai-game.dev sign-in cannot be read; run login";
+
+/** The `readState` reason when PowerShell did not finish the decrypt in time: transient, so retry, not login. */
+export const STORED_SIGN_IN_READ_TIMEOUT_REASON =
+  "the stored ai-game.dev sign-in could not be read in time (PowerShell did not answer); retry";
 
 /**
  * Thrown by the DPAPI codec when no PowerShell host could be started at all. Distinct from a codec
@@ -454,7 +458,12 @@ export class MachineCredentialStore {
       // The raw codec error (PowerShell's exception text and command line) stays on `cause`.
       return {
         status: "unreadable",
-        reason: err instanceof PowerShellHostUnavailableError ? err.message : STORED_SIGN_IN_UNREADABLE_REASON,
+        reason:
+          err instanceof PowerShellHostUnavailableError
+            ? err.message
+            : isErrno(err, "ETIMEDOUT")
+              ? STORED_SIGN_IN_READ_TIMEOUT_REASON
+              : STORED_SIGN_IN_UNREADABLE_REASON,
         cause: err,
       };
     }

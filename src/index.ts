@@ -68,6 +68,7 @@ export {
   MachineCredentialStoreUnwritableError,
   CODEC_ENCRYPT_FAILURE_REASON,
   STORED_SIGN_IN_UNREADABLE_REASON,
+  STORED_SIGN_IN_READ_TIMEOUT_REASON,
   DPAPI_POWERSHELL_HOST_ENV,
   powerShellHostCandidates,
   resetPowerShellHostCache,

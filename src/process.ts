@@ -87,11 +87,16 @@ export function killProcessTree(pid: number): Promise<boolean> {
       await execFileText("taskkill", ["/PID", String(pid), "/T", "/F"], 10_000);
       return;
     }
-    try {
-      process.kill(-pid, "SIGKILL");
-    } catch {
-      process.kill(pid, "SIGKILL"); // not a group leader (or a group member is not ours)
+    // Never signal group 1 (`kill(-1)` reaches every process we may signal) or our own process.
+    if (pid > 1 && pid !== process.pid) {
+      try {
+        process.kill(-pid, "SIGKILL");
+        return;
+      } catch {
+        // not a group leader (or no group member is ours): kill the pid alone
+      }
     }
+    process.kill(pid, "SIGKILL");
   });
 }
 

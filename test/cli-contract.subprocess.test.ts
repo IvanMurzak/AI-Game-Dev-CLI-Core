@@ -27,6 +27,20 @@ describe("the envelope safety net", () => {
       warnings: [],
     });
     expect(r.stderr).toContain("a log line that must not reach stdout");
+    expect(r.stderr).toContain("a debug line");
+    expect(r.stderr).toContain("dir: true");
+  });
+
+  it("a failure at the entry point goes through the running command's output", () => {
+    const r = run("entry-failure-with-active", "json");
+    expect(r.status).toBe(2);
+    expect(JSON.parse(r.stdout)).toEqual({
+      success: false,
+      command: "demo",
+      data: null,
+      errors: [{ code: "USAGE", message: "bad flag" }],
+      warnings: ["w"],
+    });
   });
 
   it("text mode gets no envelope", () => {

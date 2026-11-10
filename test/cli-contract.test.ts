@@ -71,6 +71,7 @@ describe("formats", () => {
     expect(formatFromArgv(["status", "--format=NDJSON"])).toBe("ndjson");
     expect(formatFromArgv(["status"])).toBeUndefined();
     expect(formatFromArgv(["exec", "--", "--format", "json"])).toBeUndefined();
+    expect(formatFromArgv(["status", "--format", "json", "--format=text"])).toBe("text"); // the last wins, as in commander
     expect(isMachineFormat("json")).toBe(true);
     expect(isMachineFormat("github")).toBe(false);
     expect(isMachineFormat(undefined)).toBe(false);
@@ -172,6 +173,7 @@ describe("classifyCliError", () => {
     });
     expect(classifyCliError(new Error("boom"))).toMatchObject({ exitCode: 1, code: "ERROR", message: "boom" });
     expect(classifyCliError("plain")).toMatchObject({ exitCode: 1, code: "ERROR", message: "plain" });
+    expect(classifyCliError(Object.create(null))).toMatchObject({ exitCode: 1, code: "ERROR", message: "[object Object]" });
   });
 });
 
