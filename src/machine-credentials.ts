@@ -177,6 +177,15 @@ export class MachineCredentialStoreUnreadableError extends Error {
  * interpolated into `reason`/`message`, which are UI and telemetry surfaces.
  */
 /**
+ * The remedy for a DPAPI codec that could not run (no PowerShell host, too slow, Constrained Language
+ * Mode), shared by every store's encrypt-failure message. `AIGD_DPAPI_POWERSHELL` is
+ * {@link DPAPI_POWERSHELL_HOST_ENV} (declared further down; a module constant cannot be read before it).
+ */
+export const DPAPI_HOST_REMEDY =
+  "add %SystemRoot%\\System32\\WindowsPowerShell\\v1.0 to PATH, or set AIGD_DPAPI_POWERSHELL to the " +
+  "absolute path of powershell.exe (or pwsh.exe)";
+
+/**
  * The static, actionable `reason` {@link MachineCredentialStore.write} reports when the at-rest
  * codec throws. Deliberately free of any interpolated error text (SECURITY — see
  * {@link MachineCredentialStoreUnwritableError}), and it names both remedies a support engineer
@@ -186,9 +195,7 @@ export const CODEC_ENCRYPT_FAILURE_REASON =
   "encrypting the credential document failed, so nothing was written (an existing credential file " +
   "is untouched). On Windows this means the DPAPI codec could not run: no PowerShell host could be " +
   "started, PowerShell did not finish in time even after a retry (a very slow cold start), or " +
-  "PowerShell is locked down by Constrained Language Mode. Remedy: add " +
-  "%SystemRoot%\\System32\\WindowsPowerShell\\v1.0 to PATH, or set AIGD_DPAPI_POWERSHELL to the " +
-  "absolute path of powershell.exe (or pwsh.exe), then sign in again";
+  `PowerShell is locked down by Constrained Language Mode. Remedy: ${DPAPI_HOST_REMEDY}, then sign in again`;
 
 /**
  * The `reason` {@link MachineCredentialStore.readState} reports for a credential file that exists but

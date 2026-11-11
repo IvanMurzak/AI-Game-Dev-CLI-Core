@@ -23,9 +23,10 @@ export type ProgressCallback = (event: ProgressEvent) => void;
 
 /**
  * Forward a single progress event to `onProgress`, swallowing any exception it throws. A broken
- * handler must never break the library operation that emitted the event.
+ * handler must never break the library operation that emitted the event. Generic so a CLI with its
+ * own (narrower) event type can use it too.
  */
-export function emitProgress(onProgress: ProgressCallback | undefined, event: ProgressEvent): void {
+export function emitProgress<E = ProgressEvent>(onProgress: ((event: E) => void) | undefined, event: E): void {
   if (!onProgress) return;
   try {
     onProgress(event);

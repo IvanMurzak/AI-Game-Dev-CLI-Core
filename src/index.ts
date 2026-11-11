@@ -35,7 +35,7 @@
 /** The package version, mirrored from package.json (bumped by release.yml). */
 export const version = "0.0.0";
 
-export { parseSemver, isValidSemver } from "./semver.js";
+export { parseSemver, isValidSemver, isNumericVersion, isNewerVersion } from "./semver.js";
 export { describeErrorWithCause } from "./network-error.js";
 export type { SemVer } from "./semver.js";
 
@@ -442,6 +442,7 @@ export type {
 // ── project keys (per-project, non-expiring agent credential; project-keys contract §6/§7) ──────
 export {
   ProjectKeyStore,
+  ProjectKeyStoreWriteError,
   HttpProjectKeyTransport,
   getOrMintProjectKey,
   regenerateProjectKey,
@@ -450,6 +451,7 @@ export {
   PROJECT_KEY_PREFIX,
 } from "./project-keys.js";
 export type {
+  ProjectKeyStoreWriteStage,
   ProjectKeyEntry,
   ProjectKeysDocument,
   ProjectKeyEngine,
@@ -497,6 +499,27 @@ export {
 export type { ChecksumVerdict } from "./server-checksum.js";
 export { parseZip } from "./unzip.js";
 export type { ZipEntry } from "./unzip.js";
+
+// ── engine-CLI helpers: npm self-update check, strict JSON input, RQL command-line routing ──────
+export {
+  fetchLatestNpmVersion,
+  checkForNpmUpdate,
+  npmGlobalInstallCommand,
+  isRunningViaNpx,
+} from "./update-check.js";
+export type { FetchLatestNpmVersionOptions, NpmUpdateCheckOptions, UpdateInfo } from "./update-check.js";
+export { parseJsonStrict, JsonParseError } from "./json-parse.js";
+export type { JsonParseResult } from "./json-parse.js";
+export {
+  RQL_QUERY_TOOL,
+  RQL_MUTATE_TOOL,
+  RQL_SCHEMA_TOOL,
+  rqlStages,
+  rqlLastVerb,
+  isRqlMutation,
+  stripToolName,
+  decodeQueryFile,
+} from "./rql.js";
 
 // ── ui / progress utilities ─────────────────────────────────────────────────────────────────────
 export { renderTable, truncate } from "./ui.js";

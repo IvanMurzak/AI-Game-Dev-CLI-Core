@@ -10,6 +10,7 @@ import {
   MachineCredentialStore,
   PROJECT_KEYS_FILE_NAME,
   ProjectKeyStore,
+  ProjectKeyStoreWriteError,
   defaultCredentialCodec,
   dpapiCredentialCodec,
   getOrMintProjectKey,
@@ -210,8 +211,100 @@ describe("ProjectKeyStore — ~/.ai-game-dev/project-keys.json (contract §6)", 
     const store = new ProjectKeyStore(dir, identityCredentialCodec);
     expect(store.readState().status).toBe("unreadable");
     expect(store.get(ISSUER, PIN)).toBeUndefined();
-    expect(() => seedCache(store)).toThrow(/unreadable/);
+    expect(() => seedCache(store)).toThrow(/cannot be read \(.+\), so it was left untouched/);
     expect(fs.readFileSync(file, "utf-8")).toBe("{not json");
+  });
+});
+
+describe("ProjectKeyStore.put — write failures are one actionable error, never the raw cause", () => {
+  // What a failing DPAPI shell-out throws: a command line plus PowerShell's exception text.
+  const RAW = "Command failed: powershell.exe -NoProfile -EncodedCommand SECRETBLOB\n   at System.Security.Cryptography";
+  const failingEncrypt: CredentialCodec = {
+    encrypt: () => {
+      throw new Error(RAW);
+    },
+    decrypt: (data) => data,
+  };
+
+  function captured(fn: () => void): ProjectKeyStoreWriteError {
+    try {
+      fn();
+    } catch (err) {
+      expect(err).toBeInstanceOf(ProjectKeyStoreWriteError);
+      return err as ProjectKeyStoreWriteError;
+    }
+    throw new Error("expected put to throw");
+  }
+
+  function expectClean(err: ProjectKeyStoreWriteError): void {
+    expect(err.message).not.toContain("SECRETBLOB");
+    expect(err.message).not.toContain("agd_pk_");
+    expect(err.message).not.toMatch(/\n|\bat /);
+  }
+
+  it("unreadable: names the file and the remedy, keeps the read failure on cause", () => {
+    const dir = freshDir();
+    const store = new ProjectKeyStore(dir, identityCredentialCodec);
+    fs.writeFileSync(store.filePath, "{not json");
+    const err = captured(() => seedCache(store));
+    expect(err.stage).toBe("unreadable");
+    expect(err.filePath).toBe(store.filePath);
+    expect(err.message).toContain(store.filePath);
+    // The read path's own reason is kept, then what to do.
+    expect(err.message).toContain("cannot be read (parsing the project-key cache failed (corrupted content))");
+    expect(err.message).toMatch(/Fix the cause and retry, or delete that file/);
+    expect(err.cause).toBeInstanceOf(SyntaxError);
+    expectClean(err);
+  });
+
+  it("encrypt: names the file and the DPAPI remedy; the raw codec error is only the cause; nothing written", () => {
+    const dir = freshDir();
+    const store = new ProjectKeyStore(dir, failingEncrypt);
+    const err = captured(() => seedCache(store));
+    expect(err.stage).toBe("encrypt");
+    expect(err.message).toContain(store.filePath);
+    expect(err.message).toMatch(/AIGD_DPAPI_POWERSHELL/);
+    expect(err.message).toContain("%SystemRoot%\\System32\\WindowsPowerShell\\v1.0");
+    expect((err.cause as Error).message).toBe(RAW);
+    expectClean(err);
+    expect(fs.readdirSync(dir)).toEqual([]);
+  });
+
+  it("encrypt: an existing good cache stays byte-identical", () => {
+    const dir = freshDir();
+    seedCache(new ProjectKeyStore(dir, identityCredentialCodec));
+    const file = path.join(dir, PROJECT_KEYS_FILE_NAME);
+    const before = fs.readFileSync(file);
+    captured(() => new ProjectKeyStore(dir, failingEncrypt).put({ key: "agd_pk_new", keyId: "k9", pin: PIN, issuer: ISSUER }));
+    expect(fs.readFileSync(file).equals(before)).toBe(true);
+    expect(fs.readdirSync(dir)).toEqual([PROJECT_KEYS_FILE_NAME]);
+  });
+
+  it("write: names the file and the errno code, keeps the file-system error on cause", () => {
+    const dir = freshDir();
+    const blocker = path.join(dir, "not-a-directory");
+    fs.writeFileSync(blocker, "");
+    const store = new ProjectKeyStore(path.join(blocker, "store"), identityCredentialCodec);
+    const err = captured(() => seedCache(store));
+    expect(err.stage).toBe("write");
+    expect(err.message).toContain(store.filePath);
+    expect(err.message).toMatch(/failed \(E[A-Z]+\)\. Check that the folder exists/);
+    expect((err.cause as NodeJS.ErrnoException).code).toMatch(/^E[A-Z]+$/);
+    expectClean(err);
+  });
+
+  it("getOrMint: an encrypt failure is a clean warning; the key is still returned", async () => {
+    const credentials = provider(signedInDoc());
+    const store = new ProjectKeyStore(freshDir(), failingEncrypt);
+    const res = await getOrMintProjectKey({ pin: PIN, engine: "unity", issuer: ISSUER, credentials, store, transport: fakeTransport() });
+    expect(res).toMatchObject({ kind: "ok", key: "agd_pk_minted1", source: "minted" });
+    if (res.kind !== "ok") return;
+    expect(res.warnings).toHaveLength(1);
+    const warning = res.warnings[0]!;
+    expect(warning).toMatch(/^The project key was minted but could not be cached: encrypting the project-key cache /);
+    expect(warning).toMatch(/every setup-mcp mints a new key\.$/);
+    expect(warning).not.toContain("SECRETBLOB");
+    expect(warning).not.toContain("agd_pk_");
   });
 });
 
