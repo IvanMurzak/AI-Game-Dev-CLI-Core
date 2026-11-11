@@ -9,6 +9,19 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
 
 ## Unreleased
 
+### Added — helpers the engine CLIs each kept a copy of (minor: 0.10.0)
+
+- `semver`: `isNumericVersion`, `compareNumericVersions`, `isNewerVersion` — the loose
+  dot-separated-digits compare `unity-mcp-cli` and `godot-cli` kept byte-identical copies of.
+- `update-check` (new): `fetchLatestNpmVersion`, `checkForNpmUpdate` (24 h JSON cache, never throws),
+  `npmGlobalInstallCommand`, `isRunningViaNpx`. The notice's wording and colours stay in each CLI.
+- `json-parse` (new): `parseJsonStrict` and `JsonParseError` (position + pointer snippet) for
+  command-line JSON input.
+- `rql` (new): `RQL_QUERY_TOOL` / `RQL_MUTATE_TOOL` / `RQL_SCHEMA_TOOL`, `rqlStages`, `rqlLastVerb`,
+  `isRqlMutation`, `stripToolName`, `decodeQueryFile` — which rql-* tool a command-line query goes to.
+- `emitProgress` is generic over the event type, so a CLI with a narrower event union can use it
+  (non-breaking: the default is `ProgressEvent`).
+
 ### Fixed — a project-key cache that cannot be written reports one actionable line
 
 - `ProjectKeyStore.put` no longer rethrows the raw codec or file-system error (a DPAPI PowerShell
