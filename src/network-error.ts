@@ -126,3 +126,60 @@ export function describeAuthNetworkError(err: unknown): string {
   }
   return `Authentication failed: ${message}`;
 }
+
+/** Why a request got no answer, by the transport error: what a tool-call failure's `reason` names. */
+export type NetworkFailureReason = "connection-refused" | "connection-reset" | "network-error";
+
+/**
+ * Node / undici error codes, by what they mean for a call. `connection-reset`: the server took the
+ * connection and dropped it before the answer was complete — a reset (`ECONNRESET`, also Node's
+ * "socket hang up"), a write to a closed socket (`EPIPE`), undici's "other side closed" and
+ * "terminated" mid-body (`UND_ERR_SOCKET`), a closed client or a premature end of the body stream.
+ */
+const NETWORK_FAILURE_BY_CODE: Readonly<Record<string, NetworkFailureReason>> = {
+  ECONNREFUSED: "connection-refused",
+  ECONNRESET: "connection-reset",
+  EPIPE: "connection-reset",
+  ECONNABORTED: "connection-reset",
+  UND_ERR_SOCKET: "connection-reset",
+  UND_ERR_CLOSED: "connection-reset",
+  ERR_STREAM_PREMATURE_CLOSE: "connection-reset",
+  ENOTFOUND: "network-error",
+  EAI_AGAIN: "network-error",
+  ETIMEDOUT: "network-error",
+  ENETUNREACH: "network-error",
+  ENETDOWN: "network-error",
+  EHOSTUNREACH: "network-error",
+  EHOSTDOWN: "network-error",
+  UND_ERR_CONNECT_TIMEOUT: "network-error",
+};
+
+/** How deep {@link networkFailureReason} looks: undici nests two `cause` links; the cap guards a cycle. */
+const MAX_NETWORK_ERROR_DEPTH = 6;
+
+/**
+ * The transport cause of a failed request, read from the error's own `code`, its `cause` chain (where
+ * `fetch` puts it: `TypeError: fetch failed` / `terminated` <- `SocketError UND_ERR_SOCKET`) and the
+ * attempts of an `AggregateError` (Node's happy-eyeballs connect); `undefined` when none is a known
+ * network code (an abort, a programming error). The engine CLIs map it to the shared exit code
+ * (`classifyToolFailure`: all three → exit 7 UNREACHABLE). Never throws.
+ */
+export function networkFailureReason(err: unknown): NetworkFailureReason | undefined {
+  try {
+    const queue: Array<{ value: unknown; depth: number }> = [{ value: err, depth: 0 }];
+    const seen = new Set<unknown>();
+    while (queue.length > 0) {
+      const { value, depth } = queue.shift()!;
+      if (typeof value !== "object" || value === null || seen.has(value) || depth > MAX_NETWORK_ERROR_DEPTH) continue;
+      seen.add(value);
+      const { code, cause, errors } = value as { code?: unknown; cause?: unknown; errors?: unknown };
+      const reason = typeof code === "string" && Object.hasOwn(NETWORK_FAILURE_BY_CODE, code) ? NETWORK_FAILURE_BY_CODE[code] : undefined;
+      if (reason) return reason;
+      if (cause !== undefined) queue.push({ value: cause, depth: depth + 1 });
+      if (Array.isArray(errors)) for (const inner of errors) queue.push({ value: inner, depth: depth + 1 });
+    }
+  } catch {
+    // A throwing getter on a hostile error object: no network cause.
+  }
+  return undefined;
+}

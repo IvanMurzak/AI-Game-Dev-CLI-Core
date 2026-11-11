@@ -9,6 +9,21 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
 
 ## Unreleased
 
+### Added — one mapping of a dropped connection to its failure reason (patch: 0.11.1)
+
+- `networkFailureReason(err)` (`NetworkFailureReason`): `connection-refused` / `connection-reset` /
+  `network-error` from a transport error's `code`, its `cause` chain (where `fetch` puts undici's
+  code) and an `AggregateError`'s attempts; `undefined` otherwise. A connection the server took and
+  then dropped is `connection-reset` (exit 7 `UNREACHABLE` through `classifyToolFailure`), whatever
+  Node called it: `ECONNRESET` (also "socket hang up"), `EPIPE`, `ECONNABORTED`, undici's
+  `UND_ERR_SOCKET` ("other side closed" before the headers, "terminated" mid-body),
+  `UND_ERR_CLOSED`, `ERR_STREAM_PREMATURE_CLOSE`. The engine CLIs reported most of these as
+  `unknown` (exit 1 `ERROR`), because they matched `ECONNRESET` on the first cause only.
+  `ETIMEDOUT`, `ENETUNREACH`, `EHOSTUNREACH`, `ENETDOWN`, `EHOSTDOWN` and
+  `UND_ERR_CONNECT_TIMEOUT` are `network-error`.
+
+## 0.11.0 — 2026-11-11
+
 ### Added — one mapping of a failed tool call to exit and error codes (minor: 0.11.0)
 
 - `classifyToolFailure(failure)`: the exit code and envelope error code of a failed `run-tool`,

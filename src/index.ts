@@ -36,7 +36,8 @@
 export const version = "0.0.0";
 
 export { parseSemver, isValidSemver, isNumericVersion, isNewerVersion } from "./semver.js";
-export { describeErrorWithCause } from "./network-error.js";
+export { describeErrorWithCause, networkFailureReason } from "./network-error.js";
+export type { NetworkFailureReason } from "./network-error.js";
 export type { SemVer } from "./semver.js";
 
 // ── project identity / pin (v1 + v2) ──────────────────────────────────────────────────────────
