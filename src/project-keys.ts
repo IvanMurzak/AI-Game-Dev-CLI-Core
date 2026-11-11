@@ -6,6 +6,7 @@ import { writeFileAtomicSync } from "./atomic-file.js";
 import type { MachineCredentialProvider } from "./credential-provider.js";
 import { DEFAULT_CLOUD_BASE_URL } from "./enroll.js";
 import {
+  DPAPI_POWERSHELL_HOST_ENV,
   MACHINE_STORE_DIR_NAME,
   defaultCredentialCodec,
   effectiveFamilies,
@@ -93,6 +94,59 @@ export type ProjectKeyStoreState =
   | { status: "ok"; document: ProjectKeysDocument }
   | { status: "missing" }
   | { status: "unreadable"; reason: string; cause?: unknown };
+
+/** Which step of {@link ProjectKeyStore.put} failed (the {@link ProjectKeyStoreWriteError} `stage`). */
+export type ProjectKeyStoreWriteStage = "unreadable" | "encrypt" | "write";
+
+/**
+ * Thrown by {@link ProjectKeyStore.put} instead of the raw codec or file-system error (a DPAPI
+ * PowerShell failure, `EACCES`, …): one actionable message saying what failed, which file, and what
+ * to do, the mirror of the read path's quiet "unreadable" state. The original error rides on `cause`
+ * for debugging only.
+ *
+ * In every stage the existing cache file is left byte-identical: an unreadable cache is never
+ * overwritten, encryption happens in memory before any file is touched, and the atomic write never
+ * leaves a torn file behind.
+ *
+ * SECURITY: the message carries only static text, the cache path and (for `write`) the errno code,
+ * never the codec's output or anything from the document, which holds raw project keys.
+ */
+export class ProjectKeyStoreWriteError extends Error {
+  readonly stage: ProjectKeyStoreWriteStage;
+  /** The cache file that could not be written. */
+  readonly filePath: string;
+
+  constructor(stage: ProjectKeyStoreWriteStage, filePath: string, cause?: unknown) {
+    super(projectKeyStoreWriteMessage(stage, filePath, cause), cause === undefined ? undefined : { cause });
+    this.name = "ProjectKeyStoreWriteError";
+    this.stage = stage;
+    this.filePath = filePath;
+  }
+}
+
+function projectKeyStoreWriteMessage(stage: ProjectKeyStoreWriteStage, filePath: string, cause: unknown): string {
+  switch (stage) {
+    case "unreadable":
+      return (
+        `the project-key cache ${filePath} exists but cannot be read, so it was left untouched. ` +
+        "Delete that file to start a new cache (cached project keys are minted again on the next setup-mcp)"
+      );
+    case "encrypt":
+      return (
+        `encrypting the project-key cache ${filePath} failed, so nothing was written. On Windows the DPAPI ` +
+        "codec could not run (PowerShell could not be started, did not answer in time, or is in Constrained " +
+        `Language Mode): add %SystemRoot%\\System32\\WindowsPowerShell\\v1.0 to PATH, or set ${DPAPI_POWERSHELL_HOST_ENV} ` +
+        "to the absolute path of powershell.exe, then run setup-mcp again"
+      );
+    case "write": {
+      const code = (cause as NodeJS.ErrnoException | undefined)?.code;
+      return (
+        `writing the project-key cache ${filePath} failed${typeof code === "string" ? ` (${code})` : ""}. ` +
+        "Check that the folder exists, is writable by you and the disk has free space, then run setup-mcp again"
+      );
+    }
+  }
+}
 
 /** Lower-case a v2 pin; throws unless it is exactly 8 hex characters (golden `invalidPins`). */
 function normalizePin(pin: string): string {
@@ -193,13 +247,14 @@ export class ProjectKeyStore {
   /**
    * Insert/replace the entry for `(entry.issuer, entry.pin)` and persist atomically, preserving every
    * other entry and every unknown top-level field. The document is re-read immediately before the
-   * write so a concurrent writer's other entries survive. Throws when the existing cache is
-   * UNREADABLE (it is never overwritten — a DPAPI failure may be recoverable) or the write fails.
+   * write so a concurrent writer's other entries survive. Throws a
+   * {@link ProjectKeyStoreWriteError} when the existing cache is UNREADABLE (it is never overwritten —
+   * a DPAPI failure may be recoverable), encrypting fails, or the write fails.
    */
   put(entry: ProjectKeyEntry): void {
     const state = this.readState();
     if (state.status === "unreadable") {
-      throw new Error(`refusing to overwrite an unreadable project-key cache: ${state.reason}`);
+      throw new ProjectKeyStoreWriteError("unreadable", this.filePath, state.cause);
     }
     const current: ProjectKeysDocument = state.status === "ok" ? state.document : {};
     const name = projectKeyCacheKey(entry.issuer, entry.pin);
@@ -214,8 +269,17 @@ export class ProjectKeyStore {
       version: typeof current.version === "number" ? current.version : PROJECT_KEYS_SCHEMA_VERSION,
       keys,
     };
-    const bytes = this._codec.encrypt(Buffer.from(JSON.stringify(document, null, 2), "utf-8"));
-    writeFileAtomicSync(this.filePath, bytes);
+    let bytes: Buffer;
+    try {
+      bytes = this._codec.encrypt(Buffer.from(JSON.stringify(document, null, 2), "utf-8"));
+    } catch (err) {
+      throw new ProjectKeyStoreWriteError("encrypt", this.filePath, err);
+    }
+    try {
+      writeFileAtomicSync(this.filePath, bytes);
+    } catch (err) {
+      throw new ProjectKeyStoreWriteError("write", this.filePath, err);
+    }
   }
 }
 
@@ -512,8 +576,8 @@ async function resolveProjectKey(options: GetOrMintProjectKeyOptions, forceMint:
     } catch (err) {
       cachedNewKey = false;
       warnings.push(
-        `The project key was minted but could not be cached (${err instanceof Error ? err.message : String(err)}); ` +
-          "the next setup will mint another one.",
+        `The project key was minted and written to the config, but could not be cached: ${err instanceof Error ? err.message : String(err)}. ` +
+          "Until that is fixed, every setup-mcp mints a new key.",
       );
     }
     const newKeyId = minted.minted.keyId;

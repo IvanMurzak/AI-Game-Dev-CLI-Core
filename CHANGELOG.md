@@ -9,6 +9,18 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
 
 ## Unreleased
 
+### Fixed — a project-key cache that cannot be written reports one actionable line
+
+- `ProjectKeyStore.put` no longer rethrows the raw codec or file-system error (a DPAPI PowerShell
+  command line and its exception text, a bare `EACCES`). It throws the new
+  `ProjectKeyStoreWriteError` with a `stage` (`unreadable` / `encrypt` / `write`), the cache
+  `filePath`, and a message that says what failed, which file and what to do; the original error is
+  kept on `cause`. No secret ever reaches the message. The cache file is left untouched in every stage.
+- `getOrMintProjectKey` / `regenerateProjectKey` (and so `setup-mcp`) report that message in their
+  "minted and written to the config, but could not be cached" warning; the command still succeeds.
+
+## 0.9.0 — 2026-11-10
+
 ### Added — the engine CLIs' command-line contract (minor: 0.9.0)
 
 - **One contract for `unity-mcp-cli`, `unreal-mcp-cli` and `godot-cli`, moved here from their three

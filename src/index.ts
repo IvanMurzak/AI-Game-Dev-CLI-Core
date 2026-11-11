@@ -442,6 +442,7 @@ export type {
 // ── project keys (per-project, non-expiring agent credential; project-keys contract §6/§7) ──────
 export {
   ProjectKeyStore,
+  ProjectKeyStoreWriteError,
   HttpProjectKeyTransport,
   getOrMintProjectKey,
   regenerateProjectKey,
@@ -450,6 +451,7 @@ export {
   PROJECT_KEY_PREFIX,
 } from "./project-keys.js";
 export type {
+  ProjectKeyStoreWriteStage,
   ProjectKeyEntry,
   ProjectKeysDocument,
   ProjectKeyEngine,
