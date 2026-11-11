@@ -96,12 +96,31 @@ engine-specific adapters over it. The shared modules land here through the `auth
   - **exit codes, `--format` and the result envelope** — `ExitCode` / `EXIT_CODES` (0 Success, 1 Error,
     2 Usage, 6 CommandFailed, 7 Unreachable, 8 TestsFailed, 14 Timeout, 17 Busy, 18 AwaitingInput),
     `parseFormat` (`text|json|ndjson`, a `UsageError` otherwise), and `CommandOutput`: one envelope
-    `{success, command, data, errors[{code,message}], warnings}` written synchronously to stdout at most
+    `{success, command, data, errors[{code,message,httpStatus?}], warnings}` written synchronously to stdout at most
     once per process, `console.log` on stderr in machine formats, ndjson progress events, and an exit
     safety net that still writes an envelope when a json/ndjson command exits without one.
   - **the entry point** — `classifyCliError` (commander parse errors and `UsageError` → exit 2,
     `--help` / `--version` → 0, anything else → 1) and `writeFailureEnvelope`.
-  - **the `commands` manifest** — `buildCommandManifest`, read from the commander tree.
+  - **a tool call that did not succeed** — `classifyToolFailure` / `classifyHttpFailure` /
+    `classifyEditorStartFailure` give every engine CLI the same exit code and envelope error code for
+    `run-tool`, `run-system-tool`, `exec`, `rql` and `tools`, keyed on the MCP server's HTTP status
+    (HTTP statuses cannot be exit codes: those are 0–255). The status goes into the envelope error as
+    `httpStatus`. `TOOL_FAILURE_CODES` is the table:
+
+    | Condition | HTTP status | Exit | Error code |
+    |---|---|---|---|
+    | Bad arguments: a bad flag, tool arguments the CLI or the server rejected (any 4xx not listed) | 400 (a 422 `[invalid_params]`) | 2 | `USAGE` |
+    | No tool by that name, or no project at the path | 404 | 2 | `NOT_FOUND` |
+    | No usable credentials, or the server refused them | 401, 403 | 6 | `NOT_AUTHENTICATED` |
+    | The tool ran and reported an error (`status: "error"`, any 5xx not listed) | 409, 422, 500 | 6 | `TOOL_FAILED` |
+    | The project's code did not build, so no editor started | — | 6 | `COMPILATION_FAILED` |
+    | Connection refused / reset, no engine plugin connected (any status), plugin lost after sending | 502 | 7 | `UNREACHABLE` |
+    | No answer in time (the CLI's `--timeout`, the server's tool timeout) | 408, 504 | 14 | `TIMEOUT` |
+    | Busy, the call did not run (reloading, rate-limited, another CLI call holds the editor) | 503, 429 | 17 | `BUSY` |
+    | Anything else (aborted, unexpected) | — | 1 | `ERROR` |
+
+  - **the `commands` manifest** — `buildCommandManifest`, read from the commander tree, with
+    `exitCodes` (`EXIT_CODES`) and `errorCodes` (`TOOL_FAILURE_CODES`).
   - **the local-server fallback rule** — `decideLocalFallback`: a Cloud-mode command falls back to the
     project's local server only on a machine that never signed in; a sign-in that cannot be used is
     refused with `NOT_AUTHENTICATED` (exit 6).

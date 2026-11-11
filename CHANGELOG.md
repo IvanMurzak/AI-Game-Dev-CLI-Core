@@ -9,6 +9,28 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
 
 ## Unreleased
 
+### Added — one mapping of a failed tool call to exit and error codes (minor: 0.11.0)
+
+- `classifyToolFailure(failure)`: the exit code and envelope error code of a failed `run-tool`,
+  `run-system-tool`, `exec`, `rql` or `tools` call, the same in all three engine CLIs. It keys on
+  the MCP server's HTTP status (400 / other 4xx → 2 `USAGE`, 404 → 2 `NOT_FOUND`, 401/403 → 6
+  `NOT_AUTHENTICATED`, 409/422/500 → 6 `TOOL_FAILED`, 502 → 7 `UNREACHABLE`, 408/504 → 14 `TIMEOUT`,
+  429/503 → 17 `BUSY`), reads the server's error text for two cases (a 422 `[invalid_params]` is
+  `USAGE`; a server text that starts with "No engine plugin is connected" or "The engine for this
+  project is not connected" is `UNREACHABLE` on any status but 422), and otherwise
+  classifies by why no answer came (refused / reset / network → 7, `--timeout` → 14, invalid input
+  → 2, not authenticated → 6, aborted / unknown → 1 `ERROR`). Also `classifyHttpFailure`,
+  `classifyEditorStartFailure` (no project at the path → 2 `NOT_FOUND`, a bad option → 2 `USAGE`, build failed → 6 `COMPILATION_FAILED`,
+  start lock busy → 17 `BUSY`, else 7 `UNREACHABLE`), and `serverErrorText`.
+- `TOOL_FAILURE_CODES`: that table, as data. The `commands` manifest gains `errorCodes` with it;
+  `toolFailureCodeLine` prints one row for a text-mode `commands`.
+- The envelope error has an optional `httpStatus` (`errors[{code, message, httpStatus}]`), and
+  `CommandOutput.record(code, message, httpStatus?)` records it.
+- `EXIT_CODES` descriptions name the error codes and HTTP statuses that lead to each exit code. The
+  exit-code numbers do not change.
+
+## 0.10.0 — 2026-11-11
+
 ### Added — helpers the engine CLIs each kept a copy of (minor: 0.10.0)
 
 - `semver`: `isNumericVersion`, `isNewerVersion` — the loose

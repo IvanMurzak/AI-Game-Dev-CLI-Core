@@ -545,6 +545,12 @@ export {
   classifyCliError,
   writeFailureEnvelope,
   buildCommandManifest,
+  classifyToolFailure,
+  classifyHttpFailure,
+  classifyEditorStartFailure,
+  serverErrorText,
+  TOOL_FAILURE_CODES,
+  toolFailureCodeLine,
 } from "./cli-contract.js";
 export type {
   ExitCodeName,
@@ -564,6 +570,11 @@ export type {
   ManifestOption,
   ManifestCommand,
   CommandManifest,
+  ToolFailureCode,
+  ToolFailureClass,
+  ToolFailureLike,
+  ToolFailureCodeInfo,
+  EditorStartFailureLike,
 } from "./cli-contract.js";
 
 // ── the local-server fallback rule for Cloud-mode projects ──────────────────────────────────────
