@@ -10,10 +10,12 @@ import { errorMessage } from "./network-error.js";
  *
  *  - one exit-code table ({@link ExitCode}, {@link EXIT_CODES});
  *  - `--format text|json|ndjson` ({@link parseFormat});
- *  - one result envelope `{success, command, data, errors[{code,message}], warnings}`, written
+ *  - one result envelope `{success, command, data, errors[{code,message,httpStatus?}], warnings}`, written
  *    synchronously to stdout at most once per process, with an exit safety net that still writes one
  *    when a machine-format command exits without it ({@link CommandOutput});
  *  - commander parse errors as usage errors, exit 2 ({@link classifyCliError});
+ *  - one mapping of a failed tool call (no answer, or the MCP server's HTTP status) to an exit code
+ *    and an envelope error code ({@link classifyToolFailure}, {@link TOOL_FAILURE_CODES});
  *  - the `commands --format json` manifest ({@link buildCommandManifest}).
  *
  * Library-safe: importing this module has no side effects, and nothing here exits the process
@@ -49,26 +51,33 @@ export interface ExitCodeInfo {
 /** One line per exit code, in code order: the `exitCodes` of the `commands` manifest. */
 export const EXIT_CODES: readonly ExitCodeInfo[] = [
   { code: ExitCode.Success, name: "Success", description: "The command succeeded." },
-  { code: ExitCode.Error, name: "Error", description: "Unclassified error." },
+  { code: ExitCode.Error, name: "Error", description: "Unclassified error (ERROR)." },
   {
     code: ExitCode.Usage,
     name: "Usage",
-    description: "Usage error: an unknown command, a bad flag or argument; nothing ran. Fix the command line, do not retry it unchanged.",
+    description:
+      "Usage error: an unknown command, a bad flag or argument, tool arguments the server rejected (USAGE, HTTP 400 and other 4xx), an unknown tool or no project at the path (NOT_FOUND, HTTP 404); nothing ran. Fix the command line, do not retry it unchanged.",
   },
   {
     code: ExitCode.CommandFailed,
     name: "CommandFailed",
-    description: "The command ran and failed (tool error, compilation or script errors, a test run without a verdict).",
+    description:
+      "The command ran and failed: the tool reported an error (TOOL_FAILED, HTTP 409/422/500), compilation or script errors (COMPILATION_FAILED), a test run without a verdict; or the server refused the credentials (NOT_AUTHENTICATED, HTTP 401/403).",
   },
   {
     code: ExitCode.Unreachable,
     name: "Unreachable",
-    description: "The editor or MCP server could not be started or reached. Retry once the environment is fixed.",
+    description:
+      "The editor or MCP server could not be started or reached, or no engine plugin is connected to the server (UNREACHABLE, HTTP 502). Retry once the environment is fixed.",
   },
   { code: ExitCode.TestsFailed, name: "TestsFailed", description: "The tests ran and at least one failed." },
-  { code: ExitCode.Timeout, name: "Timeout", description: "The command timed out before a result." },
-  { code: ExitCode.Busy, name: "Busy", description: "The editor or server is busy (HTTP 503) and did not run the call; retry later." },
-  { code: ExitCode.AwaitingInput, name: "AwaitingInput", description: "A modal dialog blocks the editor; a human must answer it." },
+  { code: ExitCode.Timeout, name: "Timeout", description: "The command timed out before a result (TIMEOUT, HTTP 408/504)." },
+  {
+    code: ExitCode.Busy,
+    name: "Busy",
+    description: "The editor or server is busy and did not run the call (BUSY, HTTP 503/429; or another CLI call holds the editor); retry later.",
+  },
+  { code: ExitCode.AwaitingInput, name: "AwaitingInput", description: "A modal dialog blocks the editor; a human must answer it (AWAITING_INPUT)." },
 ];
 
 /** The envelope error token of an exit code (`CommandFailed` → `COMMAND_FAILED`); `ERROR` for an unknown code. */
@@ -146,6 +155,8 @@ export interface EnvelopeError<C extends string = string> {
   /** A stable UPPER_SNAKE token a script can match (never a translated message). */
   code: C;
   message: string;
+  /** The HTTP status the MCP server answered with, when the failure is an HTTP answer. */
+  httpStatus?: number;
 }
 
 export interface Envelope<T = unknown, C extends string = string> {
@@ -288,9 +299,9 @@ export class CommandOutput<C extends string = string> {
     if (!this.machine) this.printWarning(message);
   }
 
-  /** Record an error for the envelope without printing it. */
-  record(code: C, message: string): void {
-    this.errors.push({ code, message });
+  /** Record an error for the envelope without printing it; `httpStatus`: the server's answer, when there was one. */
+  record(code: C, message: string, httpStatus?: number): void {
+    this.errors.push(httpStatus === undefined ? { code, message } : { code, message, httpStatus });
   }
 
   /**
@@ -349,6 +360,192 @@ export function exitAfterFlush(exitCode: number): never {
   process.stdout.write("", done);
   process.stderr.write("", done);
   throw new CommandExit(exitCode);
+}
+
+// ── a tool call that did not succeed ────────────────────────────────────────────────────────────
+
+/** The envelope error codes of a tool call that did not succeed (`run-tool`, `run-system-tool`, `exec`, `rql`, `tools`). */
+export type ToolFailureCode =
+  | "USAGE"
+  | "NOT_FOUND"
+  | "NOT_AUTHENTICATED"
+  | "TOOL_FAILED"
+  | "COMPILATION_FAILED"
+  | "UNREACHABLE"
+  | "TIMEOUT"
+  | "BUSY"
+  | "ERROR";
+
+/** The exit code and envelope error code of a failure, with the HTTP status that decided it (when there was one). */
+export interface ToolFailureClass {
+  exitCode: ExitCodeValue;
+  code: ToolFailureCode;
+  /** The server's HTTP status: the envelope error's `httpStatus`. */
+  httpStatus?: number;
+}
+
+/**
+ * What {@link classifyToolFailure} reads of an engine CLI's failed tool call (its `RunToolFailure`): why no answer
+ * came (`reason`), or the server's HTTP error answer (`reason: "http-error"` with `httpStatus` and `data`).
+ */
+export interface ToolFailureLike {
+  /**
+   * `invalid-input` (the CLI rejected the arguments before sending), `not-authenticated` (no usable credentials),
+   * `connection-refused` / `connection-reset` / `network-error`, `timeout` (the CLI's own `--timeout`), `http-error`
+   * (the server answered with an error status); anything else (`aborted`, `unknown`) is unclassified.
+   */
+  reason: string;
+  httpStatus?: number;
+  /** The response body: the server's `{ "error": "<text>" }`, or its raw text. */
+  data?: unknown;
+  /** The failure's summary: read for the server's error text when the body has none. */
+  message?: string;
+}
+
+const toolClass = (exitCode: ExitCodeValue, code: ToolFailureCode): ToolFailureClass => ({ exitCode, code });
+
+/** The tool ran and reported an error (`status: "error"` in its answer, HTTP 409 / 422 / 500): exit 6. */
+export const TOOL_FAILED: ToolFailureClass = Object.freeze(toolClass(ExitCode.CommandFailed, "TOOL_FAILED"));
+
+/**
+ * The MCP server is up but no engine plugin is connected to it (McpPlugin.Server's "No engine plugin is connected",
+ * the cloud hub's "No game engine is connected for your account", older servers' "No connected clients"): the editor
+ * is unreachable, whatever the status (503).
+ */
+const NO_PLUGIN_CONNECTED = /no (engine plugin|game engine) is connected|no connected clients/i;
+
+/** Arguments the server rejected before the tool ran: McpPlugin answers them as 422 with this prefix. */
+const INVALID_PARAMS = /^\s*\[invalid_params\]/;
+
+/** The server's own error text of a failed call (`{ "error": "..." }`, or a text body), when it sent one. */
+export function serverErrorText(data: unknown): string | undefined {
+  if (typeof data === "string") return data.trim() || undefined;
+  const error = (data as { error?: unknown } | null | undefined)?.error;
+  return typeof error === "string" && error.trim() !== "" ? error : undefined;
+}
+
+/**
+ * The exit code and error code of an HTTP error answer of the MCP server's direct tool API (`/api/tools`,
+ * `/api/system-tools`), by HTTP semantics ({@link TOOL_FAILURE_CODES}). `errorText`: the server's error text.
+ */
+export function classifyHttpFailure(httpStatus: number, errorText = ""): ToolFailureClass {
+  return { ...classifyStatus(httpStatus, errorText), httpStatus };
+}
+
+function classifyStatus(status: number, errorText: string): ToolFailureClass {
+  if (status === 502 || NO_PLUGIN_CONNECTED.test(errorText)) return toolClass(ExitCode.Unreachable, "UNREACHABLE");
+  switch (status) {
+    case 401:
+    case 403:
+      return toolClass(ExitCode.CommandFailed, "NOT_AUTHENTICATED");
+    case 404:
+      return toolClass(ExitCode.Usage, "NOT_FOUND");
+    case 408:
+    case 504:
+      return toolClass(ExitCode.Timeout, "TIMEOUT");
+    case 429:
+    case 503:
+      return toolClass(ExitCode.Busy, "BUSY");
+    case 409:
+      return TOOL_FAILED;
+    case 422:
+      return INVALID_PARAMS.test(errorText) ? toolClass(ExitCode.Usage, "USAGE") : TOOL_FAILED;
+  }
+  return status >= 400 && status < 500 ? toolClass(ExitCode.Usage, "USAGE") : TOOL_FAILED;
+}
+
+/**
+ * The exit code and envelope error code of a failed tool call, the same in every engine CLI: by the HTTP status when
+ * the server answered, else by why no answer came. The whole table is {@link TOOL_FAILURE_CODES}.
+ */
+export function classifyToolFailure(failed: ToolFailureLike): ToolFailureClass {
+  switch (failed.reason) {
+    case "http-error":
+      return failed.httpStatus === undefined
+        ? TOOL_FAILED
+        : classifyHttpFailure(failed.httpStatus, serverErrorText(failed.data) ?? failed.message);
+    case "invalid-input":
+      return toolClass(ExitCode.Usage, "USAGE");
+    case "not-authenticated":
+      return toolClass(ExitCode.CommandFailed, "NOT_AUTHENTICATED");
+    case "timeout":
+      return toolClass(ExitCode.Timeout, "TIMEOUT");
+    case "connection-refused":
+    case "connection-reset":
+    case "network-error":
+      return toolClass(ExitCode.Unreachable, "UNREACHABLE");
+    default:
+      return toolClass(ExitCode.Error, "ERROR");
+  }
+}
+
+/** Why a command got no ready editor for its call (nothing was called). */
+export interface EditorStartFailureLike {
+  /** No project at the path: nothing to start. */
+  projectNotFound?: boolean;
+  /** A bad option (e.g. a bad `--url`): nothing to start. */
+  invalidInput?: boolean;
+  /** The project's code did not build, so no editor was started. */
+  buildFailed?: boolean;
+  /** The editor session's error reason; `lock-busy`: another CLI call held the project's start lock all along. */
+  sessionReason?: string;
+}
+
+/** The exit code and error code of a command that got no ready editor ({@link TOOL_FAILURE_CODES}). */
+export function classifyEditorStartFailure(failed: EditorStartFailureLike): ToolFailureClass {
+  if (failed.projectNotFound) return toolClass(ExitCode.Usage, "NOT_FOUND");
+  if (failed.invalidInput) return toolClass(ExitCode.Usage, "USAGE");
+  if (failed.buildFailed) return toolClass(ExitCode.CommandFailed, "COMPILATION_FAILED");
+  if (failed.sessionReason === "lock-busy") return toolClass(ExitCode.Busy, "BUSY");
+  return toolClass(ExitCode.Unreachable, "UNREACHABLE");
+}
+
+/** One row of {@link TOOL_FAILURE_CODES}. */
+export interface ToolFailureCodeInfo {
+  code: ToolFailureCode;
+  exitCode: ExitCodeValue;
+  /** The HTTP statuses of the server's answer that map here (empty: a failure without an HTTP answer). */
+  httpStatus: readonly number[];
+  /** The condition, in words. */
+  condition: string;
+}
+
+/**
+ * How a tool call that did not succeed maps to an exit code and an envelope error code (`run-tool`,
+ * `run-system-tool`, `exec`, `rql`, `tools`): the `errorCodes` of the `commands` manifest. Keyed on the MCP server's
+ * HTTP status when it answered; an engine CLI may add its own codes (e.g. AWAITING_INPUT for a modal dialog).
+ */
+export const TOOL_FAILURE_CODES: readonly ToolFailureCodeInfo[] = [
+  {
+    code: "USAGE",
+    exitCode: ExitCode.Usage,
+    httpStatus: [400, 422],
+    condition: "Bad arguments: a bad flag, tool arguments rejected by the CLI before sending or by the server (400, any 4xx not listed here, a 422 whose error starts with [invalid_params]).",
+  },
+  { code: "NOT_FOUND", exitCode: ExitCode.Usage, httpStatus: [404], condition: "No tool by that name, or no project at the path." },
+  { code: "NOT_AUTHENTICATED", exitCode: ExitCode.CommandFailed, httpStatus: [401, 403], condition: "No usable credentials, or the server refused them." },
+  { code: "TOOL_FAILED", exitCode: ExitCode.CommandFailed, httpStatus: [409, 422, 500], condition: "The tool ran and reported an error (status \"error\" in its answer; the server's 409, 422, 500 or any other 5xx not listed here)." },
+  { code: "COMPILATION_FAILED", exitCode: ExitCode.CommandFailed, httpStatus: [], condition: "The project's code did not build, so no editor was started." },
+  {
+    code: "UNREACHABLE",
+    exitCode: ExitCode.Unreachable,
+    httpStatus: [502],
+    condition: "The server or editor could not be reached: connection refused or reset, no engine plugin connected to the server (any status), the plugin lost after the call was sent (502).",
+  },
+  { code: "TIMEOUT", exitCode: ExitCode.Timeout, httpStatus: [408, 504], condition: "No answer in time: the CLI's --timeout, or the server's own tool timeout." },
+  {
+    code: "BUSY",
+    exitCode: ExitCode.Busy,
+    httpStatus: [429, 503],
+    condition: "The editor or server is busy and did not run the call (reloading, compiling, rate-limited, another CLI call holds the editor); retry later.",
+  },
+  { code: "ERROR", exitCode: ExitCode.Error, httpStatus: [], condition: "Anything else: the call was aborted, an unexpected error." },
+];
+
+/** One row of {@link TOOL_FAILURE_CODES} as a text line (`commands` in text mode): `NOT_FOUND  exit 2, HTTP 404: ...`. */
+export function toolFailureCodeLine(row: ToolFailureCodeInfo): string {
+  const http = row.httpStatus.length > 0 ? `, HTTP ${row.httpStatus.join("/")}` : "";
+  return `${row.code.padEnd(18)} exit ${row.exitCode}${http}: ${row.condition}`;
 }
 
 // ── the entry point: errors no command handled ─────────────────────────────────────────────────
@@ -487,6 +684,8 @@ export interface CommandManifest {
   /** The subcommands in registration order (hidden ones left out). */
   commands: ManifestCommand[];
   exitCodes: readonly ExitCodeInfo[];
+  /** How a tool call that did not succeed maps to an exit code and an error code ({@link TOOL_FAILURE_CODES}). */
+  errorCodes: readonly ToolFailureCodeInfo[];
 }
 
 function describeOption(option: ManifestOptionSource): ManifestOption {
@@ -522,5 +721,6 @@ export function buildCommandManifest(root: ManifestCommandSource, version: strin
         options: visibleOptions(cmd),
       })),
     exitCodes: EXIT_CODES,
+    errorCodes: TOOL_FAILURE_CODES,
   };
 }

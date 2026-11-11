@@ -8,6 +8,8 @@ import {
   activeCommandOutput,
   buildCommandManifest,
   classifyCliError,
+  classifyEditorStartFailure,
+  classifyToolFailure,
   commandNameFromArgv,
   exitCodeToken,
   formatFromArgv,
@@ -15,6 +17,10 @@ import {
   parseFormat,
   renderEnvelope,
   resetEnvelopeStateForTests,
+  serverErrorText,
+  TOOL_FAILED,
+  TOOL_FAILURE_CODES,
+  toolFailureCodeLine,
   type ManifestCommandSource,
 } from "../src/cli-contract.js";
 
@@ -216,5 +222,94 @@ describe("buildCommandManifest", () => {
       options: [{ flags: "--format <format>", description: "Output format", default: "text", choices: ["text", "json", "ndjson"] }],
     });
     expect(manifest.exitCodes).toBe(EXIT_CODES);
+    expect(manifest.errorCodes).toBe(TOOL_FAILURE_CODES);
+  });
+});
+
+describe("classifyToolFailure", () => {
+  const http = (httpStatus: number, error?: string) => classifyToolFailure({ reason: "http-error", httpStatus, ...(error ? { data: { error } } : {}) });
+
+  it("keys an HTTP error answer on its status, and keeps the status", () => {
+    expect(http(400)).toEqual({ exitCode: 2, code: "USAGE", httpStatus: 400 });
+    expect(http(404)).toEqual({ exitCode: 2, code: "NOT_FOUND", httpStatus: 404 });
+    expect(http(401)).toEqual({ exitCode: 6, code: "NOT_AUTHENTICATED", httpStatus: 401 });
+    expect(http(403).code).toBe("NOT_AUTHENTICATED");
+    expect(http(408)).toEqual({ exitCode: 14, code: "TIMEOUT", httpStatus: 408 });
+    expect(http(504)).toEqual({ exitCode: 14, code: "TIMEOUT", httpStatus: 504 });
+    expect(http(409)).toEqual({ exitCode: 6, code: "TOOL_FAILED", httpStatus: 409 });
+    expect(http(422)).toEqual({ exitCode: 6, code: "TOOL_FAILED", httpStatus: 422 });
+    expect(http(429)).toEqual({ exitCode: 17, code: "BUSY", httpStatus: 429 });
+    expect(http(500)).toEqual({ exitCode: 6, code: "TOOL_FAILED", httpStatus: 500 });
+    expect(http(502)).toEqual({ exitCode: 7, code: "UNREACHABLE", httpStatus: 502 });
+    expect(http(503)).toEqual({ exitCode: 17, code: "BUSY", httpStatus: 503 });
+    expect(http(505).code).toBe("TOOL_FAILED");
+    expect(http(413)).toEqual({ exitCode: 2, code: "USAGE", httpStatus: 413 });
+  });
+
+  it("reads the server's error text: rejected arguments, and no plugin connected", () => {
+    expect(http(422, "[invalid_params] count: expected an integer")).toEqual({ exitCode: 2, code: "USAGE", httpStatus: 422 });
+    expect(http(503, "No engine plugin is connected to this session, so the request was not sent.")).toEqual({ exitCode: 7, code: "UNREACHABLE", httpStatus: 503 });
+    expect(http(503, "No game engine is connected for your account.").code).toBe("UNREACHABLE");
+    expect(classifyToolFailure({ reason: "http-error", httpStatus: 500, data: "No connected clients" }).code).toBe("UNREACHABLE");
+    // No error text in the body: the failure's message is read instead.
+    expect(classifyToolFailure({ reason: "http-error", httpStatus: 500, message: "No connected clients" }).code).toBe("UNREACHABLE");
+    expect(classifyToolFailure({ reason: "http-error", httpStatus: 503, data: { error: "Reloading" }, message: "No connected clients" }).code).toBe("BUSY");
+    expect(http(503, "Plugin reloading; this call was not run").code).toBe("BUSY");
+  });
+
+  it("classifies a call that got no answer by why", () => {
+    expect(classifyToolFailure({ reason: "invalid-input" })).toEqual({ exitCode: 2, code: "USAGE" });
+    expect(classifyToolFailure({ reason: "not-authenticated" })).toEqual({ exitCode: 6, code: "NOT_AUTHENTICATED" });
+    expect(classifyToolFailure({ reason: "timeout" })).toEqual({ exitCode: 14, code: "TIMEOUT" });
+    for (const reason of ["connection-refused", "connection-reset", "network-error"]) {
+      expect(classifyToolFailure({ reason })).toEqual({ exitCode: 7, code: "UNREACHABLE" });
+    }
+    expect(classifyToolFailure({ reason: "aborted" })).toEqual({ exitCode: 1, code: "ERROR" });
+    expect(classifyToolFailure({ reason: "unknown" })).toEqual({ exitCode: 1, code: "ERROR" });
+    expect(classifyToolFailure({ reason: "http-error" })).toEqual(TOOL_FAILED);
+  });
+
+  it("classifies an editor that could not be started", () => {
+    expect(classifyEditorStartFailure({ invalidInput: true })).toEqual({ exitCode: 2, code: "USAGE" });
+    expect(classifyEditorStartFailure({ projectNotFound: true, buildFailed: true })).toEqual({ exitCode: 2, code: "NOT_FOUND" });
+    expect(classifyEditorStartFailure({ buildFailed: true })).toEqual({ exitCode: 6, code: "COMPILATION_FAILED" });
+    expect(classifyEditorStartFailure({ sessionReason: "lock-busy" })).toEqual({ exitCode: 17, code: "BUSY" });
+    expect(classifyEditorStartFailure({ sessionReason: "not-ready" })).toEqual({ exitCode: 7, code: "UNREACHABLE" });
+  });
+
+  it("matches its documented table: every listed status maps to its row's codes", () => {
+    for (const row of TOOL_FAILURE_CODES) {
+      expect(EXIT_CODES.some((e) => e.code === row.exitCode)).toBe(true);
+      for (const status of row.httpStatus) {
+        const text = row.code === "USAGE" && status === 422 ? "[invalid_params] x" : undefined;
+        expect(http(status, text), `${status} → ${row.code}`).toEqual({ exitCode: row.exitCode, code: row.code, httpStatus: status });
+      }
+    }
+    const codes = TOOL_FAILURE_CODES.map((r) => r.code);
+    expect(new Set(codes).size).toBe(codes.length);
+  });
+
+  it("toolFailureCodeLine prints a row with its exit code and HTTP statuses", () => {
+    const row = TOOL_FAILURE_CODES.find((r) => r.code === "NOT_FOUND")!;
+    expect(toolFailureCodeLine(row)).toBe(`NOT_FOUND          exit 2, HTTP 404: ${row.condition}`);
+    expect(toolFailureCodeLine(TOOL_FAILURE_CODES.find((r) => r.code === "ERROR")!)).toMatch(/^ERROR +exit 1: /);
+  });
+
+  it("serverErrorText reads { error } or a text body", () => {
+    expect(serverErrorText({ error: "boom" })).toBe("boom");
+    expect(serverErrorText(" text ")).toBe("text");
+    expect(serverErrorText({ error: "  " })).toBeUndefined();
+    expect(serverErrorText(null)).toBeUndefined();
+  });
+
+  it("the envelope error carries the HTTP status when there is one", () => {
+    const { out, stdout } = capture("ndjson");
+    out.record("NOT_FOUND", "No tool named x", 404);
+    out.record("TIMEOUT", "timed out");
+    out.emit(ExitCode.Usage);
+    expect(JSON.parse(stdout[0]!).errors).toEqual([
+      { code: "NOT_FOUND", message: "No tool named x", httpStatus: 404 },
+      { code: "TIMEOUT", message: "timed out" },
+    ]);
   });
 });
