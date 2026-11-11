@@ -21,6 +21,9 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
   `unknown` (exit 1 `ERROR`), because they matched `ECONNRESET` on the first cause only.
   `ETIMEDOUT`, `ENETUNREACH`, `EHOSTUNREACH`, `ENETDOWN`, `EHOSTDOWN` and
   `UND_ERR_CONNECT_TIMEOUT` are `network-error`.
+- `describeAuthNetworkError` reads the same code table: `EPIPE`, `ECONNABORTED`, `UND_ERR_CLOSED`,
+  `ERR_STREAM_PREMATURE_CLOSE`, `ENETDOWN` and `EHOSTDOWN` now also read "Cannot reach the
+  authorization server", like the codes it already knew.
 
 ## 0.11.0 — 2026-11-11
 

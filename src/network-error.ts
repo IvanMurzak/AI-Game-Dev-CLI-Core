@@ -107,21 +107,15 @@ function describeErrorWithCauseUnsafe(err: unknown): string {
 }
 
 /**
- * Errnos / undici codes that mean "the server could not be reached at all" rather than "the server
- * answered and refused". Matched against {@link describeErrorWithCause}'s output, so a code that
- * only appears on the cause (where undici puts it) still classifies.
- */
-const UNREACHABLE_PATTERN =
-  /ECONNREFUSED|ENOTFOUND|EAI_AGAIN|fetch failed|ECONNRESET|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH|UND_ERR_CONNECT_TIMEOUT|UND_ERR_SOCKET/i;
-
-/**
  * The user-facing message for a transport failure in an OAuth flow (auth-code and device): prefixed
  * `Cannot reach the authorization server:` when it is an unreachable-server failure, else
  * `Authentication failed:` — always WITH the cause chain.
  */
 export function describeAuthNetworkError(err: unknown): string {
   const message = describeErrorWithCause(err);
-  if (UNREACHABLE_PATTERN.test(message)) {
+  // A transport error (refused, reset, DNS, unreachable: {@link networkFailureReason}), also when its code only
+  // shows in the rendered chain, or undici's bare `fetch failed`.
+  if (networkFailureReason(err) !== undefined || UNREACHABLE_TEXT.test(message)) {
     return `Cannot reach the authorization server: ${message}`;
   }
   return `Authentication failed: ${message}`;
@@ -154,8 +148,8 @@ const NETWORK_FAILURE_BY_CODE: Readonly<Record<string, NetworkFailureReason>> = 
   UND_ERR_CONNECT_TIMEOUT: "network-error",
 };
 
-/** How deep {@link networkFailureReason} looks: undici nests two `cause` links; the cap guards a cycle. */
-const MAX_NETWORK_ERROR_DEPTH = 6;
+/** Any network code of {@link NETWORK_FAILURE_BY_CODE}, or undici's bare `fetch failed`, in rendered error text. */
+const UNREACHABLE_TEXT = new RegExp([...Object.keys(NETWORK_FAILURE_BY_CODE), "fetch failed"].join("|"), "i");
 
 /**
  * The transport cause of a failed request, read from the error's own `code`, its `cause` chain (where
@@ -166,20 +160,21 @@ const MAX_NETWORK_ERROR_DEPTH = 6;
  */
 export function networkFailureReason(err: unknown): NetworkFailureReason | undefined {
   try {
-    const queue: Array<{ value: unknown; depth: number }> = [{ value: err, depth: 0 }];
-    const seen = new Set<unknown>();
-    while (queue.length > 0) {
-      const { value, depth } = queue.shift()!;
-      if (typeof value !== "object" || value === null || seen.has(value) || depth > MAX_NETWORK_ERROR_DEPTH) continue;
-      seen.add(value);
-      const { code, cause, errors } = value as { code?: unknown; cause?: unknown; errors?: unknown };
-      const reason = typeof code === "string" && Object.hasOwn(NETWORK_FAILURE_BY_CODE, code) ? NETWORK_FAILURE_BY_CODE[code] : undefined;
-      if (reason) return reason;
-      if (cause !== undefined) queue.push({ value: cause, depth: depth + 1 });
-      if (Array.isArray(errors)) for (const inner of errors) queue.push({ value: inner, depth: depth + 1 });
-    }
+    return reasonAt(err, 0);
   } catch {
-    // A throwing getter on a hostile error object: no network cause.
+    return undefined; // a throwing getter on a hostile error object: no network cause
+  }
+}
+
+function reasonAt(value: unknown, depth: number): NetworkFailureReason | undefined {
+  if (depth > MAX_CAUSE_DEPTH || typeof value !== "object" || value === null) return undefined;
+  const { code, cause, errors } = value as { code?: unknown; cause?: unknown; errors?: unknown };
+  if (typeof code === "string" && Object.hasOwn(NETWORK_FAILURE_BY_CODE, code)) return NETWORK_FAILURE_BY_CODE[code];
+  const inner = reasonAt(cause, depth + 1);
+  if (inner || !Array.isArray(errors)) return inner;
+  for (const attempt of errors) {
+    const reason = reasonAt(attempt, depth + 1);
+    if (reason) return reason;
   }
   return undefined;
 }

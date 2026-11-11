@@ -392,7 +392,8 @@ export interface ToolFailureClass {
 export interface ToolFailureLike {
   /**
    * `invalid-input` (the CLI rejected the arguments before sending), `not-authenticated` (no usable credentials),
-   * `connection-refused` / `connection-reset` / `network-error` (`networkFailureReason` of the thrown error), `timeout` (the CLI's own `--timeout`), `http-error`
+   * `connection-refused` / `connection-reset` / `network-error` (`networkFailureReason` of the thrown error),
+   * `timeout` (the CLI's own `--timeout`), `http-error`
    * (the server answered with an error status); anything else (`aborted`, `unknown`) is unclassified.
    */
   reason: string;
