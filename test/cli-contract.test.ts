@@ -254,6 +254,10 @@ describe("classifyToolFailure", () => {
     expect(classifyToolFailure({ reason: "http-error", httpStatus: 500, message: "No connected clients" }).code).toBe("UNREACHABLE");
     expect(classifyToolFailure({ reason: "http-error", httpStatus: 503, data: { error: "Reloading" }, message: "No connected clients" }).code).toBe("BUSY");
     expect(http(503, "Plugin reloading; this call was not run").code).toBe("BUSY");
+    expect(http(404, "The engine for this project is not connected — open the project in your editor.")).toEqual({ exitCode: 7, code: "UNREACHABLE", httpStatus: 404 });
+    // A tool's own error that mentions the same words: the tool ran and failed.
+    expect(http(422, "No connected clients in the lobby").code).toBe("TOOL_FAILED");
+    expect(http(500, "Tool execution failed for 'net-status': No connected clients").code).toBe("TOOL_FAILED");
   });
 
   it("classifies a call that got no answer by why", () => {
@@ -280,8 +284,7 @@ describe("classifyToolFailure", () => {
     for (const row of TOOL_FAILURE_CODES) {
       expect(EXIT_CODES.some((e) => e.code === row.exitCode)).toBe(true);
       for (const status of row.httpStatus) {
-        const text = row.code === "USAGE" && status === 422 ? "[invalid_params] x" : undefined;
-        expect(http(status, text), `${status} → ${row.code}`).toEqual({ exitCode: row.exitCode, code: row.code, httpStatus: status });
+        expect(http(status), `${status} → ${row.code}`).toEqual({ exitCode: row.exitCode, code: row.code, httpStatus: status });
       }
     }
     const codes = TOOL_FAILURE_CODES.map((r) => r.code);

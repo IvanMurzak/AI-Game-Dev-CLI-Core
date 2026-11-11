@@ -16,7 +16,8 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
   the MCP server's HTTP status (400 / other 4xx → 2 `USAGE`, 404 → 2 `NOT_FOUND`, 401/403 → 6
   `NOT_AUTHENTICATED`, 409/422/500 → 6 `TOOL_FAILED`, 502 → 7 `UNREACHABLE`, 408/504 → 14 `TIMEOUT`,
   429/503 → 17 `BUSY`), reads the server's error text for two cases (a 422 `[invalid_params]` is
-  `USAGE`; "No engine plugin is connected" is `UNREACHABLE` whatever the status), and otherwise
+  `USAGE`; a server text that starts with "No engine plugin is connected" or "The engine for this
+  project is not connected" is `UNREACHABLE` on any status but 422), and otherwise
   classifies by why no answer came (refused / reset / network → 7, `--timeout` → 14, invalid input
   → 2, not authenticated → 6, aborted / unknown → 1 `ERROR`). Also `classifyHttpFailure`,
   `classifyEditorStartFailure` (no project at the path → 2 `NOT_FOUND`, a bad option → 2 `USAGE`, build failed → 6 `COMPILATION_FAILED`,

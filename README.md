@@ -109,7 +109,7 @@ engine-specific adapters over it. The shared modules land here through the `auth
 
     | Condition | HTTP status | Exit | Error code |
     |---|---|---|---|
-    | Bad arguments: a bad flag, tool arguments the CLI or the server rejected (any 4xx not listed) | 400, 422 `[invalid_params]` | 2 | `USAGE` |
+    | Bad arguments: a bad flag, tool arguments the CLI or the server rejected (any 4xx not listed) | 400 (a 422 `[invalid_params]`) | 2 | `USAGE` |
     | No tool by that name, or no project at the path | 404 | 2 | `NOT_FOUND` |
     | No usable credentials, or the server refused them | 401, 403 | 6 | `NOT_AUTHENTICATED` |
     | The tool ran and reported an error (`status: "error"`, any 5xx not listed) | 409, 422, 500 | 6 | `TOOL_FAILED` |

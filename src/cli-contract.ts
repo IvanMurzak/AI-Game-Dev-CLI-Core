@@ -424,10 +424,12 @@ const toolClass = (code: ToolFailureCode): ToolFailureClass => ({ exitCode: EXIT
  * would replace them.
  *
  * The MCP server is up but no engine plugin is connected to it (McpPlugin.Server's "No engine plugin is connected",
- * the cloud hub's "No game engine is connected for your account", older servers' "No connected clients"): the editor
- * is unreachable, whatever the status (503).
+ * its account mode's "The engine for this project is not connected", the cloud hub's "No game engine is connected for
+ * your account", older servers' "No connected clients"): the editor is unreachable, whatever the status (503, 404,
+ * 500). Matched at the start of the server's own text only, and never on a 422: a tool's error ("Tool execution failed
+ * for ...") may say the same words about something else.
  */
-const NO_PLUGIN_CONNECTED = /no (engine plugin|game engine) is connected|no connected clients/i;
+const NO_PLUGIN_CONNECTED = /^\s*(no (engine plugin|game engine) is connected|the engine for this project is not connected|no connected clients)/i;
 
 /** Arguments the server rejected before the tool ran: McpPlugin answers them as 422 with this prefix. */
 const INVALID_PARAMS = /^\s*\[invalid_params\]/;
@@ -448,7 +450,7 @@ export function classifyHttpFailure(httpStatus: number, errorText = ""): ToolFai
 }
 
 function httpFailureCode(status: number, errorText: string): ToolFailureCode {
-  if (status === 502 || NO_PLUGIN_CONNECTED.test(errorText)) return "UNREACHABLE";
+  if (status === 502 || (status !== 422 && NO_PLUGIN_CONNECTED.test(errorText))) return "UNREACHABLE";
   switch (status) {
     case 401:
     case 403:
@@ -534,7 +536,7 @@ export const TOOL_FAILURE_CODES: readonly ToolFailureCodeInfo[] = [
   {
     code: "USAGE",
     exitCode: EXIT_OF.USAGE,
-    httpStatus: [400, 422],
+    httpStatus: [400],
     condition: "Bad arguments: a bad flag, tool arguments rejected by the CLI before sending or by the server (400, any 4xx not listed here, a 422 whose error starts with [invalid_params]).",
   },
   { code: "NOT_FOUND", exitCode: EXIT_OF.NOT_FOUND, httpStatus: [404], condition: "No tool by that name, or no project at the path." },
