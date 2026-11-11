@@ -88,5 +88,5 @@ describe("networkFailureReason on real dropped connections (Node fetch)", () => 
     await new Promise<void>((resolve) => closed.close(() => resolve()));
     const err = await fetch(`http://127.0.0.1:${port}/`).then(() => undefined, (e: unknown) => e);
     expect(networkFailureReason(err)).toBe("connection-refused");
-  });
+  }, 20_000); // Windows retries a refused loopback connect for about 2 s
 });
