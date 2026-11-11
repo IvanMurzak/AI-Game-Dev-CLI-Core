@@ -20,7 +20,7 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
   classifies by why no answer came (refused / reset / network → 7, `--timeout` → 14, invalid input
   → 2, not authenticated → 6, aborted / unknown → 1 `ERROR`). Also `classifyHttpFailure`,
   `classifyEditorStartFailure` (no project at the path → 2 `NOT_FOUND`, a bad option → 2 `USAGE`, build failed → 6 `COMPILATION_FAILED`,
-  start lock busy → 17 `BUSY`, else 7 `UNREACHABLE`), `serverErrorText` and `TOOL_FAILED`.
+  start lock busy → 17 `BUSY`, else 7 `UNREACHABLE`), and `serverErrorText`.
 - `TOOL_FAILURE_CODES`: that table, as data. The `commands` manifest gains `errorCodes` with it;
   `toolFailureCodeLine` prints one row for a text-mode `commands`.
 - The envelope error has an optional `httpStatus` (`errors[{code, message, httpStatus}]`), and

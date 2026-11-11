@@ -18,7 +18,6 @@ import {
   renderEnvelope,
   resetEnvelopeStateForTests,
   serverErrorText,
-  TOOL_FAILED,
   TOOL_FAILURE_CODES,
   toolFailureCodeLine,
   type ManifestCommandSource,
@@ -266,7 +265,7 @@ describe("classifyToolFailure", () => {
     }
     expect(classifyToolFailure({ reason: "aborted" })).toEqual({ exitCode: 1, code: "ERROR" });
     expect(classifyToolFailure({ reason: "unknown" })).toEqual({ exitCode: 1, code: "ERROR" });
-    expect(classifyToolFailure({ reason: "http-error" })).toEqual(TOOL_FAILED);
+    expect(classifyToolFailure({ reason: "http-error" })).toEqual({ exitCode: 6, code: "TOOL_FAILED" });
   });
 
   it("classifies an editor that could not be started", () => {

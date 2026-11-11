@@ -549,7 +549,6 @@ export {
   classifyHttpFailure,
   classifyEditorStartFailure,
   serverErrorText,
-  TOOL_FAILED,
   TOOL_FAILURE_CODES,
   toolFailureCodeLine,
 } from "./cli-contract.js";

@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import { inspect } from "node:util";
 
 import { isErrno } from "./atomic-file.js";
+import type { EditorSessionErrorReason } from "./editor-session.js";
 import { errorMessage } from "./network-error.js";
 
 /**
@@ -402,12 +403,26 @@ export interface ToolFailureLike {
   message?: string;
 }
 
-const toolClass = (exitCode: ExitCodeValue, code: ToolFailureCode): ToolFailureClass => ({ exitCode, code });
+/** The exit code of each error code: one per code, whatever led to it. */
+const EXIT_OF: Readonly<Record<ToolFailureCode, ExitCodeValue>> = {
+  USAGE: ExitCode.Usage,
+  NOT_FOUND: ExitCode.Usage,
+  NOT_AUTHENTICATED: ExitCode.CommandFailed,
+  TOOL_FAILED: ExitCode.CommandFailed,
+  COMPILATION_FAILED: ExitCode.CommandFailed,
+  UNREACHABLE: ExitCode.Unreachable,
+  TIMEOUT: ExitCode.Timeout,
+  BUSY: ExitCode.Busy,
+  ERROR: ExitCode.Error,
+};
 
-/** The tool ran and reported an error (`status: "error"` in its answer, HTTP 409 / 422 / 500): exit 6. */
-export const TOOL_FAILED: ToolFailureClass = Object.freeze(toolClass(ExitCode.CommandFailed, "TOOL_FAILED"));
+const toolClass = (code: ToolFailureCode): ToolFailureClass => ({ exitCode: EXIT_OF[code], code });
 
 /**
+ * The two cases the HTTP status alone does not tell apart. The server's error kind is not in its answer (only the
+ * status and `{ "error": "<text>" }`), so these match the text the servers send; a structured code in the error body
+ * would replace them.
+ *
  * The MCP server is up but no engine plugin is connected to it (McpPlugin.Server's "No engine plugin is connected",
  * the cloud hub's "No game engine is connected for your account", older servers' "No connected clients"): the editor
  * is unreachable, whatever the status (503).
@@ -429,29 +444,29 @@ export function serverErrorText(data: unknown): string | undefined {
  * `/api/system-tools`), by HTTP semantics ({@link TOOL_FAILURE_CODES}). `errorText`: the server's error text.
  */
 export function classifyHttpFailure(httpStatus: number, errorText = ""): ToolFailureClass {
-  return { ...classifyStatus(httpStatus, errorText), httpStatus };
+  return { ...toolClass(httpFailureCode(httpStatus, errorText)), httpStatus };
 }
 
-function classifyStatus(status: number, errorText: string): ToolFailureClass {
-  if (status === 502 || NO_PLUGIN_CONNECTED.test(errorText)) return toolClass(ExitCode.Unreachable, "UNREACHABLE");
+function httpFailureCode(status: number, errorText: string): ToolFailureCode {
+  if (status === 502 || NO_PLUGIN_CONNECTED.test(errorText)) return "UNREACHABLE";
   switch (status) {
     case 401:
     case 403:
-      return toolClass(ExitCode.CommandFailed, "NOT_AUTHENTICATED");
+      return "NOT_AUTHENTICATED";
     case 404:
-      return toolClass(ExitCode.Usage, "NOT_FOUND");
+      return "NOT_FOUND";
     case 408:
     case 504:
-      return toolClass(ExitCode.Timeout, "TIMEOUT");
+      return "TIMEOUT";
     case 429:
     case 503:
-      return toolClass(ExitCode.Busy, "BUSY");
+      return "BUSY";
     case 409:
-      return TOOL_FAILED;
+      return "TOOL_FAILED";
     case 422:
-      return INVALID_PARAMS.test(errorText) ? toolClass(ExitCode.Usage, "USAGE") : TOOL_FAILED;
+      return INVALID_PARAMS.test(errorText) ? "USAGE" : "TOOL_FAILED";
   }
-  return status >= 400 && status < 500 ? toolClass(ExitCode.Usage, "USAGE") : TOOL_FAILED;
+  return status >= 400 && status < 500 ? "USAGE" : "TOOL_FAILED";
 }
 
 /**
@@ -462,20 +477,20 @@ export function classifyToolFailure(failed: ToolFailureLike): ToolFailureClass {
   switch (failed.reason) {
     case "http-error":
       return failed.httpStatus === undefined
-        ? TOOL_FAILED
+        ? toolClass("TOOL_FAILED")
         : classifyHttpFailure(failed.httpStatus, serverErrorText(failed.data) ?? failed.message);
     case "invalid-input":
-      return toolClass(ExitCode.Usage, "USAGE");
+      return toolClass("USAGE");
     case "not-authenticated":
-      return toolClass(ExitCode.CommandFailed, "NOT_AUTHENTICATED");
+      return toolClass("NOT_AUTHENTICATED");
     case "timeout":
-      return toolClass(ExitCode.Timeout, "TIMEOUT");
+      return toolClass("TIMEOUT");
     case "connection-refused":
     case "connection-reset":
     case "network-error":
-      return toolClass(ExitCode.Unreachable, "UNREACHABLE");
+      return toolClass("UNREACHABLE");
     default:
-      return toolClass(ExitCode.Error, "ERROR");
+      return toolClass("ERROR");
   }
 }
 
@@ -488,16 +503,16 @@ export interface EditorStartFailureLike {
   /** The project's code did not build, so no editor was started. */
   buildFailed?: boolean;
   /** The editor session's error reason; `lock-busy`: another CLI call held the project's start lock all along. */
-  sessionReason?: string;
+  sessionReason?: EditorSessionErrorReason;
 }
 
 /** The exit code and error code of a command that got no ready editor ({@link TOOL_FAILURE_CODES}). */
 export function classifyEditorStartFailure(failed: EditorStartFailureLike): ToolFailureClass {
-  if (failed.projectNotFound) return toolClass(ExitCode.Usage, "NOT_FOUND");
-  if (failed.invalidInput) return toolClass(ExitCode.Usage, "USAGE");
-  if (failed.buildFailed) return toolClass(ExitCode.CommandFailed, "COMPILATION_FAILED");
-  if (failed.sessionReason === "lock-busy") return toolClass(ExitCode.Busy, "BUSY");
-  return toolClass(ExitCode.Unreachable, "UNREACHABLE");
+  if (failed.projectNotFound) return toolClass("NOT_FOUND");
+  if (failed.invalidInput) return toolClass("USAGE");
+  if (failed.buildFailed) return toolClass("COMPILATION_FAILED");
+  if (failed.sessionReason === "lock-busy") return toolClass("BUSY");
+  return toolClass("UNREACHABLE");
 }
 
 /** One row of {@link TOOL_FAILURE_CODES}. */
@@ -518,28 +533,28 @@ export interface ToolFailureCodeInfo {
 export const TOOL_FAILURE_CODES: readonly ToolFailureCodeInfo[] = [
   {
     code: "USAGE",
-    exitCode: ExitCode.Usage,
+    exitCode: EXIT_OF.USAGE,
     httpStatus: [400, 422],
     condition: "Bad arguments: a bad flag, tool arguments rejected by the CLI before sending or by the server (400, any 4xx not listed here, a 422 whose error starts with [invalid_params]).",
   },
-  { code: "NOT_FOUND", exitCode: ExitCode.Usage, httpStatus: [404], condition: "No tool by that name, or no project at the path." },
-  { code: "NOT_AUTHENTICATED", exitCode: ExitCode.CommandFailed, httpStatus: [401, 403], condition: "No usable credentials, or the server refused them." },
-  { code: "TOOL_FAILED", exitCode: ExitCode.CommandFailed, httpStatus: [409, 422, 500], condition: "The tool ran and reported an error (status \"error\" in its answer; the server's 409, 422, 500 or any other 5xx not listed here)." },
-  { code: "COMPILATION_FAILED", exitCode: ExitCode.CommandFailed, httpStatus: [], condition: "The project's code did not build, so no editor was started." },
+  { code: "NOT_FOUND", exitCode: EXIT_OF.NOT_FOUND, httpStatus: [404], condition: "No tool by that name, or no project at the path." },
+  { code: "NOT_AUTHENTICATED", exitCode: EXIT_OF.NOT_AUTHENTICATED, httpStatus: [401, 403], condition: "No usable credentials, or the server refused them." },
+  { code: "TOOL_FAILED", exitCode: EXIT_OF.TOOL_FAILED, httpStatus: [409, 422, 500], condition: "The tool ran and reported an error (status \"error\" in its answer; the server's 409, 422, 500 or any other 5xx not listed here)." },
+  { code: "COMPILATION_FAILED", exitCode: EXIT_OF.COMPILATION_FAILED, httpStatus: [], condition: "The project's code did not build, so no editor was started." },
   {
     code: "UNREACHABLE",
-    exitCode: ExitCode.Unreachable,
+    exitCode: EXIT_OF.UNREACHABLE,
     httpStatus: [502],
     condition: "The server or editor could not be reached: connection refused or reset, no engine plugin connected to the server (any status), the plugin lost after the call was sent (502).",
   },
-  { code: "TIMEOUT", exitCode: ExitCode.Timeout, httpStatus: [408, 504], condition: "No answer in time: the CLI's --timeout, or the server's own tool timeout." },
+  { code: "TIMEOUT", exitCode: EXIT_OF.TIMEOUT, httpStatus: [408, 504], condition: "No answer in time: the CLI's --timeout, or the server's own tool timeout." },
   {
     code: "BUSY",
-    exitCode: ExitCode.Busy,
+    exitCode: EXIT_OF.BUSY,
     httpStatus: [429, 503],
     condition: "The editor or server is busy and did not run the call (reloading, compiling, rate-limited, another CLI call holds the editor); retry later.",
   },
-  { code: "ERROR", exitCode: ExitCode.Error, httpStatus: [], condition: "Anything else: the call was aborted, an unexpected error." },
+  { code: "ERROR", exitCode: EXIT_OF.ERROR, httpStatus: [], condition: "Anything else: the call was aborted, an unexpected error." },
 ];
 
 /** One row of {@link TOOL_FAILURE_CODES} as a text line (`commands` in text mode): `NOT_FOUND  exit 2, HTTP 404: ...`. */
