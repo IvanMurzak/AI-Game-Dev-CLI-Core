@@ -105,7 +105,10 @@ engine-specific adapters over it. The shared modules land here through the `auth
     `classifyEditorStartFailure` give every engine CLI the same exit code and envelope error code for
     `run-tool`, `run-system-tool`, `exec`, `rql` and `tools`, keyed on the MCP server's HTTP status
     (HTTP statuses cannot be exit codes: those are 0–255). The status goes into the envelope error as
-    `httpStatus`. `TOOL_FAILURE_CODES` is the table:
+    `httpStatus`. A call that got no answer is classified by `networkFailureReason(err)`, which reads
+    the transport error's code through its `cause` chain, so a connection dropped mid-call
+    (`ECONNRESET`, `EPIPE`, undici's `UND_ERR_SOCKET`, ...) is `connection-reset` in every CLI.
+    `TOOL_FAILURE_CODES` is the table:
 
     | Condition | HTTP status | Exit | Error code |
     |---|---|---|---|

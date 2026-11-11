@@ -107,22 +107,74 @@ function describeErrorWithCauseUnsafe(err: unknown): string {
 }
 
 /**
- * Errnos / undici codes that mean "the server could not be reached at all" rather than "the server
- * answered and refused". Matched against {@link describeErrorWithCause}'s output, so a code that
- * only appears on the cause (where undici puts it) still classifies.
- */
-const UNREACHABLE_PATTERN =
-  /ECONNREFUSED|ENOTFOUND|EAI_AGAIN|fetch failed|ECONNRESET|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH|UND_ERR_CONNECT_TIMEOUT|UND_ERR_SOCKET/i;
-
-/**
  * The user-facing message for a transport failure in an OAuth flow (auth-code and device): prefixed
  * `Cannot reach the authorization server:` when it is an unreachable-server failure, else
  * `Authentication failed:` — always WITH the cause chain.
  */
 export function describeAuthNetworkError(err: unknown): string {
   const message = describeErrorWithCause(err);
-  if (UNREACHABLE_PATTERN.test(message)) {
+  // A transport error (refused, reset, DNS, unreachable: {@link networkFailureReason}), also when its code only
+  // shows in the rendered chain, or undici's bare `fetch failed`.
+  if (networkFailureReason(err) !== undefined || UNREACHABLE_TEXT.test(message)) {
     return `Cannot reach the authorization server: ${message}`;
   }
   return `Authentication failed: ${message}`;
+}
+
+/** Why a request got no answer, by the transport error: what a tool-call failure's `reason` names. */
+export type NetworkFailureReason = "connection-refused" | "connection-reset" | "network-error";
+
+/**
+ * Node / undici error codes, by what they mean for a call. `connection-reset`: the server took the
+ * connection and dropped it before the answer was complete — a reset (`ECONNRESET`, also Node's
+ * "socket hang up"), a write to a closed socket (`EPIPE`), undici's "other side closed" and
+ * "terminated" mid-body (`UND_ERR_SOCKET`), a closed client or a premature end of the body stream.
+ */
+const NETWORK_FAILURE_BY_CODE: Readonly<Record<string, NetworkFailureReason>> = {
+  ECONNREFUSED: "connection-refused",
+  ECONNRESET: "connection-reset",
+  EPIPE: "connection-reset",
+  ECONNABORTED: "connection-reset",
+  UND_ERR_SOCKET: "connection-reset",
+  UND_ERR_CLOSED: "connection-reset",
+  ERR_STREAM_PREMATURE_CLOSE: "connection-reset",
+  ENOTFOUND: "network-error",
+  EAI_AGAIN: "network-error",
+  ETIMEDOUT: "network-error",
+  ENETUNREACH: "network-error",
+  ENETDOWN: "network-error",
+  EHOSTUNREACH: "network-error",
+  EHOSTDOWN: "network-error",
+  UND_ERR_CONNECT_TIMEOUT: "network-error",
+};
+
+/** Any network code of {@link NETWORK_FAILURE_BY_CODE}, or undici's bare `fetch failed`, in rendered error text. */
+const UNREACHABLE_TEXT = new RegExp([...Object.keys(NETWORK_FAILURE_BY_CODE), "fetch failed"].join("|"), "i");
+
+/**
+ * The transport cause of a failed request, read from the error's own `code`, its `cause` chain (where
+ * `fetch` puts it: `TypeError: fetch failed` / `terminated` <- `SocketError UND_ERR_SOCKET`) and the
+ * attempts of an `AggregateError` (Node's happy-eyeballs connect); `undefined` when none is a known
+ * network code (an abort, a programming error). The engine CLIs map it to the shared exit code
+ * (`classifyToolFailure`: all three → exit 7 UNREACHABLE). Never throws.
+ */
+export function networkFailureReason(err: unknown): NetworkFailureReason | undefined {
+  try {
+    return reasonAt(err, 0);
+  } catch {
+    return undefined; // a throwing getter on a hostile error object: no network cause
+  }
+}
+
+function reasonAt(value: unknown, depth: number): NetworkFailureReason | undefined {
+  if (depth > MAX_CAUSE_DEPTH || typeof value !== "object" || value === null) return undefined;
+  const { code, cause, errors } = value as { code?: unknown; cause?: unknown; errors?: unknown };
+  if (typeof code === "string" && Object.hasOwn(NETWORK_FAILURE_BY_CODE, code)) return NETWORK_FAILURE_BY_CODE[code];
+  const inner = reasonAt(cause, depth + 1);
+  if (inner || !Array.isArray(errors)) return inner;
+  for (const attempt of errors) {
+    const reason = reasonAt(attempt, depth + 1);
+    if (reason) return reason;
+  }
+  return undefined;
 }
