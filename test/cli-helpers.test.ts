@@ -54,6 +54,8 @@ describe("numeric versions", () => {
     expect(isNumericVersion("1.2.3.4")).toBe(true);
     expect(isNumericVersion("v1.2.3")).toBe(false);
     expect(isNumericVersion("1.2.3-beta")).toBe(false);
+    expect(isNumericVersion("1.2.3+build")).toBe(false);
+    expect(isNumericVersion("abc")).toBe(false);
     expect(isNumericVersion("")).toBe(false);
   });
 
@@ -65,6 +67,10 @@ describe("numeric versions", () => {
     expect(isNewerVersion("1.2.3", "1.2.4")).toBe(true);
     expect(isNewerVersion("1.2.4", "1.2.3")).toBe(false);
     expect(isNewerVersion("1.2.3", "1.2.3")).toBe(false);
+    expect(isNewerVersion("1.2", "1.2.1")).toBe(true);
+    // numeric, not lexicographic: 10 > 9
+    expect(isNewerVersion("0.9.0", "0.10.0")).toBe(true);
+    expect(isNewerVersion("0.10.0", "0.9.0")).toBe(false);
   });
 });
 
