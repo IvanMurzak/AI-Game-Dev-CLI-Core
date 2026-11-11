@@ -6,12 +6,13 @@ import { writeFileAtomicSync } from "./atomic-file.js";
 import type { MachineCredentialProvider } from "./credential-provider.js";
 import { DEFAULT_CLOUD_BASE_URL } from "./enroll.js";
 import {
-  DPAPI_POWERSHELL_HOST_ENV,
+  DPAPI_HOST_REMEDY,
   MACHINE_STORE_DIR_NAME,
   defaultCredentialCodec,
   effectiveFamilies,
   type CredentialCodec,
 } from "./machine-credentials.js";
+import { errorMessage } from "./network-error.js";
 import { decodeJwtSubject } from "./oauth-device-flow.js";
 
 /**
@@ -116,33 +117,39 @@ export class ProjectKeyStoreWriteError extends Error {
   /** The cache file that could not be written. */
   readonly filePath: string;
 
-  constructor(stage: ProjectKeyStoreWriteStage, filePath: string, cause?: unknown) {
-    super(projectKeyStoreWriteMessage(stage, filePath, cause), cause === undefined ? undefined : { cause });
+  /** `readReason`: for `unreadable`, the read path's own (static) reason it could not be read. */
+  constructor(stage: ProjectKeyStoreWriteStage, filePath: string, cause?: unknown, readReason?: string) {
+    super(projectKeyStoreWriteMessage(stage, filePath, cause, readReason), cause === undefined ? undefined : { cause });
     this.name = "ProjectKeyStoreWriteError";
     this.stage = stage;
     this.filePath = filePath;
   }
 }
 
-function projectKeyStoreWriteMessage(stage: ProjectKeyStoreWriteStage, filePath: string, cause: unknown): string {
+function projectKeyStoreWriteMessage(
+  stage: ProjectKeyStoreWriteStage,
+  filePath: string,
+  cause: unknown,
+  readReason: string | undefined,
+): string {
   switch (stage) {
     case "unreadable":
       return (
-        `the project-key cache ${filePath} exists but cannot be read, so it was left untouched. ` +
-        "Delete that file to start a new cache (cached project keys are minted again on the next setup-mcp)"
+        `the project-key cache ${filePath} exists but cannot be read${readReason ? ` (${readReason})` : ""}, so it was ` +
+        "left untouched. Fix the cause and retry, or delete that file to start a new cache (its project keys stay " +
+        "valid in the configs that hold them; a new key is minted the next time one is needed)"
       );
     case "encrypt":
       return (
         `encrypting the project-key cache ${filePath} failed, so nothing was written. On Windows the DPAPI ` +
         "codec could not run (PowerShell could not be started, did not answer in time, or is in Constrained " +
-        `Language Mode): add %SystemRoot%\\System32\\WindowsPowerShell\\v1.0 to PATH, or set ${DPAPI_POWERSHELL_HOST_ENV} ` +
-        "to the absolute path of powershell.exe, then run setup-mcp again"
+        `Language Mode): ${DPAPI_HOST_REMEDY}, then retry`
       );
     case "write": {
       const code = (cause as NodeJS.ErrnoException | undefined)?.code;
       return (
         `writing the project-key cache ${filePath} failed${typeof code === "string" ? ` (${code})` : ""}. ` +
-        "Check that the folder exists, is writable by you and the disk has free space, then run setup-mcp again"
+        "Check that the folder exists, is writable by you and the disk has free space, then retry"
       );
     }
   }
@@ -254,7 +261,7 @@ export class ProjectKeyStore {
   put(entry: ProjectKeyEntry): void {
     const state = this.readState();
     if (state.status === "unreadable") {
-      throw new ProjectKeyStoreWriteError("unreadable", this.filePath, state.cause);
+      throw new ProjectKeyStoreWriteError("unreadable", this.filePath, state.cause, state.reason);
     }
     const current: ProjectKeysDocument = state.status === "ok" ? state.document : {};
     const name = projectKeyCacheKey(entry.issuer, entry.pin);
@@ -576,7 +583,7 @@ async function resolveProjectKey(options: GetOrMintProjectKeyOptions, forceMint:
     } catch (err) {
       cachedNewKey = false;
       warnings.push(
-        `The project key was minted and written to the config, but could not be cached: ${err instanceof Error ? err.message : String(err)}. ` +
+        `The project key was minted and written to the config, but could not be cached: ${errorMessage(err)}. ` +
           "Until that is fixed, every setup-mcp mints a new key.",
       );
     }

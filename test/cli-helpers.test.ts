@@ -9,9 +9,7 @@ import {
   RQL_MUTATE_TOOL,
   RQL_QUERY_TOOL,
   RQL_SCHEMA_TOOL,
-  UPDATE_CHECK_CACHE_TTL_MS,
   checkForNpmUpdate,
-  compareNumericVersions,
   decodeQueryFile,
   emitProgress,
   fetchLatestNpmVersion,
@@ -25,6 +23,8 @@ import {
   rqlStages,
   stripToolName,
 } from "../src/index.js";
+import { compareNumericVersions } from "../src/semver.js";
+import { UPDATE_CHECK_CACHE_TTL_MS } from "../src/update-check.js";
 
 const created: string[] = [];
 function tempFile(name: string): string {
@@ -139,21 +139,18 @@ describe("npm update check", () => {
 
 describe("parseJsonStrict", () => {
   it("parses valid JSON", () => {
-    expect(parseJsonStrict('{"a":1}')).toEqual({ value: { a: 1 }, raw: '{"a":1}', wasStringified: false });
+    expect(parseJsonStrict('{"a":1}')).toEqual({ value: { a: 1 }, raw: '{"a":1}' });
   });
 
   it("throws a JsonParseError with the position and a pointer snippet", () => {
-    let error: unknown;
-    try {
-      parseJsonStrict('{"a":1,}');
-    } catch (err) {
-      error = err;
-    }
-    expect(error).toBeInstanceOf(JsonParseError);
-    const e = error as JsonParseError;
-    expect(e.position).toBe(7);
-    expect(e.message).toMatch(/^Invalid JSON at position 7: /);
-    expect(e.snippet).toBe('{"a":1,}\n       ^');
+    expect(() => parseJsonStrict('{"a":1,}')).toThrow(JsonParseError);
+    expect(() => parseJsonStrict('{"a":1,}')).toThrow(
+      expect.objectContaining({
+        position: 7,
+        snippet: '{"a":1,}\n       ^',
+        message: expect.stringMatching(/^Invalid JSON at position 7: /),
+      }),
+    );
   });
 });
 

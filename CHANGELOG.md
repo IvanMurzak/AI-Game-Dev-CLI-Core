@@ -11,7 +11,7 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
 
 ### Added — helpers the engine CLIs each kept a copy of (minor: 0.10.0)
 
-- `semver`: `isNumericVersion`, `compareNumericVersions`, `isNewerVersion` — the loose
+- `semver`: `isNumericVersion`, `isNewerVersion` — the loose
   dot-separated-digits compare `unity-mcp-cli` and `godot-cli` kept byte-identical copies of.
 - `update-check` (new): `fetchLatestNpmVersion`, `checkForNpmUpdate` (24 h JSON cache, never throws),
   `npmGlobalInstallCommand`, `isRunningViaNpx`. The notice's wording and colours stay in each CLI.

@@ -5,7 +5,6 @@
 export interface JsonParseResult {
   readonly value: unknown;
   readonly raw: string;
-  readonly wasStringified: boolean;
 }
 
 export class JsonParseError extends Error {
@@ -99,7 +98,7 @@ function buildDetailedError(input: string, error: SyntaxError): JsonParseError {
 export function parseJsonStrict(input: string): JsonParseResult {
   try {
     const value = JSON.parse(input);
-    return { value, raw: input, wasStringified: false };
+    return { value, raw: input };
   } catch (error) {
     if (error instanceof SyntaxError) {
       throw buildDetailedError(input, error);

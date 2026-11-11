@@ -65,18 +65,17 @@ export async function checkForNpmUpdate(
   const now = options.now ?? Date.now;
   try {
     const cache = readUpdateCache(options.cacheFile);
+    let latest: string;
     if (cache && now() - cache.lastChecked < UPDATE_CHECK_CACHE_TTL_MS) {
-      return isNewerVersion(currentVersion, cache.latestVersion)
-        ? { current: currentVersion, latest: cache.latestVersion }
-        : null;
+      latest = cache.latestVersion;
+    } else {
+      latest = await fetchLatestNpmVersion(options.packageName, options);
+      writeUpdateCache(options.cacheFile, { latestVersion: latest, lastChecked: now() });
     }
-    const latest = await fetchLatestNpmVersion(options.packageName, options);
-    writeUpdateCache(options.cacheFile, { latestVersion: latest, lastChecked: now() });
-    if (isNewerVersion(currentVersion, latest)) return { current: currentVersion, latest };
+    return isNewerVersion(currentVersion, latest) ? { current: currentVersion, latest } : null;
   } catch {
-    // Best-effort: an update check never disrupts the command.
+    return null; // best-effort: an update check never disrupts the command
   }
-  return null;
 }
 
 function readUpdateCache(file: string): UpdateCache | null {

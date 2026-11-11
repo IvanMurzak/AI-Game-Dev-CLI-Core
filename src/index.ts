@@ -35,7 +35,7 @@
 /** The package version, mirrored from package.json (bumped by release.yml). */
 export const version = "0.0.0";
 
-export { parseSemver, isValidSemver, isNumericVersion, compareNumericVersions, isNewerVersion } from "./semver.js";
+export { parseSemver, isValidSemver, isNumericVersion, isNewerVersion } from "./semver.js";
 export { describeErrorWithCause } from "./network-error.js";
 export type { SemVer } from "./semver.js";
 
@@ -502,8 +502,6 @@ export type { ZipEntry } from "./unzip.js";
 
 // ── engine-CLI helpers: npm self-update check, strict JSON input, RQL command-line routing ──────
 export {
-  UPDATE_CHECK_CACHE_TTL_MS,
-  UPDATE_CHECK_FETCH_TIMEOUT_MS,
   fetchLatestNpmVersion,
   checkForNpmUpdate,
   npmGlobalInstallCommand,

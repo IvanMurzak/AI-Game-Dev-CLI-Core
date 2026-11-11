@@ -211,7 +211,7 @@ describe("ProjectKeyStore — ~/.ai-game-dev/project-keys.json (contract §6)", 
     const store = new ProjectKeyStore(dir, identityCredentialCodec);
     expect(store.readState().status).toBe("unreadable");
     expect(store.get(ISSUER, PIN)).toBeUndefined();
-    expect(() => seedCache(store)).toThrow(/cannot be read, so it was left untouched/);
+    expect(() => seedCache(store)).toThrow(/cannot be read \(.+\), so it was left untouched/);
     expect(fs.readFileSync(file, "utf-8")).toBe("{not json");
   });
 });
@@ -250,7 +250,9 @@ describe("ProjectKeyStore.put — write failures are one actionable error, never
     expect(err.stage).toBe("unreadable");
     expect(err.filePath).toBe(store.filePath);
     expect(err.message).toContain(store.filePath);
-    expect(err.message).toMatch(/Delete that file/);
+    // The read path's own reason is kept, then what to do.
+    expect(err.message).toContain("cannot be read (parsing the project-key cache failed (corrupted content))");
+    expect(err.message).toMatch(/Fix the cause and retry, or delete that file/);
     expect(err.cause).toBeInstanceOf(SyntaxError);
     expectClean(err);
   });
