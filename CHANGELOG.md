@@ -30,7 +30,7 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
   `filePath`, and a message that says what failed, which file and what to do; the original error is
   kept on `cause`. No secret ever reaches the message. The cache file is left untouched in every stage.
 - `getOrMintProjectKey` / `regenerateProjectKey` (and so `setup-mcp`) report that message in their
-  "minted and written to the config, but could not be cached" warning; the command still succeeds.
+  "minted but could not be cached" warning; the command still succeeds.
 
 ## 0.9.0 — 2026-11-10
 

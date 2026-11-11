@@ -301,7 +301,7 @@ describe("ProjectKeyStore.put — write failures are one actionable error, never
     if (res.kind !== "ok") return;
     expect(res.warnings).toHaveLength(1);
     const warning = res.warnings[0]!;
-    expect(warning).toMatch(/^The project key was minted and written to the config, but could not be cached: encrypting the project-key cache /);
+    expect(warning).toMatch(/^The project key was minted but could not be cached: encrypting the project-key cache /);
     expect(warning).toMatch(/every setup-mcp mints a new key\.$/);
     expect(warning).not.toContain("SECRETBLOB");
     expect(warning).not.toContain("agd_pk_");

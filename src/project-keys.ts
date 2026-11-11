@@ -583,7 +583,7 @@ async function resolveProjectKey(options: GetOrMintProjectKeyOptions, forceMint:
     } catch (err) {
       cachedNewKey = false;
       warnings.push(
-        `The project key was minted and written to the config, but could not be cached: ${errorMessage(err)}. ` +
+        `The project key was minted but could not be cached: ${errorMessage(err)}. ` +
           "Until that is fixed, every setup-mcp mints a new key.",
       );
     }
