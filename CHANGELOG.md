@@ -7,7 +7,7 @@ Versions are set at publish time by the `release.yml` workflow input (`gh workfl
 MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not auto-resolve
 `0.4.0` — adopt deliberately).
 
-## 0.12.0 — 2026-11-13
+## Unreleased
 
 ### Fixed — a copied project never closes the original project's editor (minor: 0.12.0)
 
