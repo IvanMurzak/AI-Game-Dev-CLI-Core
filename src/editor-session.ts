@@ -146,8 +146,11 @@ export interface SessionProcessOps {
   isAlive(pid: number): boolean;
   /** An opaque token for the process start time of `pid`; undefined when it cannot be read. */
   processStart(pid: number): Promise<string | undefined>;
-  /** The command line of `pid` ({@link readProcessCommandLine}); undefined when it cannot be read. */
-  commandLine(pid: number): Promise<string | undefined>;
+  /**
+   * The command line of `pid` ({@link readProcessCommandLine}); undefined when it cannot be read.
+   * Optional so a complete ops object written before it was added keeps compiling (absent: unknown).
+   */
+  commandLine?(pid: number): Promise<string | undefined>;
   /** The OS polite-quit request (SIGTERM / `taskkill` without `/F`). */
   requestClose(pid: number): Promise<boolean>;
   /** Kill it and its descendants outright (SIGKILL to its process group / `taskkill /T /F`). */
@@ -793,7 +796,7 @@ export class EditorSession<TReady = unknown> {
   private async editorOpensProject(pid: number): Promise<boolean | undefined> {
     const opensProject = this._options.adapter.editor?.opensProject;
     if (opensProject === undefined) return undefined;
-    const commandLine = await this._ops.commandLine(pid);
+    const commandLine = await this._ops.commandLine?.(pid);
     return commandLine === undefined ? undefined : opensProject(commandLine, this.projectRoot);
   }
 

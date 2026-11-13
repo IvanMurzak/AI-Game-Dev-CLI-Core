@@ -19,10 +19,12 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
   counts only when the editor's command line opens this project (`EditorLaunchSpec.opensProject`,
   for Unity `-projectPath`, Godot `--path`, Unreal the `*.uproject` folder; symlink- and, on
   Windows and macOS, case-insensitive); when the command line cannot be read it is never closed.
-- New: `SessionProcessOps.commandLine` (default `readProcessCommandLine`: `/proc/<pid>/cmdline`,
-  `Win32_Process.CommandLine`, `ps -ww -o args=`), `sessionLeaseNamesProject(lease, root)` (a cheap
-  pre-check for CLIs), and the path helpers `samePath`, `canonicalPath`, `commandLineFlagValues`,
-  `commandLineFileArgs`.
+- New: optional `SessionProcessOps.commandLine` (default `readProcessCommandLine`:
+  `/proc/<pid>/cmdline`, `Win32_Process.CommandLine`, `ps -ww -o args=`),
+  `sessionLeaseNamesProject(lease, root)` (a cheap pre-check for CLIs), and the path helpers
+  `samePath`, `canonicalPath`, `commandLineFlagValues`, `commandLineFileArgs`,
+  `commandLineOpensFolder` (an unquoted `ps` line is ambiguous: the longest candidate that exists
+  is the editor's argument; a relative one never counts).
 
 ### Added — one mapping of a dropped connection to its failure reason (patch: 0.11.1)
 

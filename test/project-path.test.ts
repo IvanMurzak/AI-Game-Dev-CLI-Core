@@ -5,7 +5,13 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { godotAdapter, unityAdapter, unrealAdapter } from "../src/engine-adapter.js";
 import { readProcessCommandLine } from "../src/process.js";
-import { canonicalPath, commandLineFileArgs, commandLineFlagValues, samePath } from "../src/project-path.js";
+import {
+  canonicalPath,
+  commandLineFileArgs,
+  commandLineFlagValues,
+  commandLineOpensFolder,
+  samePath,
+} from "../src/project-path.js";
 
 let dir: string;
 beforeEach(() => {
@@ -67,22 +73,70 @@ describe("commandLineFileArgs", () => {
   });
 });
 
+describe("commandLineOpensFolder", () => {
+  it("takes the longest candidate that exists: `/p/Game - old` is not `/p/Game`", () => {
+    const game = path.join(dir, "Game");
+    const old = path.join(dir, "Game - old");
+    fs.mkdirSync(game);
+    fs.mkdirSync(old);
+    const line = `/u/Unity -batchmode -projectPath ${old} -logFile -`;
+    expect(unityAdapter.editor!.opensProject!(line, game)).toBe(false);
+    expect(unityAdapter.editor!.opensProject!(line, old)).toBe(true);
+  });
+
+  it("never counts a relative candidate (it would resolve against our working directory)", () => {
+    const cwd = process.cwd();
+    const copy = path.join(dir, "My Game copy");
+    fs.mkdirSync(copy);
+    fs.writeFileSync(path.join(copy, "My Game.uproject"), "{}");
+    process.chdir(copy);
+    try {
+      const line = `/ue/UnrealEditor ${path.join(dir, "My Game", "My Game.uproject")} -RenderOffscreen`;
+      expect(unrealAdapter.editor!.opensProject!(line, copy)).not.toBe(true);
+    } finally {
+      process.chdir(cwd);
+    }
+  });
+
+  it("an ambiguous line none of whose candidates exists does not tell; a single one is taken as it is", () => {
+    expect(commandLineOpensFolder(["/gone/a", "/gone/a -x"], "/gone/a")).toBeUndefined();
+    expect(commandLineOpensFolder(["/gone/a"], "/gone/a")).toBe(true);
+    expect(commandLineOpensFolder([], "/gone/a")).toBe(false);
+  });
+});
+
 describe("EditorLaunchSpec.opensProject", () => {
   it("Unity: -projectPath names exactly this project, never a sibling sharing its prefix", () => {
     const opens = unityAdapter.editor!.opensProject!;
-    expect(opens("/u/Unity -batchmode -projectPath /p/Proj -logFile -", "/p/Proj")).toBe(true);
-    expect(opens("/u/Unity -batchmode -projectPath /p/Proj copy -logFile -", "/p/Proj")).toBe(false);
-    expect(opens("/u/Unity -batchmode -projectPath /p/Proj -logFile -", "/p/Proj copy")).toBe(false);
-    expect(opens("/u/Unity -batchmode -projectPath /p/Proj copy", "/p/Proj copy")).toBe(true);
-    expect(opens("/u/Unity -batchmode", "/p/Proj")).toBe(false);
+    const proj = path.join(dir, "Proj");
+    const copy = path.join(dir, "Proj copy");
+    fs.mkdirSync(proj);
+    fs.mkdirSync(copy);
+    expect(opens(`/u/Unity -batchmode -projectPath ${proj} -logFile -`, proj)).toBe(true);
+    expect(opens(`/u/Unity -batchmode -projectPath ${copy} -logFile -`, proj)).toBe(false);
+    expect(opens(`/u/Unity -batchmode -projectPath ${proj} -logFile -`, copy)).toBe(false);
+    expect(opens(`/u/Unity -batchmode -projectPath ${copy}`, copy)).toBe(true);
+    expect(opens(`"C:\\U\\Unity.exe" -projectPath "${proj}" -batchmode`, proj)).toBe(true);
+    expect(opens("/u/Unity -batchmode", proj)).toBe(false);
   });
 
   it("Godot: --path; Unreal: the .uproject's folder", () => {
-    expect(godotAdapter.editor!.opensProject!("godot --headless --editor --path /p/G", "/p/G")).toBe(true);
-    expect(godotAdapter.editor!.opensProject!("godot --headless --editor --path /p/G2", "/p/G")).toBe(false);
+    const g = path.join(dir, "G");
+    const g2 = path.join(dir, "G2");
+    fs.mkdirSync(g);
+    fs.mkdirSync(g2);
+    expect(godotAdapter.editor!.opensProject!(`godot --headless --editor --path ${g}`, g)).toBe(true);
+    expect(godotAdapter.editor!.opensProject!(`godot --headless --editor --path ${g2}`, g)).toBe(false);
+    const game = path.join(dir, "My Game");
+    const copy = path.join(dir, "My Game copy");
+    for (const folder of [game, copy]) {
+      fs.mkdirSync(folder);
+      fs.writeFileSync(path.join(folder, "G.uproject"), "{}");
+    }
     const unreal = unrealAdapter.editor!.opensProject!;
-    expect(unreal("/ue/UnrealEditor /p/My Game/G.uproject -RenderOffscreen", "/p/My Game")).toBe(true);
-    expect(unreal("/ue/UnrealEditor /p/My Game copy/G.uproject -RenderOffscreen", "/p/My Game")).toBe(false);
+    expect(unreal(`/ue/UnrealEditor ${path.join(game, "G.uproject")} -RenderOffscreen`, game)).toBe(true);
+    expect(unreal(`/ue/UnrealEditor ${path.join(copy, "G.uproject")} -RenderOffscreen`, game)).toBe(false);
+    expect(unreal(`/ue/UnrealEditor ${path.join(game, "G.uproject")} -RenderOffscreen`, copy)).toBe(false);
   });
 });
 

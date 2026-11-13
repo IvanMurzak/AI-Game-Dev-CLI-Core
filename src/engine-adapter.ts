@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import type { SessionLease } from "./editor-session.js";
-import { commandLineFileArgs, commandLineFlagValues, samePath } from "./project-path.js";
+import { commandLineFileArgs, commandLineFlagValues, commandLineOpensFolder } from "./project-path.js";
 import { normalizeServerBase } from "./token-refresher.js";
 
 /**
@@ -137,9 +137,10 @@ export interface EditorLaunchSpec {
    * ../process.readProcessCommandLine}) has `projectRoot` open. A session uses it to tell whether the
    * editor of a lease written before leases named their project ({@link SessionLease.projectRoot}) is
    * this project's: a project folder copied with its lease names the ORIGINAL project's editor.
-   * Absent: such a lease is never trusted to close an editor.
+   * Undefined when the command line does not tell. Absent or undefined: such a lease is never
+   * trusted to close an editor.
    */
-  opensProject?(commandLine: string, projectRoot: string): boolean;
+  opensProject?(commandLine: string, projectRoot: string): boolean | undefined;
 }
 
 /** Names of the files directly in `dir` ending in `ext` (case-insensitive); `[]` when unreadable. */
@@ -240,7 +241,7 @@ export const unityAdapter: EngineAdapter = {
   // Headless keeps graphics (no `-nographics`): cameras still render for screenshots (plan §3).
   editor: {
     args: (root, mode) => [...(mode === "headless" ? ["-batchmode"] : []), "-projectPath", path.resolve(root)],
-    opensProject: (commandLine, root) => commandLineFlagValues(commandLine, "-projectPath").some((value) => samePath(value, root)),
+    opensProject: (commandLine, root) => commandLineOpensFolder(commandLineFlagValues(commandLine, "-projectPath"), root),
   },
 };
 
@@ -267,7 +268,7 @@ export const unrealAdapter: EngineAdapter = {
       ...(mode === "headless" ? ["-RenderOffscreen", "-unattended", "-nosplash"] : []),
     ],
     opensProject: (commandLine, root) =>
-      commandLineFileArgs(commandLine, ".uproject").some((file) => samePath(path.dirname(path.resolve(file)), root)),
+      commandLineOpensFolder(commandLineFileArgs(commandLine, ".uproject"), root, (file) => path.dirname(file)),
   },
 };
 
@@ -290,7 +291,7 @@ export const godotAdapter: EngineAdapter = {
   loginServerTarget: toAuthServerRoot,
   editor: {
     args: (root, mode) => [...(mode === "headless" ? ["--headless"] : []), "--editor", "--path", path.resolve(root)],
-    opensProject: (commandLine, root) => commandLineFlagValues(commandLine, "--path").some((value) => samePath(value, root)),
+    opensProject: (commandLine, root) => commandLineOpensFolder(commandLineFlagValues(commandLine, "--path"), root),
   },
 };
 

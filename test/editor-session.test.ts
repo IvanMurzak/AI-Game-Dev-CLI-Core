@@ -960,11 +960,13 @@ describe("a project folder copied with its lease (DEV-44)", () => {
     });
 
     it("is stale when the editor opens another project (the original of a copy)", async () => {
+      fs.mkdirSync(`${root} copy`);
       const pid = world.addProcess("s1", `/opt/unity/Editor -batchmode -projectPath ${root} copy -logFile -`);
       writeLease({ pid });
       expect(await session().closeOwned({ force: true })).toEqual({ kind: "not-owned", staleLeaseRemoved: true });
       expect(world.closeRequests).toHaveLength(0);
       expect(world.procs.get(pid)!.alive).toBe(true);
+      fs.rmSync(`${root} copy`, { recursive: true, force: true });
     });
 
     it("is unverifiable (kept, never closed) when the command line cannot be read", async () => {
