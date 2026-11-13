@@ -37,10 +37,7 @@ function splitTopLevel(text: string, sep: "|" | ";"): string[] {
   return segments;
 }
 
-/**
- * The query's top-level stages (split on `|` outside strings, `backtick` identifiers, parentheses,
- * brackets and braces; `||` is RQL's or, not a stage break), trimmed.
- */
+/** The query's top-level stages (cut at `|` as {@link splitTopLevel} does; `||` is RQL's or), trimmed. */
 export function rqlStages(query: string): string[] {
   return splitTopLevel(query, "|").map((s) => s.trim());
 }
@@ -70,8 +67,7 @@ export function stripToolName(query: string): string {
 
 /**
  * The statements of RQL request text, exactly as RQL splits them (spec §14, `RqlParser.SplitStatements`; conformance
- * cases `fixtures/statements/cases.json`): at each `;` outside string literals (either quote, backslash escapes
- * honoured; an unterminated one runs to the end), `backtick` identifiers and brackets, trimmed, blank ones dropped.
+ * cases `fixtures/statements/cases.json`): cut at `;` as {@link splitTopLevel} does, trimmed, blank ones dropped.
  * Text without a separator is one statement; text of nothing but separators and blanks is one blank statement (RQL
  * reports the empty query). No statement cap: RQL reports too many itself.
  */
