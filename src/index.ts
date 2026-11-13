@@ -352,7 +352,6 @@ export {
   buildSessionEnv,
   parseSessionLease,
   readSessionLease,
-  sessionLeaseNamesProject,
   ensureAiGameDevGitignore,
   waitForReady,
   defaultSessionProcessOps,
@@ -368,8 +367,7 @@ export {
   DEFAULT_SESSION_STARTUP_LOCK_WAIT_MS,
   DEFAULT_SESSION_FOREIGN_RECHECK_MS,
 } from "./editor-session.js";
-export { isProcessAlive, readProcessStart, readProcessCommandLine, killProcessTree } from "./process.js";
-export { canonicalPath, samePath, commandLineFlagValues, commandLineFileArgs, commandLineOpensFolder } from "./project-path.js";
+export { isProcessAlive, readProcessStart, killProcessTree } from "./process.js";
 export { probeMcpServer, mcpReadinessProbe, MCP_PING_PATH } from "./mcp-ping.js";
 export type { McpProbeResult } from "./mcp-ping.js";
 export type {
@@ -522,13 +520,7 @@ export {
   isRqlMutation,
   stripToolName,
   decodeQueryFile,
-  splitRqlStatements,
-  stripRqlToolNames,
-  rqlTextVerb,
-  rqlToolFor,
-  rqlToolCall,
 } from "./rql.js";
-export type { RqlCallOptions, RqlToolCall } from "./rql.js";
 
 // ── ui / progress utilities ─────────────────────────────────────────────────────────────────────
 export { renderTable, truncate } from "./ui.js";
