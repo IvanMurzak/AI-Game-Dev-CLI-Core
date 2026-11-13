@@ -31,6 +31,7 @@ contract. Each engine CLI is a thin adapter on top of it, so all of them behave 
 | 🎮 | **Editor sessions** | Reuse a running editor or start one headless; close only the editors the CLI started |
 | 📦 | **Server download** | Downloads the MCP server and checks its SHA-256 before running it |
 | 📤 | **CLI contract** | Shared exit codes, `--format text\|json\|ndjson`, and one JSON result envelope |
+| 🔄 | **Update check** | Tells the user when a newer CLI version is on npm |
 | 🧱 | **`EngineAdapter`** | The only place where Unity, Unreal and Godot differ |
 
 ## See it in action
@@ -115,7 +116,7 @@ Scripts and AI agents can rely on these in every engine CLI:
 | `8` | Tests failed | |
 | `14` | Timed out | `TIMEOUT` |
 | `17` | Busy: try again later, nothing ran | `BUSY` |
-| `18` | A modal dialog blocks the editor: a human must answer it | `AWAITING_INPUT` |
+| `18` | A modal dialog blocks the editor: a human must answer it | |
 
 The full table, with HTTP statuses, is `TOOL_FAILURE_CODES` and `EXIT_CODES` in
 [`src/cli-contract.ts`](src/cli-contract.ts).
