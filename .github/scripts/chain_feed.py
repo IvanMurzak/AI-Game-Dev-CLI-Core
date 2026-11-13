@@ -24,7 +24,7 @@ ARTIFACT it was read from (`project.assets.json`, a DLL sha256, `chain-identity.
 an exit code.
 """
 
-CHAIN_FEED_VERSION = "10"
+CHAIN_FEED_VERSION = "11"
 
 import argparse
 import hashlib
@@ -1493,9 +1493,20 @@ def twin_sha(ctx, twin):
     return sha
 
 
+def twin_lower_edges(ctx):
+    """The `nuget` edges of every pinned twin whose producer moves in this lock.
+
+    A twin checkout restores its own packages, so a producer it pins at an UNRELEASED version
+    (`ReflectorNet >= 5.5.3` while 5.5.3 is only this lock's ws build) fails NU1102 unless the leg
+    self-builds that producer into the feed and overrides it in the twin, exactly as it does for a
+    lower node's clone."""
+    return [edge for twin in pinned_twins(ctx) for edge in moving_nuget_edges(ctx, twin["node"])]
+
+
 def twin_plan(ctx):
-    """Every pinned twin as `{twin, sha, dir, env, clone}`, with ZERO side effects: `apply` runs
-    exactly the clone `dry-run` prints. A twin whose state claims a sha it lacks is refused here."""
+    """Every pinned twin as `{twin, sha, dir, env, clone, override}`, with ZERO side effects:
+    `apply` runs exactly the clone and writes exactly the override `dry-run` prints. A twin whose
+    state claims a sha it lacks is refused here."""
     plan = []
     for twin in pinned_twins(ctx):
         sha = twin_sha(ctx, twin)
@@ -1503,6 +1514,7 @@ def twin_plan(ctx):
         plan.append({
             "twin": twin, "sha": sha, "dir": as_posix_abs(directory), "env": twin_env(twin),
             "clone": clone_argv(twin["node"], sha, directory, twin_slug(twin)),
+            "override": nuget_rows_for_node(ctx, twin["node"]),
         })
     return plan
 
@@ -1688,12 +1700,17 @@ def nuget_rows_for(ctx, edges):
     return sorted(rows.values(), key=lambda r: (order.get(r["node"], 0), r["package_id"]))
 
 
-def nuget_rows_for_node(ctx, node_id):
-    """The rows a node's OWN checkout/clone needs — used by the plan and by the lower builds."""
-    edges = [
+def moving_nuget_edges(ctx, node_id):
+    """`node_id`'s own `nuget` edges whose producer is IN this lock with a ws_version."""
+    return [
         edge for edge in RECIPES[node_id]["consumes"]
         if edge["mode"] == "nuget" and ctx.ws_version(edge["node"])
     ]
+
+
+def nuget_rows_for_node(ctx, node_id):
+    """The rows a node's OWN checkout/clone needs — used by the plan, the lower builds and twins."""
+    edges = moving_nuget_edges(ctx, node_id)
     return nuget_rows_for(ctx, edges) if edges else []
 
 
@@ -2724,9 +2741,22 @@ def cmd_apply(args):
     })
     ctx.lock_path.write_text(json.dumps(ctx.lock, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
-    # 1. the lower layers IN THIS JOB'S SCOPE, in topological order, each built AND packed at
-    #    its ws version (A4).
-    for entry in build_plan(ctx, edges):
+    # a twin the lock cannot pin, or whose old checkout survives its delete, refuses here,
+    # before anything is built
+    twin_entries = twin_plan(ctx)
+    for twin_entry in twin_entries:
+        twin_dir = ctx.twin_dir(twin_entry["twin"]["node"])
+        if twin_dir.exists():
+            shutil.rmtree(str(twin_dir), ignore_errors=True)
+            if twin_dir.exists():
+                raise Refusal(
+                    "twin %s: %s survived its delete (a locked or read-only file); refusing to clone "
+                    "into a stale checkout" % (twin_repo(twin_entry["twin"]), twin_entry["dir"])
+                )
+
+    # 1. the lower layers IN THIS JOB'S SCOPE, plus those a pinned twin restores, in topological
+    #    order, each built AND packed at its ws version (A4).
+    for entry in build_plan(ctx, edges + twin_lower_edges(ctx)):
         node_id = entry["node"]
         clone_dir = ctx.clone_dir(node_id)
         if clone_dir.exists():
@@ -2763,16 +2793,9 @@ def cmd_apply(args):
     # 1b. the twins the lock pins, each cloned at the LOCK's sha — never a branch. A bogus or
     #     unreachable sha fails the fetch, and that is a refusal (exit 2), not a fallback. A twin
     #     the lock RELEASES has no sha: nothing is cloned or exported, and `record` names the gap.
-    for twin_entry in twin_plan(ctx):
+    for twin_entry in twin_entries:
         twin = twin_entry["twin"]
         twin_dir = ctx.twin_dir(twin["node"])
-        if twin_dir.exists():
-            shutil.rmtree(str(twin_dir), ignore_errors=True)
-            if twin_dir.exists():
-                raise Refusal(
-                    "twin %s: %s survived its delete (a locked or read-only file); refusing to clone "
-                    "into a stale checkout" % (twin_repo(twin), twin_entry["dir"])
-                )
         twin_dir.parent.mkdir(parents=True, exist_ok=True)
         require_tool("git", "the leg clones the %s twin at the lock sha" % twin_repo(twin))
         git_env = dict(os.environ, **_GIT_ENV)
@@ -2784,6 +2807,8 @@ def cmd_apply(args):
                     "falling back to a branch)"
                     % (twin_repo(twin), " ".join(argv), status, twin_slug(twin), twin["node"], twin_entry["sha"])
                 )
+        # the twin restores like a lower node's clone: its moving producers come from the feed
+        write_nuget_override(ctx, twin_dir, twin_entry["override"])
         exported[twin_entry["env"]] = twin_entry["dir"]
         twins.append({"node": twin["node"], "sha": twin_entry["sha"], "dir": twin_entry["dir"], "env": twin_entry["env"]})
         log("chain: twin %s @ %s -> %s (%s)" % (twin_repo(twin), twin_entry["sha"], twin_entry["dir"], twin_entry["env"]))
@@ -2982,11 +3007,16 @@ def cmd_dry_run(args):
         log("chain: twin %s @ %s — job %s of %s" % (twin_repo(twin), sha, twin["job"], twin["workflow"]))
         for argv in entry["clone"]:
             log("chain:   clone   %s" % " ".join(str(a) for a in argv))
+        for row in entry["override"]:
+            log("chain:   nuget   %s -> [%s]" % (row["package_id"], row["ws_version"]))
+        if entry["override"]:
+            log("chain:   write   %s/%s" % (entry["dir"], NUGET_CONFIG_NAME))
+            log("chain:   write   %s/%s" % (entry["dir"], TARGETS_NAME))
         log("chain:   export  %s=%s" % (entry["env"], entry["dir"]))
         log("chain:   prove   %s: git -C %s rev-parse HEAD == %s" % (twin_consumer(twin), entry["dir"], sha))
     for row in twin_skips(ctx):
         log("chain:   skip    %s: %s" % (row["step"], row["reason"]))
-    for entry in build_plan(ctx, edges):
+    for entry in build_plan(ctx, edges + twin_lower_edges(ctx)):
         log("")
         log("chain: --- %s @ %s (%s) ---" % (entry["node"], entry["ws_version"], entry["sha"]))
         for argv in entry["clone"]:
