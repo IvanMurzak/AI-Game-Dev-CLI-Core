@@ -9,67 +9,12 @@ export const RQL_MUTATE_TOOL = "rql-mutate";
 export const RQL_SCHEMA_TOOL = "rql-schema";
 
 /**
- * The query's top-level stages (split on `|` outside strings, `backtick` identifiers, parentheses,
- * brackets and braces; `||` is RQL's or, not a stage break), trimmed.
+ * The text cut at each top-level `sep`: one outside string literals (either quote, backslash escapes honoured; an
+ * unterminated one runs to the end), `backtick` identifiers (no escapes) and parentheses, brackets and braces. `||`
+ * (RQL's or) is never a break. RQL has no comments. The one lexical scan behind {@link rqlStages} and
+ * {@link splitRqlStatements}; segments come back untrimmed.
  */
-export function rqlStages(query: string): string[] {
-  const stages: string[] = [];
-  let depth = 0;
-  let quote: string | undefined;
-  let start = 0;
-  for (let i = 0; i < query.length; i++) {
-    const ch = query[i];
-    if (quote) {
-      if (ch === "\\" && quote !== "`") i++;
-      else if (ch === quote) quote = undefined;
-    } else if (ch === '"' || ch === "'" || ch === "`") {
-      quote = ch;
-    } else if (ch === "(" || ch === "[" || ch === "{") {
-      depth++;
-    } else if (ch === ")" || ch === "]" || ch === "}") {
-      depth = Math.max(0, depth - 1);
-    } else if (ch === "|" && query[i + 1] === "|") {
-      i++;
-    } else if (ch === "|" && depth === 0) {
-      stages.push(query.slice(start, i).trim());
-      start = i + 1;
-    }
-  }
-  stages.push(query.slice(start).trim());
-  return stages;
-}
-
-/** `set` or `call` when the query's last stage is one (it changes the editor), else `undefined` (it only reads). */
-export function rqlLastVerb(query: string): "set" | "call" | undefined {
-  const stages = rqlStages(query);
-  const verb = /^(set|call)\b/i.exec(stages[stages.length - 1] ?? "")?.[1];
-  return verb?.toLowerCase() as "set" | "call" | undefined;
-}
-
-/** A query whose last stage is `set` or `call` changes the editor (rql-mutate); any other only reads (rql-query). */
-export function isRqlMutation(query: string): boolean {
-  return rqlLastVerb(query) !== undefined;
-}
-
-/**
- * The query without a leading tool name: tool texts write "rql-query <source> | ...", and agents
- * paste that whole into `rql`.
- */
-export function stripToolName(query: string): string {
-  return query.replace(/^\s*rql-(query|mutate)\s+/, "");
-}
-
-/** Most statements one RQL request may hold (spec §14); RQL refuses more as a whole, nothing runs. */
-export const RQL_MAX_STATEMENTS = 10;
-
-/**
- * The statements of RQL request text, exactly as RQL splits them (spec §14, `RqlParser.SplitStatements`; conformance
- * cases `fixtures/statements/cases.json`): at each `;` outside string literals (either quote, backslash escapes
- * honoured; an unterminated one runs to the end), `backtick` identifiers and brackets, trimmed, blank ones dropped.
- * Text without a separator is one statement; text of nothing but separators and blanks is one blank statement (RQL
- * reports the empty query). Does not enforce {@link RQL_MAX_STATEMENTS}: RQL reports too many itself.
- */
-export function splitRqlStatements(text: string): string[] {
+function splitTopLevel(text: string, sep: "|" | ";"): string[] {
   const segments: string[] = [];
   let depth = 0;
   let start = 0;
@@ -81,12 +26,57 @@ export function splitRqlStatements(text: string): string[] {
       depth++;
     } else if (ch === ")" || ch === "]" || ch === "}") {
       depth = Math.max(0, depth - 1);
-    } else if (ch === ";" && depth === 0) {
-      segments.push(trimRql(text.slice(start, i)));
+    } else if (ch === "|" && text[i + 1] === "|") {
+      i++;
+    } else if (ch === sep && depth === 0) {
+      segments.push(text.slice(start, i));
       start = i + 1;
     }
   }
-  segments.push(trimRql(text.slice(start)));
+  segments.push(text.slice(start));
+  return segments;
+}
+
+/**
+ * The query's top-level stages (split on `|` outside strings, `backtick` identifiers, parentheses,
+ * brackets and braces; `||` is RQL's or, not a stage break), trimmed.
+ */
+export function rqlStages(query: string): string[] {
+  return splitTopLevel(query, "|").map((s) => s.trim());
+}
+
+/** `set` or `call` when the query's last stage is one (it changes the editor), else `undefined` (it only reads). */
+export function rqlLastVerb(query: string): "set" | "call" | undefined {
+  const stages = rqlStages(query);
+  const verb = /^(set|call)\b/i.exec(stages[stages.length - 1] ?? "")?.[1];
+  return verb?.toLowerCase() as "set" | "call" | undefined;
+}
+
+/**
+ * True when the text changes the editor (rql-mutate): some statement ends in `set` or `call`.
+ * @deprecated Use {@link rqlToolFor} (or {@link rqlToolCall}); this is `rqlToolFor(text) === RQL_MUTATE_TOOL`.
+ */
+export function isRqlMutation(query: string): boolean {
+  return rqlToolFor(query) === RQL_MUTATE_TOOL;
+}
+
+/**
+ * The query without a leading tool name: tool texts write "rql-query <source> | ...", and agents
+ * paste that whole into `rql`.
+ */
+export function stripToolName(query: string): string {
+  return query.replace(/^\s*rql-(query|mutate)\s+/, "");
+}
+
+/**
+ * The statements of RQL request text, exactly as RQL splits them (spec §14, `RqlParser.SplitStatements`; conformance
+ * cases `fixtures/statements/cases.json`): at each `;` outside string literals (either quote, backslash escapes
+ * honoured; an unterminated one runs to the end), `backtick` identifiers and brackets, trimmed, blank ones dropped.
+ * Text without a separator is one statement; text of nothing but separators and blanks is one blank statement (RQL
+ * reports the empty query). No statement cap: RQL reports too many itself.
+ */
+export function splitRqlStatements(text: string): string[] {
+  const segments = splitTopLevel(text, ";").map(trimRql);
   if (segments.length === 1) return segments;
   const statements = segments.filter((s) => s !== "");
   return statements.length > 0 ? statements : segments.slice(0, 1);
@@ -144,6 +134,52 @@ export function rqlTextVerb(text: string): "set" | "call" | undefined {
  */
 export function rqlToolFor(text: string): typeof RQL_QUERY_TOOL | typeof RQL_MUTATE_TOOL {
   return rqlTextVerb(text) === undefined ? RQL_QUERY_TOOL : RQL_MUTATE_TOOL;
+}
+
+/** The command-line options of an engine CLI's `rql` command that pick the tool and its input. */
+export interface RqlCallOptions {
+  /** `--schema [type]`: `true` without a type. */
+  schema?: string | boolean;
+  dryRun?: boolean;
+  maxTargets?: number;
+}
+
+/** An rql-* tool and its input. */
+export interface RqlToolCall {
+  toolName: typeof RQL_QUERY_TOOL | typeof RQL_MUTATE_TOOL | typeof RQL_SCHEMA_TOOL;
+  input: Record<string, unknown>;
+}
+
+/**
+ * The rql-* tool call for an engine CLI's `rql` command line, or a usage error: `--schema [type]` goes to rql-schema
+ * (never together with a query), else the text goes to {@link rqlToolFor}'s tool; `--dry-run` / `--max-targets` only
+ * with rql-mutate. `noQueryUsage` is the CLI's own message for a missing or blank query (it names the CLI and an
+ * engine example). The query is passed through as given: strip a pasted tool name first ({@link stripRqlToolNames}).
+ */
+export function rqlToolCall(
+  query: string | undefined,
+  options: RqlCallOptions,
+  noQueryUsage: string,
+): RqlToolCall | { usage: string } {
+  const { schema, dryRun, maxTargets } = options;
+  if (schema !== undefined) {
+    // `rql --schema 'objects | count'` hands the query to --schema as its value.
+    if (query !== undefined || (typeof schema === "string" && /[|\s]/.test(schema.trim()))) {
+      return { usage: "Pass either a query or --schema [type] (a type name), not both." };
+    }
+    return { toolName: RQL_SCHEMA_TOOL, input: typeof schema === "string" ? { type: schema } : {} };
+  }
+  if (query === undefined || query.trim() === "") return { usage: noQueryUsage };
+  if (rqlToolFor(query) === RQL_QUERY_TOOL) {
+    if (dryRun || maxTargets !== undefined) {
+      return { usage: "--dry-run and --max-targets are for a query with a statement ending in set / call." };
+    }
+    return { toolName: RQL_QUERY_TOOL, input: { query } };
+  }
+  return {
+    toolName: RQL_MUTATE_TOOL,
+    input: { query, ...(dryRun ? { dry_run: true } : {}), ...(maxTargets !== undefined ? { max_targets: maxTargets } : {}) },
+  };
 }
 
 /** A query file's text: UTF-8, or UTF-16 with a byte-order mark (Windows PowerShell 5.1 writes `>` files so). */

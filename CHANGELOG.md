@@ -7,7 +7,7 @@ Versions are set at publish time by the `release.yml` workflow input (`gh workfl
 MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not auto-resolve
 `0.4.0` — adopt deliberately).
 
-## Unreleased
+## 0.12.0 — 2026-11-13
 
 ### Fixed — a copied project never closes the original project's editor (minor: 0.12.0)
 
@@ -31,11 +31,21 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
 - `splitRqlStatements(text)`: RQL request text split into its `;`-separated statements exactly as RQL splits them
   (spec §14, its `fixtures/statements/cases.json` vendored as tests): `;` separates only outside strings (either
   quote, backslash escapes), `backtick` identifiers and brackets; statements trimmed (.NET whitespace), blank ones
-  dropped; text of only separators is one blank statement. `RQL_MAX_STATEMENTS` (10) is exported; RQL enforces it.
+  dropped; text of only separators is one blank statement; no statement cap (RQL reports too many itself).
 - `rqlToolFor(text)`: `rql-mutate` when any statement ends in `set` / `call`, else `rql-query`;
   `rqlTextVerb(text)` (`call` over `set`, for save receipts); `stripRqlToolNames(text)` strips a pasted
   `rql-query` / `rql-mutate` from each statement. Replaces the three engine CLIs' own copies, which already differed
   (Godot returned no statement for blank text).
+- `rqlToolCall(query, options, noQueryUsage)` (`RqlCallOptions`, `RqlToolCall`): the `rql` command line's tool call
+  or usage error (`--schema [type]` → `rql-schema`; `--dry-run` / `--max-targets` only with `rql-mutate`), routed by
+  `rqlToolFor`. Replaces the identical `rqlToolCall` / `rqlCall` of the Unity, Godot and Unreal CLIs.
+- `rqlStages` and `splitRqlStatements` share one lexical scan (strings, `backtick` identifiers, brackets; RQL has no
+  comments), so `|` and `;` are found outside the same places.
+
+### Deprecated
+
+- `isRqlMutation(query)`: use `rqlToolFor` / `rqlToolCall`. It stays exported and now equals
+  `rqlToolFor(query) === RQL_MUTATE_TOOL`, so a write in any statement, not only the last, counts.
 
 ## 0.11.1 — 2026-11-11
 
