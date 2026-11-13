@@ -1,0 +1,112 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="500" viewBox="0 0 1200 500" role="img" aria-label="Architecture: the engine CLIs and the App call cli-core, which talks to ai-game.dev, the local MCP server, the engine editor and AI agent configs">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1020"/>
+      <stop offset="1" stop-color="#151036"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#22d3ee"/>
+      <stop offset="1" stop-color="#a855f7"/>
+    </linearGradient>
+    <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse">
+      <circle cx="1" cy="1" r="1" fill="#ffffff" fill-opacity=".06"/>
+    </pattern>
+    <clipPath id="frame"><rect width="1200" height="500" rx="20"/></clipPath>
+    <path id="l1" d="M290 128 C340 128 340 250 392 250"/>
+    <path id="l2" d="M290 208 C340 208 340 250 392 250"/>
+    <path id="l3" d="M290 288 C340 288 340 250 392 250"/>
+    <path id="l4" d="M290 368 C340 368 340 250 392 250"/>
+    <path id="r1" d="M808 250 C860 250 860 128 910 128"/>
+    <path id="r2" d="M808 250 C860 250 860 208 910 208"/>
+    <path id="r3" d="M808 250 C860 250 860 288 910 288"/>
+    <path id="r4" d="M808 250 C860 250 860 368 910 368"/>
+  </defs>
+  <style>
+    .sans { font-family: "Segoe UI", Inter, -apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif; }
+    .mono { font-family: "JetBrains Mono", "Cascadia Code", Consolas, Menlo, monospace; }
+    .head { font-size: 12px; letter-spacing: 2px; fill: #64748b; font-weight: 700; }
+    .card { fill: #0f172a; stroke: #1e293b; }
+    .t1 { font-size: 15px; font-weight: 600; fill: #e2e8f0; }
+    .t2 { font-size: 12px; fill: #94a3b8; }
+    .wire { fill: none; stroke-width: 1.6; stroke-dasharray: 4 6; }
+    .chip .box { fill: #111c35; stroke: #273454; }
+    .chip text { font-size: 13px; fill: #cbd5e1; }
+    .chip .hl { fill: #22d3ee; fill-opacity: .08; stroke: #67e8f9; stroke-width: 1.5; opacity: 0; animation: hl 8s ease-in-out infinite; }
+    @keyframes hl { 0%, 14%, 100% { opacity: 0; } 4%, 9% { opacity: 1; } }
+    .c2 .hl { animation-delay: 1s; } .c3 .hl { animation-delay: 2s; } .c4 .hl { animation-delay: 3s; }
+    .c5 .hl { animation-delay: 4s; } .c6 .hl { animation-delay: 5s; } .c7 .hl { animation-delay: 6s; } .c8 .hl { animation-delay: 7s; }
+    @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+  </style>
+
+  <g clip-path="url(#frame)" class="sans">
+    <rect width="1200" height="500" fill="url(#bg)"/>
+    <rect width="1200" height="500" fill="url(#dots)"/>
+
+    <text x="40" y="58" class="head">CONSUMERS</text>
+    <text x="392" y="58" class="head">@BAIZOR/GAMEDEV-CLI-CORE</text>
+    <text x="910" y="58" class="head">TALKS TO</text>
+
+    <!-- wires -->
+    <g>
+      <use href="#l1" class="wire" stroke="#22d3ee"/><use href="#l2" class="wire" stroke="#818cf8"/>
+      <use href="#l3" class="wire" stroke="#e879f9"/><use href="#l4" class="wire" stroke="#34d399"/>
+      <use href="#r1" class="wire" stroke="#a5b4fc"/><use href="#r2" class="wire" stroke="#a5b4fc"/>
+      <use href="#r3" class="wire" stroke="#a5b4fc"/><use href="#r4" class="wire" stroke="#a5b4fc"/>
+    </g>
+    <g>
+      <circle r="3.5" fill="#22d3ee"><animateMotion dur="2s" repeatCount="indefinite"><mpath href="#l1"/></animateMotion></circle>
+      <circle r="3.5" fill="#818cf8"><animateMotion dur="2s" begin=".5s" repeatCount="indefinite"><mpath href="#l2"/></animateMotion></circle>
+      <circle r="3.5" fill="#e879f9"><animateMotion dur="2s" begin="1s" repeatCount="indefinite"><mpath href="#l3"/></animateMotion></circle>
+      <circle r="3.5" fill="#34d399"><animateMotion dur="2s" begin="1.5s" repeatCount="indefinite"><mpath href="#l4"/></animateMotion></circle>
+      <circle r="3.5" fill="#c4b5fd"><animateMotion dur="2.2s" begin=".2s" repeatCount="indefinite"><mpath href="#r1"/></animateMotion></circle>
+      <circle r="3.5" fill="#c4b5fd"><animateMotion dur="2.2s" begin=".75s" repeatCount="indefinite"><mpath href="#r2"/></animateMotion></circle>
+      <circle r="3.5" fill="#c4b5fd"><animateMotion dur="2.2s" begin="1.3s" repeatCount="indefinite"><mpath href="#r3"/></animateMotion></circle>
+      <circle r="3.5" fill="#c4b5fd"><animateMotion dur="2.2s" begin="1.85s" repeatCount="indefinite"><mpath href="#r4"/></animateMotion></circle>
+    </g>
+
+    <!-- consumers -->
+    <g>
+      <rect x="40" y="98" width="250" height="60" rx="12" class="card"/><rect x="40" y="98" width="4" height="60" rx="2" fill="#22d3ee"/>
+      <text x="60" y="124" class="mono t1">unity-mcp-cli</text><text x="60" y="144" class="t2">Unity engine CLI</text>
+      <rect x="40" y="178" width="250" height="60" rx="12" class="card"/><rect x="40" y="178" width="4" height="60" rx="2" fill="#818cf8"/>
+      <text x="60" y="204" class="mono t1">unreal-mcp-cli</text><text x="60" y="224" class="t2">Unreal Engine CLI</text>
+      <rect x="40" y="258" width="250" height="60" rx="12" class="card"/><rect x="40" y="258" width="4" height="60" rx="2" fill="#e879f9"/>
+      <text x="60" y="284" class="mono t1">godot-cli</text><text x="60" y="304" class="t2">Godot engine CLI</text>
+      <rect x="40" y="338" width="250" height="60" rx="12" class="card"/><rect x="40" y="338" width="4" height="60" rx="2" fill="#34d399"/>
+      <text x="60" y="364" class="t1">AI Game Developer App</text><text x="60" y="384" class="t2">desktop app: sign-in and setup</text>
+    </g>
+
+    <!-- core -->
+    <rect x="392" y="82" width="416" height="336" rx="18" fill="#0d1428" stroke="url(#edge)" stroke-width="2" stroke-opacity=".8"/>
+    <g transform="translate(412 102)">
+      <g class="chip c1"><rect class="box" width="182" height="44" rx="10"/><rect class="hl" width="182" height="44" rx="10"/><circle cx="20" cy="22" r="4" fill="#22d3ee"/><text x="34" y="27">Sign-in (OAuth 2.1)</text></g>
+      <g class="chip c2" transform="translate(194 0)"><rect class="box" width="182" height="44" rx="10"/><rect class="hl" width="182" height="44" rx="10"/><circle cx="20" cy="22" r="4" fill="#22d3ee"/><text x="34" y="27">Credentials &amp; refresh</text></g>
+      <g class="chip c3" transform="translate(0 56)"><rect class="box" width="182" height="44" rx="10"/><rect class="hl" width="182" height="44" rx="10"/><circle cx="20" cy="22" r="4" fill="#818cf8"/><text x="34" y="27">Project pin &amp; port</text></g>
+      <g class="chip c4" transform="translate(194 56)"><rect class="box" width="182" height="44" rx="10"/><rect class="hl" width="182" height="44" rx="10"/><circle cx="20" cy="22" r="4" fill="#818cf8"/><text x="34" y="27">AI agent configs</text></g>
+      <g class="chip c5" transform="translate(0 112)"><rect class="box" width="182" height="44" rx="10"/><rect class="hl" width="182" height="44" rx="10"/><circle cx="20" cy="22" r="4" fill="#e879f9"/><text x="34" y="27">Editor sessions</text></g>
+      <g class="chip c6" transform="translate(194 112)"><rect class="box" width="182" height="44" rx="10"/><rect class="hl" width="182" height="44" rx="10"/><circle cx="20" cy="22" r="4" fill="#e879f9"/><text x="34" y="27">Server download</text></g>
+      <g class="chip c7" transform="translate(0 168)"><rect class="box" width="182" height="44" rx="10"/><rect class="hl" width="182" height="44" rx="10"/><circle cx="20" cy="22" r="4" fill="#34d399"/><text x="34" y="27">Exit codes &amp; JSON</text></g>
+      <g class="chip c8" transform="translate(194 168)"><rect class="box" width="182" height="44" rx="10"/><rect class="hl" width="182" height="44" rx="10"/><circle cx="20" cy="22" r="4" fill="#34d399"/><text x="34" y="27">Update check</text></g>
+    </g>
+    <g transform="translate(412 330)">
+      <rect width="376" height="68" rx="12" fill="#1e1b4b" fill-opacity=".55" stroke="#6366f1" stroke-opacity=".6"/>
+      <text x="18" y="29" class="mono" font-size="14" font-weight="700" fill="#c7d2fe">EngineAdapter</text>
+      <text x="18" y="50" font-size="12" fill="#a5b4fc">the one place where Unity, Unreal and Godot differ</text>
+    </g>
+
+    <!-- targets -->
+    <g>
+      <rect x="910" y="98" width="250" height="60" rx="12" class="card"/>
+      <text x="930" y="124" class="t1">ai-game.dev Cloud</text><text x="930" y="144" class="t2">OAuth server · MCP hub</text>
+      <rect x="910" y="178" width="250" height="60" rx="12" class="card"/>
+      <text x="930" y="204" class="t1">Local MCP server</text><text x="930" y="224" class="t2">checksum-verified, per-project port</text>
+      <rect x="910" y="258" width="250" height="60" rx="12" class="card"/>
+      <text x="930" y="284" class="t1">Game engine editor</text><text x="930" y="304" class="t2">headless or windowed, leased</text>
+      <rect x="910" y="338" width="250" height="60" rx="12" class="card"/>
+      <text x="930" y="364" class="t1">AI agent configs</text><text x="930" y="384" class="t2">Claude Code, Cursor, Codex, …</text>
+    </g>
+
+    <text x="600" y="462" text-anchor="middle" font-size="13" fill="#64748b">Node.js ≥ 22.14 · ESM + type declarations · zero runtime dependencies</text>
+  </g>
+  <rect x=".5" y=".5" width="1199" height="499" rx="20" fill="none" stroke="#ffffff" stroke-opacity=".08"/>
+</svg>

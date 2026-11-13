@@ -1,169 +1,137 @@
-# AI-Game-Dev-CLI-Core
+<div align="center">
 
-Shared TypeScript CLI core for the AI Game Dev engine CLIs (Unity / Unreal / Godot) and the
-AI Game Developer App's Brutal integration, published to npm as **`@baizor/gamedev-cli-core`** via **npm Trusted Publishing (OIDC, tokenless)**.
+<img src="docs/assets/hero.svg" alt="AI Game Dev CLI Core — one TypeScript core behind every engine CLI" width="100%"/>
 
-This package is the single source of truth for CLI logic; the engine CLIs are thin,
-engine-specific adapters over it. The shared modules land here through the `auth-fixes` design
-(tasks b2/b3):
+<br/>
 
-- **Landed (b2 — correctness/security core):**
-  - **project identity / pin** — `derivePin`/`derivePort`/`deriveProjectPathHash` (v1) and the
-    `…V2` variants (separator-normalized, the B5 fix), gated byte-for-byte against the SAME golden
-    vectors as the C# LIB (`test/golden-vectors/`, vendored from `MCP-Plugin-dotnet`).
-  - **machine credential store** — `MachineCredentialStore` at `~/.ai-game-dev/credentials.json`,
-    full `MachineCredentials`, DPAPI on Windows / `0600` on POSIX, atomic (crash-safe) writes.
-  - **OAuth 2.1 device-grant login** — `deviceLogin` (RFC 8628, `/oauth/device_authorization` +
-    `/oauth/token`) with token rotation and a clean `login required` on family-revoke.
-- **Landed (b3 — shared modules + the engine-adapter contract):**
-  - **engine-adapter contract** — `EngineAdapter` (+ `unityAdapter` / `unrealAdapter` / `godotAdapter` /
-    `brutalAdapter`),
-    the single typed seam that carries every per-engine difference: `serverName`, project markers,
-    `stdioSupported` + `stdioArgs`, the server install-dir layout, `loginServerTarget`, and the OAuth
-    `clientId`. **No engine specifics live anywhere else in the package.**
-  - **editor sessions** — `EditorSession` (Code-Exec §4.6): reuse a live editor or start one
-    headless/windowed with the `AIGD_SESSION_*` env, a `.ai-game-dev/session.json` lease (only leased
-    editors are ever closed; it records the server URL), a per-project heartbeated startup lock that
-    also serializes an optional `beforeLaunch` build, and `waitForReady` / `mcpReadinessProbe`.
-  - **agent-config writers** — `JsonAiAgentConfig` / `TomlAiAgentConfig`, byte-for-byte parity with
-    the C# `com.IvanMurzak.McpPlugin.AgentConfig`, gated by `test/golden-vectors/AgentConfig.GoldenVectors.json`,
-    plus the engine-neutral `agentRegistry`.
-  - **setup-mcp policy** — `setupMcp` (async) / `resolveSetupMcpPlan`: pins the routing URL by
-    default (`/mcp/p/<pin-v2>` http, `project=<pin>` stdio; B4), with a `--no-pin` escape hatch. A
-    Cloud http config carries `Authorization: Bearer agd_pk_…` — a non-expiring **project key**
-    bound to the pin — for every client (Codex via `http_headers`); an explicit `--token` wins,
-    `oauth: true` writes a URL-only config, `regenerateKey: true` mints a fresh key. stdio and
-    local-server configs are unchanged.
-  - **project keys** — `getOrMintProjectKey` / `regenerateProjectKey` / `ProjectKeyStore`: the
-    `~/.ai-game-dev/project-keys.json` cache (DPAPI on Windows / `0600` on POSIX, atomic, unknown
-    entries preserved) and the `POST /api/mcp/project-keys` + `GET …/current` client.
-  - **install-plugin policy** — `resolveInstallTarget`: resolves the project path
-    `positional → --path → cwd` (B1) then marker-probes it, failing with a message listing exactly
-    what was checked. Ancestor walk-up is out of scope (M5).
-  - **enroll** — `runEnroll` / `redeemEnrollmentCode`: writes the v2 pin (the B5 fix replaces the
-    Unity CLI's local `\`→`/` workaround) and records the **AS-root** `serverTarget`, never a pinned
-    hub URL (b2 review MED-2).
-  - **server-download** — `downloadServer` with a fail-closed `SHA256SUMS` verify-before-execute gate
-    and a dependency-free in-process `parseZip` unzip.
-  - **project-marker, validation, ui/progress** utilities.
-- **Landed (c1/c2 + DCR — desktop browser sign-in):**
-  - **OAuth 2.1 authorization-code login** — `authCodeLogin` (RFC 8252 native app, RFC 7636 PKCE
-    S256, `state` CSRF check, an ephemeral `127.0.0.1` loopback listener, RFC 8707 `resource`),
-    returning the same `MachineCredentials` shape as `deviceLogin`.
-  - **Discovery + dynamic client registration** — `discoverAuthorizationServer` (RFC 8414
-    `/.well-known/oauth-authorization-server`, falling back to the hardcoded paths) and
-    `resolveClientRegistration` / `registerClient` (RFC 7591). `/oauth/authorize` resolves
-    `client_id` by an exact registry lookup whose only writer is `POST /oauth/register` — which mints
-    its OWN id — so a hardcoded client id is always rejected with `invalid_client`. The minted id is
-    persisted per authorization server in `~/.ai-game-dev/oauth-clients.json` (`ClientRegistrationStore`,
-    same atomic owner-only write as the credential store) and reused on every later launch; only the
-    loopback **port** floats, so one registration serves every run. On `invalid_client` the flow
-    re-registers exactly once. **The device grant deliberately keeps its static client id** — the
-    server binds each refresh-token family to the id used at issue time, so moving it would
-    invalidate every existing CLI login.
+[![npm](https://img.shields.io/npm/v/@baizor/gamedev-cli-core?style=flat-square&color=8b5cf6&label=npm)](https://www.npmjs.com/package/@baizor/gamedev-cli-core)
+[![CI](https://img.shields.io/github/actions/workflow/status/IvanMurzak/AI-Game-Dev-CLI-Core/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/IvanMurzak/AI-Game-Dev-CLI-Core/actions/workflows/ci.yml)
+![Node](https://img.shields.io/badge/node-%E2%89%A5%2022.14-22d3ee?style=flat-square)
+![Dependencies](https://img.shields.io/badge/runtime%20deps-0-34d399?style=flat-square)
+[![License: MIT](https://img.shields.io/badge/license-MIT-a5b4fc?style=flat-square)](LICENSE)
 
-- **Landed (unified-machine-auth c3 — the shared refresher/provider + login plumbing):**
-  - **`MachineCredentialProvider` — THE single entry point for credential access + refresh.** The
-    three engine CLIs (W2: d2/e2/f2) and the desktop App (W3) obtain access tokens EXCLUSIVELY via
-    `getAccessToken({family})` / `refresh({family})`; nothing else re-implements refresh. It is
-    family-aware over store schema v2 (`agent` / `plugin` / `legacy` planes), runs every refresh
-    under the cross-process `MachineCredentialLock` with a **double-checked re-read** (a peer's
-    rotation is adopted without a network call), presents the **family's stored `clientId`**
-    (component default ONLY for `families.legacy`), **omits `scope`/`resource` on refresh**
-    (P0-3), keeps the previous refresh token when the server does not rotate one, treats
-    `invalid_grant` after a post-failure re-read as family death (one structured telemetry event,
-    other families untouched, never loops), rate-limits to one attempt per family per skew
-    window, and surfaces busy locks / unreadable stores as typed non-sign-out errors.
-  - **RFC 8693 token exchange** — `HttpTokenExchangeClient` (the frozen a5 wire shape:
-    `subject_token` = fresh agent access token, exact URNs, `scope=mcp:plugin`,
-    `audience` only as the exact `urn:agd:hub`), deriving the plugin family from the agent family.
-  - **Login-surface commit plumbing** — `commitAgentLogin` (the F1/F2 two-lock-hold sequence:
-    agent family under hold 1 → exchange → plugin family + v1 mirror under hold 2; a failed
-    exchange leaves the committed agent family and a "partially authorized, retrying" state
-    resumable via `derivePluginFamily`), `commitToolsOnlyLogin` (the `--tools-only` / O10
-    plugin-only mint for CI — F10), the D6/F7 **account-switch guard** (`evaluateAccountSwitch` /
-    `runAccountSwitchGuard`; decline revokes the just-minted family and leaves the store
-    untouched; **`runEnroll` routes through the same guard**), `signOutMachineWide` (F6:
-    best-effort RFC 7009 revocation of every family, then the lock-guarded store delete), and
-    `revokeTokenBestEffort` (RFC 7009). Every commit **re-verifies the world under its lock
-    hold** before writing (`commitFamilyUnderHold`): a guard premise that changed during the
-    confirm dialog, a subject switched between the two holds, a store deleted by a concurrent
-    sign-out (never recreated), or a store turned unreadable (never overwritten) each abort with
-    a typed `CommitAbortReason` result — never a throw, never a mixed-account or resurrected
-    store.
+</div>
 
-- **Landed (the engine CLIs' command-line contract):**
-  - **exit codes, `--format` and the result envelope** — `ExitCode` / `EXIT_CODES` (0 Success, 1 Error,
-    2 Usage, 6 CommandFailed, 7 Unreachable, 8 TestsFailed, 14 Timeout, 17 Busy, 18 AwaitingInput),
-    `parseFormat` (`text|json|ndjson`, a `UsageError` otherwise), and `CommandOutput`: one envelope
-    `{success, command, data, errors[{code,message,httpStatus?}], warnings}` written synchronously to stdout at most
-    once per process, `console.log` on stderr in machine formats, ndjson progress events, and an exit
-    safety net that still writes an envelope when a json/ndjson command exits without one.
-  - **the entry point** — `classifyCliError` (commander parse errors and `UsageError` → exit 2,
-    `--help` / `--version` → 0, anything else → 1) and `writeFailureEnvelope`.
-  - **a tool call that did not succeed** — `classifyToolFailure` / `classifyHttpFailure` /
-    `classifyEditorStartFailure` give every engine CLI the same exit code and envelope error code for
-    `run-tool`, `run-system-tool`, `exec`, `rql` and `tools`, keyed on the MCP server's HTTP status
-    (HTTP statuses cannot be exit codes: those are 0–255). The status goes into the envelope error as
-    `httpStatus`. A call that got no answer is classified by `networkFailureReason(err)`, which reads
-    the transport error's code through its `cause` chain, so a connection dropped mid-call
-    (`ECONNRESET`, `EPIPE`, undici's `UND_ERR_SOCKET`, ...) is `connection-reset` in every CLI.
-    `TOOL_FAILURE_CODES` is the table:
+**`@baizor/gamedev-cli-core`** is the shared engine of the AI Game Dev command-line tools. It handles
+sign-in, credentials, project identity, AI-agent setup, editor sessions and the CLI's output
+contract. Each engine CLI is a thin adapter on top of it, so all of them behave the same way.
 
-    | Condition | HTTP status | Exit | Error code |
-    |---|---|---|---|
-    | Bad arguments: a bad flag, tool arguments the CLI or the server rejected (any 4xx not listed) | 400 (a 422 `[invalid_params]`) | 2 | `USAGE` |
-    | No tool by that name, or no project at the path | 404 | 2 | `NOT_FOUND` |
-    | No usable credentials, or the server refused them | 401, 403 | 6 | `NOT_AUTHENTICATED` |
-    | The tool ran and reported an error (`status: "error"`, any 5xx not listed) | 409, 422, 500 | 6 | `TOOL_FAILED` |
-    | The project's code did not build, so no editor started | — | 6 | `COMPILATION_FAILED` |
-    | Connection refused / reset, no engine plugin connected (any status), plugin lost after sending | 502 | 7 | `UNREACHABLE` |
-    | No answer in time (the CLI's `--timeout`, the server's tool timeout) | 408, 504 | 14 | `TIMEOUT` |
-    | Busy, the call did not run (reloading, rate-limited, another CLI call holds the editor) | 503, 429 | 17 | `BUSY` |
-    | Anything else (aborted, unexpected) | — | 1 | `ERROR` |
+<p align="center">
+  <img src="docs/assets/architecture.svg" alt="The engine CLIs and the App call cli-core; cli-core talks to ai-game.dev, the local MCP server, the engine editor and AI agent configs" width="100%"/>
+</p>
 
-  - **the `commands` manifest** — `buildCommandManifest`, read from the commander tree, with
-    `exitCodes` (`EXIT_CODES`) and `errorCodes` (`TOOL_FAILURE_CODES`).
-  - **the local-server fallback rule** — `decideLocalFallback`: a Cloud-mode command falls back to the
-    project's local server only on a machine that never signed in; a sign-in that cannot be used is
-    refused with `NOT_AUTHENTICATED` (exit 6).
-  - Nothing here exits the process except `exitAfterFlush`, which the CLI calls explicitly.
+## What it does
 
-A small semver utility slice is also exposed. The package has **zero runtime dependencies**.
+| | Module | What it gives every CLI |
+|---|---|---|
+| 🔑 | **Sign-in** | OAuth 2.1 device-code login for terminals and browser login (PKCE) for the desktop app |
+| 🗝️ | **Credentials** | One store at `~/.ai-game-dev/`, encrypted on Windows (DPAPI) and `0600` on macOS/Linux. Tokens refresh safely when several processes run at once |
+| 📌 | **Project identity** | A stable pin and port for each project, byte-for-byte the same as the C# plugin's |
+| 🧩 | **AI agent setup** | `setup-mcp` writes ready MCP configs for Claude Code, Cursor, Codex, Copilot, Gemini and more |
+| 🎮 | **Editor sessions** | Reuse a running editor or start one headless; close only the editors the CLI started |
+| 📦 | **Server download** | Downloads the MCP server and checks its SHA-256 before running it |
+| 📤 | **CLI contract** | Shared exit codes, `--format text\|json\|ndjson`, and one JSON result envelope |
+| 🔄 | **Update check** | Checks npm for a newer CLI version, cached for a day |
+| 🧱 | **`EngineAdapter`** | The only place where Unity, Unreal and Godot differ |
 
-## Requirements
+## See it in action
 
-- Node.js **>= 22.14.0**
-- npm **>= 11.5.1** (required for OIDC Trusted Publishing; below this the publish silently degrades)
+Every engine CLI gets the same sign-in, setup and output behaviour from this package:
+
+<p align="center">
+  <img src="docs/assets/terminal.svg" alt="A terminal session: sign in, configure Claude Code, list tools as a JSON envelope" width="100%"/>
+</p>
+
+## Install
+
+```bash
+npm install @baizor/gamedev-cli-core
+```
+
+Requires Node.js **22.14** or newer. ESM only, with TypeScript declarations included.
+
+## Usage
+
+**Identify a project.** The same path always gives the same pin and port, in TypeScript and in C#.
+
+```ts
+import { derivePinV2, derivePortV2 } from "@baizor/gamedev-cli-core";
+
+const pin = derivePinV2("/work/my-game");   // routes MCP traffic to this project
+const port = derivePortV2("/work/my-game"); // local server port, 20000–29999
+```
+
+**Connect an AI agent.** One call writes the agent's MCP config, pinned to the project.
+
+```ts
+import { setupMcp, unityAdapter } from "@baizor/gamedev-cli-core";
+
+const result = await setupMcp({
+  adapter: unityAdapter,       // or unrealAdapter / godotAdapter
+  agentId: "claude-code",
+  projectPath: "/work/my-game",
+});
+if (result.kind === "success") console.log(`Configured: ${result.configPath}`);
+```
+
+**Get an access token.** The provider refreshes it when needed, under a lock shared by all processes.
+
+```ts
+import {
+  HttpTokenRefresher,
+  MachineCredentialProvider,
+  MachineCredentialStore,
+  unityAdapter,
+} from "@baizor/gamedev-cli-core";
+
+const credentials = new MachineCredentialProvider(
+  new MachineCredentialStore(), // ~/.ai-game-dev/credentials.json
+  new HttpTokenRefresher({ defaultServerBaseUrl: "https://ai-game.dev" }),
+  { defaultClientId: unityAdapter.clientId },
+);
+const token = await credentials.getAccessToken(); // throws LoginRequiredError when signed out
+```
+
+**Answer like every other CLI.** One result envelope and one set of exit codes.
+
+```ts
+import { CommandOutput, ExitCode, parseFormat } from "@baizor/gamedev-cli-core";
+
+const output = new CommandOutput("tools", parseFormat("json"));
+output.finish(ExitCode.Success, { tools: ["scene-list"] });
+// stdout (pretty-printed): { "success": true, "command": "tools", "data": { "tools": ["scene-list"] }, "errors": [], "warnings": [] }
+```
+
+## Exit codes
+
+Scripts and AI agents can rely on these in every engine CLI:
+
+| Exit | Meaning | Error codes |
+|:---:|---|---|
+| `0` | Success | |
+| `1` | Unexpected error | `ERROR` |
+| `2` | Bad command line or tool arguments, unknown tool or project | `USAGE`, `NOT_FOUND` |
+| `6` | The command ran and failed, or there is no usable sign-in | `TOOL_FAILED`, `COMPILATION_FAILED`, `NOT_AUTHENTICATED` |
+| `7` | The server or the engine plugin cannot be reached | `UNREACHABLE` |
+| `8` | Tests failed | |
+| `14` | Timed out | `TIMEOUT` |
+| `17` | Busy: try again later, nothing ran | `BUSY` |
+| `18` | A modal dialog blocks the editor: a human must answer it | `AWAITING_INPUT` |
+
+The full table, with HTTP statuses, is `TOOL_FAILURE_CODES` and `EXIT_CODES` in
+[`src/cli-contract.ts`](src/cli-contract.ts).
 
 ## Develop
 
 ```bash
-npm install       # install dependencies
-npm run build     # tsc -> dist/ (ESM + .d.ts)
-npm test          # vitest run
-npm run typecheck # tsc --noEmit
+npm install
+npm run typecheck   # tsc --noEmit
+npm run build       # dist/: ESM + .d.ts
+npm test            # vitest
 ```
 
-## Release (npm Trusted Publishing / OIDC)
-
-Releases are cut from the `release.yml` GitHub Actions workflow, which publishes to npm over OIDC
-(no npm token, no `--provenance` flag — provenance is attached automatically). Run it from your
-machine with the GitHub CLI:
-
-```bash
-gh workflow run release.yml -f version=X.Y.Z
-```
-
-The workflow enforces the Node >= 22.14.0 / npm >= 11.5.1 floors, sets the package version from the
-`version` input, builds, and publishes.
-
-### Trusted Publishing binding (owner, one-time)
-
-The npm Trusted Publisher for `@baizor/gamedev-cli-core` is bound to **this exact repo + workflow**
-(`.github/workflows/release.yml`). The publish step lives directly in that workflow file — it is
-**not** factored into a reusable workflow, because reusable-workflow bindings are a known npm TP
-limitation for `workflow_dispatch`.
+Releases are published to npm from the `release.yml` workflow with Trusted Publishing (OIDC).
+Changes are listed in the [changelog](CHANGELOG.md).
 
 ## License
 
