@@ -26,6 +26,8 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
   `commandLineOpensFolder` (an unquoted `ps` line is ambiguous: the longest candidate that exists
   is the editor's argument; a relative one never counts).
 
+## 0.11.1 — 2026-11-11
+
 ### Added — one mapping of a dropped connection to its failure reason (patch: 0.11.1)
 
 - `networkFailureReason(err)` (`NetworkFailureReason`): `connection-refused` / `connection-reset` /
