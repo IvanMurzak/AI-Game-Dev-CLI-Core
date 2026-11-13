@@ -1,14 +1,12 @@
 <div align="center">
 
-<img src="docs/assets/hero.svg" alt="AI Game Dev CLI Core — one TypeScript core behind every engine CLI" width="100%"/>
+<p><img src="docs/assets/hero.svg" alt="AI Game Dev CLI Core — one TypeScript core behind every engine CLI" width="100%"/></p>
 
-<br/>
-
-[![npm](https://img.shields.io/npm/v/@baizor/gamedev-cli-core?style=flat-square&color=8b5cf6&label=npm)](https://www.npmjs.com/package/@baizor/gamedev-cli-core)
-[![CI](https://img.shields.io/github/actions/workflow/status/IvanMurzak/AI-Game-Dev-CLI-Core/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/IvanMurzak/AI-Game-Dev-CLI-Core/actions/workflows/ci.yml)
-![Node](https://img.shields.io/badge/node-%E2%89%A5%2022.14-22d3ee?style=flat-square)
-![Dependencies](https://img.shields.io/badge/runtime%20deps-0-34d399?style=flat-square)
-[![License: MIT](https://img.shields.io/badge/license-MIT-a5b4fc?style=flat-square)](LICENSE)
+[![npm](https://img.shields.io/npm/v/@baizor/gamedev-cli-core?label=npm&color=6D28D9&logo=npm&style=for-the-badge&labelColor=0F172A&logoColor=white)](https://www.npmjs.com/package/@baizor/gamedev-cli-core)
+[![CI](https://img.shields.io/github/actions/workflow/status/IvanMurzak/AI-Game-Dev-CLI-Core/ci.yml?branch=main&label=CI&style=for-the-badge&logo=githubactions&logoColor=white&labelColor=0F172A)](https://github.com/IvanMurzak/AI-Game-Dev-CLI-Core/actions/workflows/ci.yml)
+[![Node](https://img.shields.io/badge/Node-22.14%2B-0E7490?logo=nodedotjs&style=for-the-badge&labelColor=0F172A&logoColor=white)](https://nodejs.org/)
+[![Runtime deps](https://img.shields.io/badge/runtime%20deps-0-0E7490?style=for-the-badge&labelColor=0F172A&logoColor=white)](package.json)
+[![License](https://img.shields.io/badge/license-MIT-047857?style=for-the-badge&labelColor=0F172A&logoColor=white)](LICENSE)
 
 </div>
 
@@ -22,17 +20,17 @@ contract. Each engine CLI is a thin adapter on top of it, so all of them behave 
 
 ## What it does
 
-| | Module | What it gives every CLI |
-|---|---|---|
-| 🔑 | **Sign-in** | OAuth 2.1 device-code login for terminals and browser login (PKCE) for the desktop app |
-| 🗝️ | **Credentials** | One store at `~/.ai-game-dev/`, encrypted on Windows (DPAPI) and `0600` on macOS/Linux. Tokens refresh safely when several processes run at once |
-| 📌 | **Project identity** | A stable pin and port for each project, byte-for-byte the same as the C# plugin's |
-| 🧩 | **AI agent setup** | `setup-mcp` writes ready MCP configs for Claude Code, Cursor, Codex, Copilot, Gemini and more |
-| 🎮 | **Editor sessions** | Reuse a running editor or start one headless; close only the editors the CLI started |
-| 📦 | **Server download** | Downloads the MCP server and checks its SHA-256 before running it |
-| 📤 | **CLI contract** | Shared exit codes, `--format text\|json\|ndjson`, and one JSON result envelope |
-| 🔄 | **Update check** | Checks npm for a newer CLI version, cached for a day |
-| 🧱 | **`EngineAdapter`** | The only place where Unity, Unreal and Godot differ |
+✅ **Sign-in** — OAuth 2.1 device code in terminals, browser login (PKCE) in the desktop App<br>
+✅ **Credentials** — one store in `~/.ai-game-dev/`: DPAPI on Windows, `0600` on macOS/Linux<br>
+✅ **Safe refresh** — tokens refresh under a lock shared by every process<br>
+✅ **Project identity** — a stable pin and port per project, byte-for-byte equal to the C# plugin's<br>
+✅ **AI agent setup** — `setup-mcp` writes MCP configs for Claude Code, Cursor, Codex and more<br>
+✅ **Editor sessions** — reuse a running editor or start one headless; close only the ones it started<br>
+✅ **Server download** — fetches the MCP server and checks its SHA-256 before running it<br>
+✅ **CLI contract** — shared exit codes, `--format text|json|ndjson`, one JSON result envelope<br>
+✅ **Update check** — looks for a newer CLI version on npm, cached for a day<br>
+✅ **RQL routing** — splits RQL text into statements and picks `rql-query` or `rql-mutate`<br>
+✅ **`EngineAdapter`** — the only place where Unity, Unreal and Godot differ
 
 ## See it in action
 
@@ -99,7 +97,9 @@ import { CommandOutput, ExitCode, parseFormat } from "@baizor/gamedev-cli-core";
 
 const output = new CommandOutput("tools", parseFormat("json"));
 output.finish(ExitCode.Success, { tools: ["scene-list"] });
-// stdout (pretty-printed): { "success": true, "command": "tools", "data": { "tools": ["scene-list"] }, "errors": [], "warnings": [] }
+// stdout, pretty-printed:
+// { "success": true, "command": "tools", "data": { "tools": ["scene-list"] },
+//   "errors": [], "warnings": [] }
 ```
 
 ## Exit codes
@@ -136,3 +136,7 @@ Changes are listed in the [changelog](CHANGELOG.md).
 ## License
 
 [MIT](LICENSE) © Ivan Murzak
+
+<div align="center">
+  <a href="https://stand-with-ukraine.pp.ua"><img src="https://raw.githubusercontent.com/IvanMurzak/IvanMurzak/main/images/ukraine/flag-rounded.svg" width="28" height="28" alt="Stand with Ukraine" title="Stand with Ukraine"></a>
+</div>
