@@ -19,7 +19,7 @@ def out(name):
     return os.path.join(HERE, name)
 
 
-# ---- hero: the core mark in the middle, the four consumers around it ----------------------------------
+# ---- hero: the app logo in the middle, the four consumers around it ----------------------------------
 def hero_right():
     cx, cy = 970, 190
     parts = []
@@ -29,7 +29,7 @@ def hero_right():
         pcx, pcy = px + w / 2, py + (34 if py < cy else 0)
         dx, dy = cx - pcx, cy - pcy
         d = math.hypot(dx, dy)
-        ex, ey = cx - dx / d * 70, cy - dy / d * 70
+        ex, ey = cx - dx / d * 86, cy - dy / d * 86
         parts.append(K.wire(f"M{pcx:.0f} {pcy:.0f} L{ex:.0f} {ey:.0f}", color=K.BLUE if i % 2 else K.RED_TEXT,
                             dur=2.4, begin=i * 0.6))
         parts.append(K.pill(px, py, label, mono=False, w=w)[0])
@@ -47,7 +47,7 @@ K.write(out("hero.svg"), K.hero(
 
 # ---- architecture: consumers -> cli-core modules -> what it talks to ----------------------------------
 def architecture():
-    b = [K.eyebrow(40, 64, "Consumers"), K.eyebrow(600, 64, "@baizor/gamedev-cli-core", anchor="middle"),
+    b = [K.eyebrow(40, 64, "Consumers"), K.logo(436, 58, 24), K.eyebrow(612, 64, "@baizor/gamedev-cli-core", anchor="middle"),
          K.eyebrow(1160, 64, "Talks to", anchor="end")]
     rows = [88, 170, 252, 334]
     hub_y = 246
@@ -80,21 +80,8 @@ K.write(out("architecture.svg"), architecture())
 
 
 # ---- terminal: what an engine CLI built on cli-core does ---------------------------------------------
-HOLD = 7.0
-
-
-def start_finished(svg):
-    """Start the loop on the finished screen instead of a blank one: every loop animation begins
-    part-way, just after the last line appeared. Viewers (and screenshots of the first frame) see the
-    whole session first; then it fades out and types itself again."""
-    import re
-    loop = float(re.search(r'dur="([0-9.]+)s" repeatCount="indefinite" values="0;0;1', svg).group(1))
-    offset = round(loop - 0.8 - HOLD + 0.2, 2)  # K.terminal: fade-out starts HOLD s after the prompt, 0.8 s before the end
-    return svg.replace(f'dur="{loop}s" repeatCount="indefinite"', f'dur="{loop}s" begin="-{offset}s" repeatCount="indefinite"')
-
-
-K.write(out("terminal.svg"), start_finished(K.terminal(
-    title="~/games/my-project — built on @baizor/gamedev-cli-core", hold=HOLD,
+K.write(out("terminal.svg"), K.terminal(
+    title="~/games/my-project — built on @baizor/gamedev-cli-core", hold=7.0,
     label="A terminal session: an engine CLI built on cli-core signs in, configures Claude Code and lists tools as a JSON envelope",
     lines=[
         {"cmd": "unity-mcp-cli login"},
@@ -111,4 +98,4 @@ K.write(out("terminal.svg"), start_finished(K.terminal(
         {"out": [("text", "  "), ("key", '"data"'), ("text", ": { … }, "), ("key", '"errors"'), ("text", ": [], "),
                  ("key", '"warnings"'), ("text", ": [] }")], "pause": 0.0},
         {"out": [("muted", "  exit code "), ("ok", "0")], "note": "ExitCode.Success", "pause": 0.8},
-    ])))
+    ]))
