@@ -65,6 +65,45 @@ export async function readProcessStart(pid: number): Promise<string | undefined>
 }
 
 /**
+ * The command line of `pid` as one string — Linux `/proc/<pid>/cmdline` (an argument with whitespace
+ * is quoted), Windows `Win32_Process.CommandLine` (as the process was started, quoting included),
+ * elsewhere `ps -ww -o args=` (the arguments joined with spaces, unquoted). Undefined when it
+ * cannot be read (no such process, access denied, no PowerShell).
+ */
+export async function readProcessCommandLine(pid: number): Promise<string | undefined> {
+  if (!Number.isInteger(pid) || pid <= 0) return undefined;
+  if (process.platform === "linux") {
+    try {
+      const args = fs.readFileSync(`/proc/${pid}/cmdline`, "utf-8").split("\0");
+      if (args[args.length - 1] === "") args.pop();
+      const line = args.map((arg) => (/\s/.test(arg) ? `"${arg}"` : arg)).join(" ");
+      return line || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  if (isWindows) {
+    const script = `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" -ErrorAction Stop).CommandLine`;
+    for (const host of powerShellHostsInOrder()) {
+      try {
+        const out = (await execFileText(host, ["-NoProfile", "-NonInteractive", "-Command", script], 15_000)).trim();
+        return out || undefined;
+      } catch (err) {
+        if (isHostStartFailure(err)) continue; // this host is missing — try the next
+        return undefined;
+      }
+    }
+    return undefined;
+  }
+  try {
+    const out = (await execFileText("ps", ["-ww", "-o", "args=", "-p", String(pid)], 10_000)).trim();
+    return out || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Ask `pid` to quit: SIGTERM on POSIX, `taskkill /PID` (WM_CLOSE — never reaches a windowless
  * process) on Windows. Resolves whether the request was delivered (or the process is already gone).
  */

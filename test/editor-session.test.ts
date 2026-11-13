@@ -15,6 +15,7 @@ import {
   ensureAiGameDevGitignore,
   parseSessionLease,
   readSessionLease,
+  sessionLeaseNamesProject,
   waitForReady,
   type EditorSessionOptions,
   type SessionLease,
@@ -27,7 +28,7 @@ import { MCP_PING_PATH, mcpReadinessProbe } from "../src/mcp-ping.js";
 /** An in-memory process table standing in for the OS. One world is shared by all sessions of a test. */
 class FakeWorld {
   private nextPid = 4000;
-  readonly procs = new Map<number, { alive: boolean; start: string; ready: boolean }>();
+  readonly procs = new Map<number, { alive: boolean; start: string; ready: boolean; commandLine?: string }>();
   readonly spawns: Array<{ command: string; args: readonly string[]; env: NodeJS.ProcessEnv; hideWindow: boolean }> = [];
   readonly closeRequests: number[] = [];
   readonly kills: number[] = [];
@@ -37,10 +38,13 @@ class FakeWorld {
   honorsClose = true;
   spawnDelayMs = 25;
 
-  /** A process that exists but was not started by a session (the user's editor, or a pid reuse). */
-  addProcess(start = "foreign-start"): number {
+  /**
+   * A process that exists but was not started by a session (the user's editor, or a pid reuse); by
+   * default a Unity editor of the test's project, `null`: its command line cannot be read.
+   */
+  addProcess(start = "foreign-start", commandLine: string | null = `/opt/unity/Editor -projectPath ${root}`): number {
     const pid = this.nextPid++;
-    this.procs.set(pid, { alive: true, start, ready: false });
+    this.procs.set(pid, { alive: true, start, ready: false, ...(commandLine !== null ? { commandLine } : {}) });
     return pid;
   }
 
@@ -55,7 +59,7 @@ class FakeWorld {
       spawnDetached: async (command, args, options) => {
         await sleep(this.spawnDelayMs);
         const pid = this.nextPid++;
-        const proc = { alive: true, start: `start-${pid}`, ready: false };
+        const proc = { alive: true, start: `start-${pid}`, ready: false, commandLine: [command, ...args].join(" ") };
         this.procs.set(pid, proc);
         this.spawns.push({ command, args, env: options.env, hideWindow: options.hideWindow });
         if (this.readyAfterMs !== undefined) setTimeout(() => (proc.ready = true), this.readyAfterMs);
@@ -63,6 +67,7 @@ class FakeWorld {
       },
       isAlive: (pid) => this.procs.get(pid)?.alive === true,
       processStart: async (pid) => (this.procs.get(pid)?.alive ? this.procs.get(pid)!.start : undefined),
+      commandLine: async (pid) => (this.procs.get(pid)?.alive ? this.procs.get(pid)!.commandLine : undefined),
       requestClose: async (pid) => {
         this.closeRequests.push(pid);
         const proc = this.procs.get(pid);
@@ -96,10 +101,10 @@ afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-function session(overrides: Partial<EditorSessionOptions<string>> = {}): EditorSession<string> {
+function session(overrides: Partial<EditorSessionOptions<string>> = {}, projectRoot = root): EditorSession<string> {
   return new EditorSession<string>({
     adapter: unityAdapter,
-    projectRoot: root,
+    projectRoot,
     probeReady: world.probe,
     editorBinary: "/opt/unity/Editor",
     readyIntervalMs: 5,
@@ -183,6 +188,7 @@ describe("EditorSession.ensure", () => {
     expect(lease.pid).toBe(result.lease!.pid);
     expect(spawn.env[SESSION_ENV.nonce]).toBe(lease.nonce);
     expect(lease.processStart).toBe(`start-${lease.pid}`);
+    expect(lease.projectRoot).toBe(path.resolve(root));
     expect(await s.ownedSession()).toEqual(lease);
   });
 
@@ -890,5 +896,103 @@ describe(".ai-game-dev/.gitignore", () => {
   it("is best-effort: an unusable target reports false and never throws", () => {
     fs.mkdirSync(gitignore(), { recursive: true }); // a directory where the file should be
     expect(ensureAiGameDevGitignore(root, ["x"])).toBe(false);
+  });
+});
+
+describe("a project folder copied with its lease (DEV-44)", () => {
+  let copy: string;
+  beforeEach(() => {
+    copy = fs.mkdtempSync(path.join(os.tmpdir(), "editor-session-copy-"));
+  });
+  afterEach(() => {
+    fs.rmSync(copy, { recursive: true, force: true });
+  });
+
+  /** Copy the original project's `.ai-game-dev` (with its lease) into the copy, as a folder copy does. */
+  function copyProject(): void {
+    fs.cpSync(sessionDir(), path.join(copy, SESSION_DIR_NAME), { recursive: true });
+  }
+
+  it("the copy's session never closes the original's editor and starts its own", async () => {
+    const original = await session().ensure();
+    copyProject();
+
+    const copied = session({}, copy);
+    expect(await copied.ownedSession()).toBeUndefined();
+    expect(await copied.prepareWindowOpen()).toEqual({ kind: "proceed" });
+    expect(await copied.closeOwned({ force: true })).toEqual({ kind: "not-owned", staleLeaseRemoved: true });
+    expect(world.closeRequests).toHaveLength(0);
+    expect(world.kills).toHaveLength(0);
+    expect(world.procs.get(original.lease!.pid)!.alive).toBe(true);
+    // The original project still owns its editor.
+    expect((await session().ownedSession())?.pid).toBe(original.lease!.pid);
+  });
+
+  it("ensure in the copy launches the copy's editor instead of joining the original's", async () => {
+    // The original's editor is still loading (not ready): a copy that trusted the lease would wait for it.
+    const pid = world.addProcess("s1", `/opt/unity/Editor -batchmode -projectPath ${root}`);
+    writeLease({ pid, projectRoot: root });
+    copyProject();
+    const result = await session({}, copy).ensure();
+    expect(result.source).toBe("started");
+    expect(result.lease!.projectRoot).toBe(path.resolve(copy));
+    expect(world.spawns.map((spawn) => spawn.args.at(-1))).toEqual([path.resolve(copy)]);
+    expect(world.procs.get(pid)!.alive).toBe(true);
+    expect(readSessionLease(root)?.pid).toBe(pid);
+  });
+
+  it("a lease naming the project through another spelling (a symlink) is still this project's", async () => {
+    const link = `${copy}-link`;
+    fs.symlinkSync(root, link, "dir");
+    try {
+      const { lease } = await session({}, link).ensure();
+      expect((await session().ownedSession())?.pid).toBe(lease!.pid);
+    } finally {
+      fs.rmSync(link, { force: true });
+    }
+  });
+
+  describe("a lease from before leases named their project", () => {
+    it("is ours when the editor's command line opens this project", async () => {
+      const pid = world.addProcess("s1", `/opt/unity/Editor -batchmode -projectPath ${root} -logFile -`);
+      writeLease({ pid });
+      expect(await session().closeOwned()).toEqual({ kind: "closed", pid, forced: false });
+    });
+
+    it("is stale when the editor opens another project (the original of a copy)", async () => {
+      const pid = world.addProcess("s1", `/opt/unity/Editor -batchmode -projectPath ${root} copy -logFile -`);
+      writeLease({ pid });
+      expect(await session().closeOwned({ force: true })).toEqual({ kind: "not-owned", staleLeaseRemoved: true });
+      expect(world.closeRequests).toHaveLength(0);
+      expect(world.procs.get(pid)!.alive).toBe(true);
+    });
+
+    it("is unverifiable (kept, never closed) when the command line cannot be read", async () => {
+      const pid = world.addProcess("s1", null);
+      writeLease({ pid });
+      const s = session();
+      expect(await s.closeOwned({ force: true })).toEqual({ kind: "not-owned", staleLeaseRemoved: false });
+      expect(world.closeRequests).toHaveLength(0);
+      expect(s.readLease()?.pid).toBe(pid);
+    });
+
+    it("is unverifiable with an adapter that cannot read a command line", async () => {
+      const pid = world.addProcess("s1");
+      writeLease({ pid });
+      const { opensProject: _ignored, ...editor } = unityAdapter.editor!;
+      const s = session({ adapter: { ...unityAdapter, editor } });
+      expect(await s.closeOwned()).toEqual({ kind: "not-owned", staleLeaseRemoved: false });
+      expect(world.closeRequests).toHaveLength(0);
+    });
+  });
+
+  it("parses projectRoot; sessionLeaseNamesProject compares folders", () => {
+    const base = { pid: 7, nonce: "n", engine: "unity", mode: "headless", startedAt: "t", ownedBy: "cli", hostId: "h" };
+    expect(parseSessionLease(JSON.stringify({ ...base, projectRoot: root }))?.projectRoot).toBe(root);
+    expect(parseSessionLease(JSON.stringify({ ...base, projectRoot: 1 }))).toEqual(base);
+    const lease = parseSessionLease(JSON.stringify({ ...base, projectRoot: root }))!;
+    expect(sessionLeaseNamesProject(lease, root)).toBe(true);
+    expect(sessionLeaseNamesProject(lease, copy)).toBe(false);
+    expect(sessionLeaseNamesProject(parseSessionLease(JSON.stringify(base))!, copy)).toBe(true);
   });
 });

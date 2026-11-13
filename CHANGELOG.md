@@ -9,6 +9,21 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
 
 ## Unreleased
 
+### Fixed — a copied project never closes the original project's editor (minor: 0.12.0)
+
+- Copying a project folder copied its `.ai-game-dev/session.json`, and the copy's session trusted
+  that lease (same machine, pid alive, same start time): `close --owned-only`, `open` with a window
+  and `run-tests` in the copy closed the ORIGINAL project's editor. A lease now records the project
+  folder it was written for (`SessionLease.projectRoot`); in another folder it is stale (removed,
+  its editor never touched) and the copy starts its own editor. A lease written before this field
+  counts only when the editor's command line opens this project (`EditorLaunchSpec.opensProject`,
+  for Unity `-projectPath`, Godot `--path`, Unreal the `*.uproject` folder; symlink- and, on
+  Windows and macOS, case-insensitive); when the command line cannot be read it is never closed.
+- New: `SessionProcessOps.commandLine` (default `readProcessCommandLine`: `/proc/<pid>/cmdline`,
+  `Win32_Process.CommandLine`, `ps -ww -o args=`), `sessionLeaseNamesProject(lease, root)` (a cheap
+  pre-check for CLIs), and the path helpers `samePath`, `canonicalPath`, `commandLineFlagValues`,
+  `commandLineFileArgs`.
+
 ### Added — one mapping of a dropped connection to its failure reason (patch: 0.11.1)
 
 - `networkFailureReason(err)` (`NetworkFailureReason`): `connection-refused` / `connection-reset` /

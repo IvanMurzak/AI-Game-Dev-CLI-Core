@@ -352,6 +352,7 @@ export {
   buildSessionEnv,
   parseSessionLease,
   readSessionLease,
+  sessionLeaseNamesProject,
   ensureAiGameDevGitignore,
   waitForReady,
   defaultSessionProcessOps,
@@ -367,7 +368,8 @@ export {
   DEFAULT_SESSION_STARTUP_LOCK_WAIT_MS,
   DEFAULT_SESSION_FOREIGN_RECHECK_MS,
 } from "./editor-session.js";
-export { isProcessAlive, readProcessStart, killProcessTree } from "./process.js";
+export { isProcessAlive, readProcessStart, readProcessCommandLine, killProcessTree } from "./process.js";
+export { canonicalPath, samePath, commandLineFlagValues, commandLineFileArgs } from "./project-path.js";
 export { probeMcpServer, mcpReadinessProbe, MCP_PING_PATH } from "./mcp-ping.js";
 export type { McpProbeResult } from "./mcp-ping.js";
 export type {
