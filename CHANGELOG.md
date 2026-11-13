@@ -26,6 +26,17 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
   `commandLineOpensFolder` (an unquoted `ps` line is ambiguous: the longest candidate that exists
   is the editor's argument; a relative one never counts).
 
+### Added — one RQL statement splitter and router for the engine CLIs (minor: 0.12.0)
+
+- `splitRqlStatements(text)`: RQL request text split into its `;`-separated statements exactly as RQL splits them
+  (spec §14, its `fixtures/statements/cases.json` vendored as tests): `;` separates only outside strings (either
+  quote, backslash escapes), `backtick` identifiers and brackets; statements trimmed (.NET whitespace), blank ones
+  dropped; text of only separators is one blank statement. `RQL_MAX_STATEMENTS` (10) is exported; RQL enforces it.
+- `rqlToolFor(text)`: `rql-mutate` when any statement ends in `set` / `call`, else `rql-query`;
+  `rqlTextVerb(text)` (`call` over `set`, for save receipts); `stripRqlToolNames(text)` strips a pasted
+  `rql-query` / `rql-mutate` from each statement. Replaces the three engine CLIs' own copies, which already differed
+  (Godot returned no statement for blank text).
+
 ## 0.11.1 — 2026-11-11
 
 ### Added — one mapping of a dropped connection to its failure reason (patch: 0.11.1)

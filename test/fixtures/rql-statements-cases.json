@@ -1,0 +1,126 @@
+{
+  "version": "0.1",
+  "description": "Request text → statements (spec §14): split at ';' outside string literals, quoted identifiers and brackets; trimmed; blank statements dropped. Hand-written; every runtime with a text parser must produce exactly these texts.",
+  "cases": [
+    {
+      "name": "no separator: one statement, the text unchanged",
+      "rql": "nodes | count",
+      "statements": [
+        "nodes | count"
+      ]
+    },
+    {
+      "name": "two statements (agent input from the multi-project experiment)",
+      "rql": "scenes | select name path isDirty; objects | where name == \"Beacon\" | select $ref name",
+      "statements": [
+        "scenes | select name path isDirty",
+        "objects | where name == \"Beacon\" | select $ref name"
+      ]
+    },
+    {
+      "name": "';' inside a double-quoted string",
+      "rql": "g.Nodes | where Name == \"a;b\"; g.Nodes | count",
+      "statements": [
+        "g.Nodes | where Name == \"a;b\"",
+        "g.Nodes | count"
+      ]
+    },
+    {
+      "name": "';' inside a single-quoted string",
+      "rql": "g.Nodes | where Name == 'a;b'",
+      "statements": [
+        "g.Nodes | where Name == 'a;b'"
+      ]
+    },
+    {
+      "name": "an escaped quote does not end the string",
+      "rql": "g.Nodes | where Name == \"a\\\";b\"",
+      "statements": [
+        "g.Nodes | where Name == \"a\\\";b\""
+      ]
+    },
+    {
+      "name": "escaped single quote",
+      "rql": "g.Nodes | where Name == 'it\\'s;' ; g.Nodes | count",
+      "statements": [
+        "g.Nodes | where Name == 'it\\'s;'",
+        "g.Nodes | count"
+      ]
+    },
+    {
+      "name": "';' inside a quoted identifier",
+      "rql": "g.Nodes | select `a;b`",
+      "statements": [
+        "g.Nodes | select `a;b`"
+      ]
+    },
+    {
+      "name": "';' inside brackets does not separate (the parser reports it)",
+      "rql": "g.Nodes | where (a; b)",
+      "statements": [
+        "g.Nodes | where (a; b)"
+      ]
+    },
+    {
+      "name": "square and curly brackets",
+      "rql": "g.Nodes | set V = [1; 2]; g.Nodes | set M = {a: 1; b: 2}; g.Nodes | count",
+      "statements": [
+        "g.Nodes | set V = [1; 2]",
+        "g.Nodes | set M = {a: 1; b: 2}",
+        "g.Nodes | count"
+      ]
+    },
+    {
+      "name": "an unterminated string runs to the end",
+      "rql": "g.Nodes | where Name == \"a;b",
+      "statements": [
+        "g.Nodes | where Name == \"a;b"
+      ]
+    },
+    {
+      "name": "trailing separator",
+      "rql": "g.Nodes | count;",
+      "statements": [
+        "g.Nodes | count"
+      ]
+    },
+    {
+      "name": "blank statements are dropped, statements are trimmed",
+      "rql": " a ;; \n b ; ",
+      "statements": [
+        "a",
+        "b"
+      ]
+    },
+    {
+      "name": "separator on its own line",
+      "rql": "g.Nodes | select Name\n;\ng.Nodes | count",
+      "statements": [
+        "g.Nodes | select Name",
+        "g.Nodes | count"
+      ]
+    },
+    {
+      "name": "only separators: one blank statement (the parser reports the empty query)",
+      "rql": " ; ;",
+      "statements": [
+        ""
+      ]
+    },
+    {
+      "name": "empty text",
+      "rql": "",
+      "statements": [
+        ""
+      ]
+    },
+    {
+      "name": "an unbalanced closing bracket does not hide later separators",
+      "rql": "g.Nodes | where Name == \"x\")); g.Nodes | count",
+      "statements": [
+        "g.Nodes | where Name == \"x\"))",
+        "g.Nodes | count"
+      ]
+    }
+  ]
+}

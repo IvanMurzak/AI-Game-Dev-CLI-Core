@@ -522,6 +522,11 @@ export {
   isRqlMutation,
   stripToolName,
   decodeQueryFile,
+  RQL_MAX_STATEMENTS,
+  splitRqlStatements,
+  stripRqlToolNames,
+  rqlTextVerb,
+  rqlToolFor,
 } from "./rql.js";
 
 // ── ui / progress utilities ─────────────────────────────────────────────────────────────────────
