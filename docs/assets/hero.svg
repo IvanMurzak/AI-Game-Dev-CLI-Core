@@ -57,7 +57,7 @@
     <!-- left: title block -->
     <g class="sans">
       <g class="fade d1">
-        <rect x="64" y="58" width="236" height="28" rx="14" fill="#ffffff" fill-opacity="0.06" stroke="#ffffff" stroke-opacity="0.12"/>
+        <rect x="64" y="58" width="262" height="28" rx="14" fill="#ffffff" fill-opacity="0.06" stroke="#ffffff" stroke-opacity="0.12"/>
         <circle cx="82" cy="72" r="4" fill="#34d399"><animate attributeName="opacity" values="1;.3;1" dur="2s" repeatCount="indefinite"/></circle>
         <text x="94" y="77" font-size="13" fill="#cbd5e1" letter-spacing=".4">ZERO RUNTIME DEPENDENCIES</text>
       </g>
@@ -66,8 +66,8 @@
       <text class="fade d3" x="64" y="214" font-size="21" fill="#cbd5e1">Unity, Unreal, Godot and the desktop App.</text>
       <g class="fade d4">
         <rect x="64" y="246" width="364" height="44" rx="10" fill="#020617" fill-opacity="0.7" stroke="#334155"/>
-        <text class="mono" x="84" y="274" font-size="16" fill="#94a3b8">$ <tspan fill="#e2e8f0">npm i </tspan><tspan fill="#67e8f9">@baizor/gamedev-cli-core</tspan></text>
-        <rect class="caret" x="402" y="259" width="8" height="18" fill="#67e8f9"/>
+        <text class="mono" x="84" y="274" font-size="16" fill="#94a3b8" textLength="307" lengthAdjust="spacing">$ <tspan fill="#e2e8f0">npm i </tspan><tspan fill="#67e8f9">@baizor/gamedev-cli-core</tspan></text>
+        <rect class="caret" x="398" y="259" width="8" height="18" fill="#67e8f9"/>
       </g>
     </g>
 

@@ -31,7 +31,7 @@ LINES = [
     ("out", [("ok", "  ✓ "), ("txt", "Claude Code → "), ("link", "https://ai-game.dev/mcp/p/6c1e9a…")], 0.6, "setupMcp() · derivePinV2()"),
     ("cmd", "unity-mcp-cli tools --format json", 1.0, None),
     ("out", [("punc", "{ "), ("key", "\"success\""), ("punc", ": "), ("bool", "true"), ("punc", ", "), ("key", "\"command\""), ("punc", ": "), ("str", "\"tools\""), ("punc", ",")], 0.6, "CommandOutput"),
-    ("out", [("punc", "  "), ("key", "\"data\""), ("punc", ": [ … ], "), ("key", "\"errors\""), ("punc", ": [], "), ("key", "\"warnings\""), ("punc", ": [] }")], 0.0, None),
+    ("out", [("punc", "  "), ("key", "\"data\""), ("punc", ": { … }, "), ("key", "\"errors\""), ("punc", ": [], "), ("key", "\"warnings\""), ("punc", ": [] }")], 0.0, None),
     ("out", [("dim", "  exit code "), ("ok", "0")], 0.8, "ExitCode.Success"),
 ]
 PROMPT_PAUSE = 0.6

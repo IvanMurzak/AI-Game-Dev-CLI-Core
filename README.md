@@ -31,12 +31,12 @@ contract. Each engine CLI is a thin adapter on top of it, so all of them behave 
 | 🎮 | **Editor sessions** | Reuse a running editor or start one headless; close only the editors the CLI started |
 | 📦 | **Server download** | Downloads the MCP server and checks its SHA-256 before running it |
 | 📤 | **CLI contract** | Shared exit codes, `--format text\|json\|ndjson`, and one JSON result envelope |
-| 🔄 | **Update check** | Tells the user when a newer CLI version is on npm |
+| 🔄 | **Update check** | Checks npm for a newer CLI version, cached for a day |
 | 🧱 | **`EngineAdapter`** | The only place where Unity, Unreal and Godot differ |
 
 ## See it in action
 
-Every engine CLI gets the same commands and the same behaviour from this package:
+Every engine CLI gets the same sign-in, setup and output behaviour from this package:
 
 <p align="center">
   <img src="docs/assets/terminal.svg" alt="A terminal session: sign in, configure Claude Code, list tools as a JSON envelope" width="100%"/>
@@ -99,7 +99,7 @@ import { CommandOutput, ExitCode, parseFormat } from "@baizor/gamedev-cli-core";
 
 const output = new CommandOutput("tools", parseFormat("json"));
 output.finish(ExitCode.Success, { tools: ["scene-list"] });
-// stdout: { "success": true, "command": "tools", "data": { "tools": ["scene-list"] }, "errors": [], "warnings": [] }
+// stdout (pretty-printed): { "success": true, "command": "tools", "data": { "tools": ["scene-list"] }, "errors": [], "warnings": [] }
 ```
 
 ## Exit codes
@@ -110,13 +110,13 @@ Scripts and AI agents can rely on these in every engine CLI:
 |:---:|---|---|
 | `0` | Success | |
 | `1` | Unexpected error | `ERROR` |
-| `2` | Bad command line, unknown tool or project | `USAGE`, `NOT_FOUND` |
-| `6` | The command ran and failed, or sign-in was refused | `TOOL_FAILED`, `COMPILATION_FAILED`, `NOT_AUTHENTICATED` |
+| `2` | Bad command line or tool arguments, unknown tool or project | `USAGE`, `NOT_FOUND` |
+| `6` | The command ran and failed, or there is no usable sign-in | `TOOL_FAILED`, `COMPILATION_FAILED`, `NOT_AUTHENTICATED` |
 | `7` | The server or the engine plugin cannot be reached | `UNREACHABLE` |
 | `8` | Tests failed | |
 | `14` | Timed out | `TIMEOUT` |
 | `17` | Busy: try again later, nothing ran | `BUSY` |
-| `18` | A modal dialog blocks the editor: a human must answer it | |
+| `18` | A modal dialog blocks the editor: a human must answer it | `AWAITING_INPUT` |
 
 The full table, with HTTP statuses, is `TOOL_FAILURE_CODES` and `EXIT_CODES` in
 [`src/cli-contract.ts`](src/cli-contract.ts).
