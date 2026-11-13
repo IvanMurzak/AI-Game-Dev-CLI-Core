@@ -7,7 +7,49 @@ Versions are set at publish time by the `release.yml` workflow input (`gh workfl
 MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not auto-resolve
 `0.4.0` — adopt deliberately).
 
-## Unreleased
+## 0.12.0 — 2026-11-13
+
+### Fixed — a copied project never closes the original project's editor (minor: 0.12.0)
+
+- Copying a project folder copied its `.ai-game-dev/session.json`, and the copy's session trusted
+  that lease (same machine, pid alive, same start time): `close --owned-only`, `open` with a window
+  and `run-tests` in the copy closed the ORIGINAL project's editor. A lease now records the project
+  folder it was written for (`SessionLease.projectRoot`); in another folder it is stale (removed,
+  its editor never touched) and the copy starts its own editor. A lease written before this field
+  counts only when the editor's command line opens this project (`EditorLaunchSpec.opensProject`,
+  for Unity `-projectPath`, Godot `--path`, Unreal the `*.uproject` folder; symlink- and, on
+  Windows and macOS, case-insensitive); when the command line cannot be read it is never closed.
+- New: optional `SessionProcessOps.commandLine` (default `readProcessCommandLine`:
+  `/proc/<pid>/cmdline`, `Win32_Process.CommandLine`, `ps -ww -o args=`),
+  `sessionLeaseNamesProject(lease, root)` (a cheap pre-check for CLIs), and the path helpers
+  `samePath`, `canonicalPath`, `commandLineFlagValues`, `commandLineFileArgs`,
+  `commandLineOpensFolder` (an unquoted `ps` line is ambiguous: the longest candidate that exists
+  is the editor's argument; a relative one never counts).
+
+### Added — one RQL statement splitter and router for the engine CLIs (minor: 0.12.0)
+
+- `splitRqlStatements(text)`: RQL request text split into its `;`-separated statements exactly as RQL splits them
+  (spec §14, its `fixtures/statements/cases.json` vendored as tests): `;` separates only outside strings (either
+  quote, backslash escapes), `backtick` identifiers and brackets; statements trimmed (.NET whitespace), blank ones
+  dropped; text of only separators is one blank statement; no statement cap (RQL reports too many itself).
+- `rqlToolFor(text)`: `rql-mutate` when any statement ends in `set` / `call`, else `rql-query`;
+  `rqlTextVerb(text)` (`call` over `set`, for save receipts); `stripRqlToolNames(text)` strips a pasted
+  `rql-query` / `rql-mutate` from each statement. Replaces the three engine CLIs' own copies, which already differed
+  (Godot returned no statement for blank text).
+- `rqlToolCall(query, options, noQueryUsage)` (`RqlCallOptions`, `RqlToolCall`): the `rql` command line's tool call
+  or usage error (`--schema [type]` → `rql-schema`; `--dry-run` / `--max-targets` only with `rql-mutate`; blank
+  text, RQL's rule, is the CLI's `noQueryUsage`), routed by `rqlToolFor`, a pasted tool name stripped from each
+  statement. Replaces the `rqlToolCall` / `rqlCall` copies of the Unity, Godot and Unreal CLIs; `maxTargets` is a
+  number the CLI has already parsed and range-checked (Unreal parses its string option first).
+- `rqlStages` and `splitRqlStatements` share one lexical scan (strings, `backtick` identifiers, brackets; RQL has no
+  comments), so `|` and `;` are found outside the same places.
+
+### Deprecated
+
+- `isRqlMutation(query)`: use `rqlToolFor` / `rqlToolCall`. It stays exported and now equals
+  `rqlToolFor(query) === RQL_MUTATE_TOOL`, so a write in any statement, not only the last, counts.
+
+## 0.11.1 — 2026-11-11
 
 ### Added — one mapping of a dropped connection to its failure reason (patch: 0.11.1)
 

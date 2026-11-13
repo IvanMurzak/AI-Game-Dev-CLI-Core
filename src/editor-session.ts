@@ -7,7 +7,16 @@ import { isErrno, writeFileAtomicSync } from "./atomic-file.js";
 import { ACQUIRE_BUDGET, CredentialLockBusyError, MachineCredentialLock, takeoverFileName } from "./credential-lock.js";
 import type { EditorLaunchSpec, EditorSessionMode, EngineAdapter, EngineId } from "./engine-adapter.js";
 import { errorMessage } from "./network-error.js";
-import { isProcessAlive, killProcessTree, readProcessStart, sleep, spawnDetached, terminateProcess } from "./process.js";
+import {
+  isProcessAlive,
+  killProcessTree,
+  readProcessCommandLine,
+  readProcessStart,
+  sleep,
+  spawnDetached,
+  terminateProcess,
+} from "./process.js";
+import { samePath } from "./project-path.js";
 
 /**
  * Editor sessions for CLI commands that need a running editor (`exec`, `open --headless`,
@@ -20,7 +29,9 @@ import { isProcessAlive, killProcessTree, readProcessStart, sleep, spawnDetached
  *    by itself after the idle timeout, record a lease, and wait until the readiness probe answers.
  *  - The lease `<project>/.ai-game-dev/session.json` marks the editor as OURS. Only an editor whose
  *    lease is valid (same host, pid alive, and the pid's process start time still the one recorded
- *    at launch — so a reused pid never matches) is ever closed automatically.
+ *    at launch — so a reused pid never matches — and the lease written for THIS project folder) is
+ *    ever closed automatically. A project folder copied with its lease names the original project's
+ *    editor: that lease is stale here.
  *  - One start per project: the decide-and-launch step — including the optional pre-launch hook
  *    (e.g. a C# or UBT build) — runs under the `<project>/.ai-game-dev/session.lock` file lock (the
  *    {@link MachineCredentialLock} protocol, heartbeated while held). It is held only until the
@@ -115,6 +126,13 @@ export interface SessionLease {
   serverUrl?: string;
   /** Engine-specific connection mode the editor was started with (e.g. `Custom`); informational. */
   connectionMode?: string;
+  /**
+   * The project folder the editor was started for (absolute). A lease found in another folder (the
+   * project was copied with it) is stale there. Absent in leases written before it was added: such a
+   * lease counts only when the editor's command line opens this project
+   * ({@link EditorLaunchSpec.opensProject}).
+   */
+  projectRoot?: string;
 }
 
 /** OS process primitives used by a session. Injectable for tests. */
@@ -128,6 +146,11 @@ export interface SessionProcessOps {
   isAlive(pid: number): boolean;
   /** An opaque token for the process start time of `pid`; undefined when it cannot be read. */
   processStart(pid: number): Promise<string | undefined>;
+  /**
+   * The command line of `pid` ({@link readProcessCommandLine}); undefined when it cannot be read.
+   * Optional so a complete ops object written before it was added keeps compiling (absent: unknown).
+   */
+  commandLine?(pid: number): Promise<string | undefined>;
   /** The OS polite-quit request (SIGTERM / `taskkill` without `/F`). */
   requestClose(pid: number): Promise<boolean>;
   /** Kill it and its descendants outright (SIGKILL to its process group / `taskkill /T /F`). */
@@ -369,7 +392,17 @@ export function parseSessionLease(text: string): SessionLease | undefined {
     ...(typeof r["processStart"] === "string" ? { processStart: r["processStart"] } : {}),
     ...(typeof r["serverUrl"] === "string" ? { serverUrl: r["serverUrl"] } : {}),
     ...(typeof r["connectionMode"] === "string" ? { connectionMode: r["connectionMode"] } : {}),
+    ...(typeof r["projectRoot"] === "string" ? { projectRoot: r["projectRoot"] } : {}),
   };
+}
+
+/**
+ * Whether `lease` may belong to `projectRoot`: false when it names another project folder (it was
+ * copied along with the project), true otherwise — also for a lease that names no folder, which only
+ * a process check can rule out. A cheap pre-check for a CLI; {@link EditorSession} does the full one.
+ */
+export function sessionLeaseNamesProject(lease: SessionLease, projectRoot: string): boolean {
+  return lease.projectRoot === undefined || samePath(lease.projectRoot, projectRoot);
 }
 
 /**
@@ -694,6 +727,7 @@ export class EditorSession<TReady = unknown> {
       ...(processStart !== undefined ? { processStart } : {}),
       ...(serverUrl !== undefined ? { serverUrl } : {}),
       ...(connectionMode !== undefined ? { connectionMode } : {}),
+      projectRoot: this.projectRoot,
     };
     if (this._options.gitignore !== false) ensureAiGameDevGitignore(this.projectRoot, SESSION_GITIGNORE_ENTRIES);
     writeFileAtomicSync(this.leasePath, Buffer.from(JSON.stringify(lease, null, 2) + "\n", "utf-8"));
@@ -737,17 +771,33 @@ export class EditorSession<TReady = unknown> {
   }
 
   /**
-   * `live`: same host, pid alive, and the recorded start time still matches (provably our editor).
-   * `unverifiable`: same host and pid alive, but the start time is unknown on either side — NOT ours
-   * (a lease never authorizes closing a process we cannot identify), yet not provably stale either.
-   * `dead`: another host, the pid is gone, or the pid was reused (the start time differs).
+   * `live`: same host, pid alive, the recorded start time still matches, and the lease is this
+   * project's (provably our editor of this project).
+   * `unverifiable`: same host and pid alive, but the start time is unknown on either side, or a lease
+   * naming no project whose editor's command line cannot be read — NOT ours (a lease never authorizes
+   * closing a process we cannot identify), yet not provably stale either.
+   * `dead`: another host, the pid is gone, the pid was reused (the start time differs), or the lease
+   * belongs to another project folder (copied with the project; its editor has the original open).
    */
   private async leaseState(lease: SessionLease): Promise<"live" | "unverifiable" | "dead"> {
     if (!this.isThisHost(lease) || !this._ops.isAlive(lease.pid)) return "dead";
+    if (!sessionLeaseNamesProject(lease, this.projectRoot)) return "dead";
     if (lease.processStart === undefined) return "unverifiable";
     const current = await this._ops.processStart(lease.pid);
     if (current === undefined) return "unverifiable";
-    return current === lease.processStart ? "live" : "dead";
+    if (current !== lease.processStart) return "dead";
+    if (lease.projectRoot !== undefined) return "live";
+    // A lease from before leases named their project: the editor's command line tells.
+    const opens = await this.editorOpensProject(lease.pid);
+    return opens === undefined ? "unverifiable" : opens ? "live" : "dead";
+  }
+
+  /** Whether the editor `pid` has this project open, by its command line; undefined when unknown. */
+  private async editorOpensProject(pid: number): Promise<boolean | undefined> {
+    const opensProject = this._options.adapter.editor?.opensProject;
+    if (opensProject === undefined) return undefined;
+    const commandLine = await this._ops.commandLine?.(pid);
+    return commandLine === undefined ? undefined : opensProject(commandLine, this.projectRoot);
   }
 
   private isThisHost(lease: SessionLease): boolean {
@@ -867,6 +917,7 @@ export const defaultSessionProcessOps: SessionProcessOps = {
   spawnDetached,
   isAlive: isProcessAlive,
   processStart: readProcessStart,
+  commandLine: readProcessCommandLine,
   requestClose: terminateProcess,
   forceKill: killProcessTree,
   sleep,
