@@ -16,7 +16,7 @@ contract. Each engine CLI is a thin adapter on top of it, so all of them behave 
 
 ## What it does
 
-✅ **Sign-in** — OAuth 2.1 device code in terminals, browser login (PKCE) in the desktop App<br>
+✅ **Sign-in** — OAuth device code (RFC 8628) in terminals, OAuth 2.1 browser login (PKCE) in the desktop App<br>
 ✅ **Credentials** — one store in `~/.ai-game-dev/`: DPAPI on Windows, `0600` on macOS/Linux<br>
 ✅ **Safe refresh** — tokens refresh under a lock shared by every process<br>
 ✅ **Project identity** — a stable pin and port per project, byte-for-byte equal to the C# plugin's<br>
@@ -26,7 +26,7 @@ contract. Each engine CLI is a thin adapter on top of it, so all of them behave 
 ✅ **CLI contract** — shared exit codes, `--format text|json|ndjson`, one JSON result envelope<br>
 ✅ **Update check** — looks for a newer CLI version on npm, cached for a day<br>
 ✅ **RQL routing** — splits RQL text into statements and picks `rql-query` or `rql-mutate`<br>
-✅ **`EngineAdapter`** — the only place where Unity, Unreal and Godot differ
+✅ **`EngineAdapter`** — the only place where the engines (Unity, Unreal, Godot, BRUTAL) differ
 
 ## See it in action
 
