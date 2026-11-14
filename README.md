@@ -1,8 +1,8 @@
 <div align="center">
 
-<p><img src="docs/assets/hero.svg" alt="AI Game Dev CLI Core — one TypeScript core behind every engine CLI" width="100%"/></p>
+<p><img src="https://raw.githubusercontent.com/IvanMurzak/AI-Game-Dev-CLI-Core/main/docs/assets/hero.svg" alt="AI Game Dev CLI Core — one TypeScript core behind every engine CLI" width="100%"/></p>
 
-[![npm](https://img.shields.io/npm/v/@baizor/gamedev-cli-core?label=npm&color=2F6F9F&logo=npm&style=for-the-badge&labelColor=0F172A&logoColor=white)](https://www.npmjs.com/package/@baizor/gamedev-cli-core) [![CI](https://img.shields.io/github/actions/workflow/status/IvanMurzak/AI-Game-Dev-CLI-Core/ci.yml?branch=main&event=push&label=CI&color=15803D&style=for-the-badge&logo=github&logoColor=white&labelColor=0F172A)](https://github.com/IvanMurzak/AI-Game-Dev-CLI-Core/actions/workflows/ci.yml) [![Node](https://img.shields.io/badge/Node-22.14%2B-0E7490?logo=nodedotjs&style=for-the-badge&labelColor=0F172A&logoColor=white)](https://nodejs.org/) [![Runtime deps](https://img.shields.io/badge/runtime%20deps-0-0E7490?style=for-the-badge&labelColor=0F172A&logoColor=white)](package.json) [![License](https://img.shields.io/badge/license-MIT-047857?style=for-the-badge&labelColor=0F172A&logoColor=white)](LICENSE) [![Stand with Ukraine](https://raw.githubusercontent.com/IvanMurzak/IvanMurzak/main/images/ukraine/flag-badge.svg)](https://stand-with-ukraine.pp.ua)
+[![npm](https://img.shields.io/npm/v/@baizor/gamedev-cli-core?label=npm&color=2F6F9F&logo=npm&style=for-the-badge&labelColor=0F172A&logoColor=white)](https://www.npmjs.com/package/@baizor/gamedev-cli-core) [![CI](https://img.shields.io/github/actions/workflow/status/IvanMurzak/AI-Game-Dev-CLI-Core/ci.yml?branch=main&event=push&label=CI&color=15803D&style=for-the-badge&logo=github&logoColor=white&labelColor=0F172A)](https://github.com/IvanMurzak/AI-Game-Dev-CLI-Core/actions/workflows/ci.yml) [![Node](https://img.shields.io/badge/Node-22.14%2B-0E7490?logo=nodedotjs&style=for-the-badge&labelColor=0F172A&logoColor=white)](https://nodejs.org/) [![Runtime deps](https://img.shields.io/badge/runtime%20deps-0-0E7490?style=for-the-badge&labelColor=0F172A&logoColor=white)](https://github.com/IvanMurzak/AI-Game-Dev-CLI-Core/blob/main/package.json) [![License](https://img.shields.io/badge/license-MIT-047857?style=for-the-badge&labelColor=0F172A&logoColor=white)](https://github.com/IvanMurzak/AI-Game-Dev-CLI-Core/blob/main/LICENSE) [![Stand with Ukraine](https://raw.githubusercontent.com/IvanMurzak/IvanMurzak/main/images/ukraine/flag-badge.svg)](https://stand-with-ukraine.pp.ua)
 
 </div>
 
@@ -11,7 +11,7 @@ sign-in, credentials, project identity, AI-agent setup, editor sessions and the 
 contract. Each engine CLI is a thin adapter on top of it, so all of them behave the same way.
 
 <p align="center">
-  <img src="docs/assets/architecture.svg" alt="The engine CLIs and the App call cli-core; cli-core talks to ai-game.dev, the local MCP server, the engine editor and AI agent configs" width="100%"/>
+  <img src="https://raw.githubusercontent.com/IvanMurzak/AI-Game-Dev-CLI-Core/main/docs/assets/architecture.svg" alt="The engine CLIs and the App call cli-core; cli-core talks to ai-game.dev, the local MCP server, the engine editor and AI agent configs" width="100%"/>
 </p>
 
 ## What it does
@@ -33,7 +33,7 @@ contract. Each engine CLI is a thin adapter on top of it, so all of them behave 
 Every engine CLI gets the same sign-in, setup and output behaviour from this package:
 
 <p align="center">
-  <img src="docs/assets/terminal.svg" alt="A terminal session: sign in, configure Claude Code, list tools as a JSON envelope" width="100%"/>
+  <img src="https://raw.githubusercontent.com/IvanMurzak/AI-Game-Dev-CLI-Core/main/docs/assets/terminal.svg" alt="A terminal session: sign in, configure Claude Code, list tools as a JSON envelope" width="100%"/>
 </p>
 
 ## Install
@@ -115,7 +115,7 @@ Scripts and AI agents can rely on these in every engine CLI:
 | `18` | A modal dialog blocks the editor: a human must answer it | `AWAITING_INPUT` |
 
 The full table, with HTTP statuses, is `TOOL_FAILURE_CODES` and `EXIT_CODES` in
-[`src/cli-contract.ts`](src/cli-contract.ts).
+[`src/cli-contract.ts`](https://github.com/IvanMurzak/AI-Game-Dev-CLI-Core/blob/main/src/cli-contract.ts).
 
 ## Develop
 
@@ -127,8 +127,8 @@ npm test            # vitest
 ```
 
 Releases are published to npm from the `release.yml` workflow with Trusted Publishing (OIDC).
-Changes are listed in the [changelog](CHANGELOG.md).
+Changes are listed in the [changelog](https://github.com/IvanMurzak/AI-Game-Dev-CLI-Core/blob/main/CHANGELOG.md).
 
 ## License
 
-[MIT](LICENSE) © Ivan Murzak
+[MIT](https://github.com/IvanMurzak/AI-Game-Dev-CLI-Core/blob/main/LICENSE) © Ivan Murzak
