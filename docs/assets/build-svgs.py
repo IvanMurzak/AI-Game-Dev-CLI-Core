@@ -38,7 +38,7 @@ def hero_right():
 
 
 K.write(out("hero.svg"), K.hero(
-    title="AI Game Dev ", accent="CLI Core", eyebrow_text="Zero runtime dependencies",
+    title="AI Game Dev CLI ", accent="Core", accent_fx="flow", eyebrow_text="Zero runtime dependencies",
     subtitle=["One TypeScript core behind every engine CLI:", "Unity, Unreal, Godot and the desktop App."],
     chip_items=["npm i @baizor/gamedev-cli-core", "Node 22.14+"],
     right=hero_right(),
