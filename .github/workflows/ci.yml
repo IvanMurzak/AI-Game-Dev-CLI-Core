@@ -153,8 +153,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+        # macOS runs on the owner's Mac (runner-manager places `[self-hosted, macOS, ARM64]` jobs):
+        # GitHub-hosted macOS arm64 runners were often not acquired ("capacity constraints").
+        include:
+          - os: windows-latest
+            runs-on: windows-latest
+          - os: macos-self-hosted
+            runs-on: [self-hosted, macOS, ARM64]
+    runs-on: ${{ matrix.runs-on }}
     timeout-minutes: 20
     steps:
       - name: Checkout
