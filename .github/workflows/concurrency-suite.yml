@@ -98,8 +98,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+        # macOS runs on the owner's Mac (runner-manager places `[self-hosted, macOS, ARM64]` jobs):
+        # GitHub-hosted macOS arm64 runners were often not acquired ("capacity constraints").
+        # This repo is public: a pull request from a fork keeps the hosted macos-latest, so its code
+        # never runs on the owner's machine.
+        include:
+          - os: ubuntu-latest
+            runs-on: ubuntu-latest
+          - os: windows-latest
+            runs-on: windows-latest
+          - os: macos-self-hosted
+            runs-on: [self-hosted, macOS, ARM64]
+            self_hosted: true
+    runs-on: ${{ matrix.self_hosted && github.event.pull_request.head.repo.fork && 'macos-latest' || matrix.runs-on }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -109,7 +120,10 @@ jobs:
           node-version: 22.x
           cache: npm
 
+      # On a self-hosted runner the SDKs go to the job's temp dir, not the persistent ~/.dotnet.
       - uses: actions/setup-dotnet@v6
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.environment == 'self-hosted' && format('{0}/dotnet', runner.temp) || '' }}
         with:
           dotnet-version: |
             8.0.x
