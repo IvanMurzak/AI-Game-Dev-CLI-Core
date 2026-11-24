@@ -155,12 +155,15 @@ jobs:
       matrix:
         # macOS runs on the owner's Mac (runner-manager places `[self-hosted, macOS, ARM64]` jobs):
         # GitHub-hosted macOS arm64 runners were often not acquired ("capacity constraints").
+        # This repo is public: a pull request from a fork keeps the hosted macos-latest, so its code
+        # never runs on the owner's machine.
         include:
           - os: windows-latest
             runs-on: windows-latest
           - os: macos-self-hosted
             runs-on: [self-hosted, macOS, ARM64]
-    runs-on: ${{ matrix.runs-on }}
+            self_hosted: true
+    runs-on: ${{ matrix.self_hosted && github.event.pull_request.head.repo.fork && 'macos-latest' || matrix.runs-on }}
     timeout-minutes: 20
     steps:
       - name: Checkout
