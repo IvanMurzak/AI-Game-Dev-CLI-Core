@@ -500,7 +500,7 @@ export async function commitAgentLogin(
     // Never `plugin-changed`: the login commit's write is unconditional (no expectedPluginRefreshToken).
     return {
       status: "aborted",
-      reason: derived.reason as Exclude<typeof derived.reason, "plugin-changed">,
+      reason: derived.reason as Exclude<DeriveAbortReason, "plugin-changed">,
       ...(derived.detail !== undefined ? { detail: derived.detail } : {}),
     };
   }
@@ -558,18 +558,17 @@ export interface DerivePluginFamilyOptions {
 /** {@link DerivePluginFamilyResult} `exchange-failed` reason of a minted family for another account. */
 export const EXCHANGE_SUBJECT_MISMATCH = "subject-mismatch";
 
+/**
+ * Why {@link derivePluginFamily}'s write hold refused: a {@link CommitAbortReason} of the second
+ * hold, or `plugin-changed` (only with {@link DerivePluginFamilyOptions.expectedPluginRefreshToken}).
+ */
+type DeriveAbortReason = Exclude<CommitAbortReason, "guard-premise-changed"> | "plugin-changed";
+
 export type DerivePluginFamilyResult =
   | { status: "derived"; document: MachineCredentials }
   | { status: "exchange-failed"; reason: string }
-  /**
-   * Review fix B2a: the hold-2 re-verification refused the write; nothing was written.
-   * `plugin-changed` only with {@link DerivePluginFamilyOptions.expectedPluginRefreshToken}.
-   */
-  | {
-      status: "aborted";
-      reason: Exclude<CommitAbortReason, "guard-premise-changed"> | "plugin-changed";
-      detail?: string;
-    };
+  /** Review fix B2a: the hold-2 re-verification refused the write; nothing was written. */
+  | { status: "aborted"; reason: DeriveAbortReason; detail?: string };
 
 /**
  * Whether `doc` still holds the plugin plane, account and server a conditional
@@ -638,7 +637,7 @@ export async function derivePluginFamily(
   // (04 §4 "no path writes a subject-less credential") but never overwrites a present one.
   type Hold2Outcome =
     | { ok: true; document: MachineCredentials }
-    | { ok: false; reason: Exclude<CommitAbortReason, "guard-premise-changed"> | "plugin-changed"; detail?: string };
+    | { ok: false; reason: DeriveAbortReason; detail?: string };
   const outcome = await lock.withLock((): Hold2Outcome => {
     const state = safeReadState(options.store);
     if (state === null) {
