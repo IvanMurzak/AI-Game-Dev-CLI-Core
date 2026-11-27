@@ -13,14 +13,24 @@ MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not 
 
 - `derivePluginFamily` takes `expectedPluginRefreshToken` (`string | null`): a compare-and-swap on
   the store's plugin plane. Under the same cross-process lock hold as the write, the store must
-  still hold that plugin refresh token (`null`: no plugin family), no `legacy` family, exactly
-  `expectedSubject`'s account and `serverTarget`'s server; otherwise nothing is written, the
-  result is `aborted`/`plugin-changed` and the minted family is revoked best effort. A surface that
+  still hold that plugin refresh token (`null`: no plugin family), no `legacy` family and, when
+  given, exactly `expectedSubject`'s account and `serverTarget`'s server; otherwise nothing is
+  written, the result is `aborted`/`plugin-changed` (a different known account stays
+  `subject-changed`) and the minted family is revoked best effort. A surface that
   re-derives a revoked plugin family no longer overwrites a fresh plugin sign-in another tool
   committed during the exchange (DEV-277).
-- `requireExchangeSubject: true` refuses (revokes, never writes) a minted family whose `sub` is not
-  `expectedSubject`: `exchange-failed` with reason `EXCHANGE_SUBJECT_MISMATCH` (`"subject-mismatch"`).
-- Both are opt-in: without them `derivePluginFamily` and `commitAgentLogin` behave as before.
+- `requireExchangeSubject: true` refuses (revokes, never writes) a minted family whose `sub` is
+  absent or not `expectedSubject`: `exchange-failed` with reason `EXCHANGE_SUBJECT_MISMATCH`
+  (`"subject-mismatch"`, final: do not retry). It requires `expectedSubject` (throws without it).
+- Both are opt-in: without them `derivePluginFamily` and `commitAgentLogin` behave as before. The
+  type of `DerivePluginFamilyResult`'s `aborted` reason gains `"plugin-changed"`.
+
+### Fixed — `derivePluginFamily` called directly
+
+- It warms the Windows DPAPI codec before its write hold (as `commitAgentLogin` already did), so a
+  cold PowerShell start no longer stretches the hold toward the lock's stale threshold.
+- A write hold that throws without writing (`CredentialLockBusyError`,
+  `MachineCredentialStoreUnwritableError`) now revokes the minted family before rethrowing.
 
 ## 0.12.0 — 2026-11-14
 

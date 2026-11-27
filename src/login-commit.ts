@@ -1,6 +1,7 @@
-import { MachineCredentialLock } from "./credential-lock.js";
+import { CredentialLockBusyError, MachineCredentialLock } from "./credential-lock.js";
 import {
   MachineCredentialStoreUnreadableError,
+  MachineCredentialStoreUnwritableError,
   applyV1CompatMirror,
   documentSchemaVersion,
   effectiveFamilies,
@@ -537,8 +538,8 @@ export interface DerivePluginFamilyOptions {
    *    and it holds no `legacy` family (which serves the plugin plane);
    *  - with `expectedSubject`, it names exactly that account (an unknown subject is a change too);
    *  - with `serverTarget`, it names the same server (`/mcp` hub URL ≡ AS root).
-   * Otherwise nothing is written: `aborted`/`plugin-changed`, and the just-minted family is
-   * revoked best effort. Another tool's fresh plugin sign-in committed during the exchange is
+   * Otherwise nothing is written: `aborted`/`plugin-changed` (a store naming a different known
+   * account stays `subject-changed`), and the just-minted family is revoked best effort. Another tool's fresh plugin sign-in committed during the exchange is
    * therefore never overwritten. Omit (the default) for the login commit's unconditional write.
    * A stored plugin family without a refresh token, or a `legacy` one, never matches.
    */
@@ -547,7 +548,7 @@ export interface DerivePluginFamilyOptions {
    * Refuse a minted family that is not `expectedSubject`'s: an exchange response whose `sub` is
    * absent or names another account is revoked best effort and nothing is written
    * (`exchange-failed`/{@link EXCHANGE_SUBJECT_MISMATCH}). Requires `expectedSubject` (throws
-   * before the exchange without it).
+   * before the exchange without it). The mismatch is final: retrying mints and revokes again.
    */
   requireExchangeSubject?: boolean;
   /** Injectable best-effort revoker for a derived family orphaned by an abort. */
@@ -557,7 +558,7 @@ export interface DerivePluginFamilyOptions {
   signal?: AbortSignal;
 }
 
-/** {@link DerivePluginFamilyResult} `exchange-failed` reason of a minted family for another account. */
+/** {@link DerivePluginFamilyResult} `exchange-failed` reason of a minted family for another (or no) account. */
 export const EXCHANGE_SUBJECT_MISMATCH = "subject-mismatch";
 
 /**
@@ -603,9 +604,14 @@ function pluginPlaneUnchanged(doc: MachineCredentials, options: DerivePluginFami
  *    `aborted`/`subject-changed`;
  *  - store gone (machine-wide sign-out, F6) ⇒ `aborted`/`store-missing` — a signed-out machine
  *    is NEVER signed back in by recreating its store;
- *  - store unreadable ⇒ `aborted`/`store-unreadable` — never overwritten by this path (04 §1).
+ *  - store unreadable ⇒ `aborted`/`store-unreadable` — never overwritten by this path (04 §1);
+ *  - with `expectedPluginRefreshToken`, the plugin plane changed ⇒ `aborted`/`plugin-changed`.
+ * With `requireExchangeSubject`, a minted family for another (or no) account is refused before
+ * the write hold (`exchange-failed`/{@link EXCHANGE_SUBJECT_MISMATCH}); `requireExchangeSubject`
+ * without `expectedSubject` is a programming error and throws.
  * On any abort the just-derived (now orphaned) family is revoked best-effort — no orphan device
- * row.
+ * row; so it is when the write hold throws because the lock stayed busy or the store could not be
+ * encrypted (nothing was written), before the error is rethrown.
  */
 export async function derivePluginFamily(
   options: DerivePluginFamilyOptions,
@@ -613,6 +619,9 @@ export async function derivePluginFamily(
   if (options.requireExchangeSubject === true && options.expectedSubject === undefined) {
     throw new Error("derivePluginFamily: requireExchangeSubject needs expectedSubject");
   }
+  // Pay a cold DPAPI start before the write hold (as commitAgentLogin does): a hold slowed past
+  // the lock's stale threshold could be taken over and break the conditional write's atomicity.
+  await options.store.warmUpCodec();
   const lock = options.lock ?? new MachineCredentialLock(options.store.baseDirectory);
   const exchange = await options.exchangeClient.exchange({
     subjectToken: options.agentAccessToken,
@@ -625,7 +634,7 @@ export async function derivePluginFamily(
   }
   if (options.requireExchangeSubject === true && exchange.sub !== options.expectedSubject) {
     await revokeOrphan(options, exchange);
-    options.onWarning?.("Token exchange minted a plugin family for another account; it was revoked and not written.");
+    options.onWarning?.("Token exchange minted a plugin family for another (or no) account; it was revoked and not written.");
     return { status: "exchange-failed", reason: EXCHANGE_SUBJECT_MISMATCH };
   }
 
@@ -643,7 +652,7 @@ export async function derivePluginFamily(
   type Hold2Outcome =
     | { ok: true; document: MachineCredentials }
     | { ok: false; reason: DeriveAbortReason; detail?: string };
-  const outcome = await lock.withLock((): Hold2Outcome => {
+  const writeHold = (): Hold2Outcome => {
     const state = safeReadState(options.store);
     if (state === null) {
       return { ok: false, reason: "store-unreadable", detail: "reading the machine credential store failed" };
@@ -682,7 +691,18 @@ export async function derivePluginFamily(
       }
       throw err;
     }
-  });
+  };
+  let outcome: Hold2Outcome;
+  try {
+    outcome = await lock.withLock(writeHold);
+  } catch (err) {
+    // Nothing was written (lock never acquired / encryption failed before any file was touched):
+    // revoke the minted family like an abort, then surface the error unchanged.
+    if (err instanceof CredentialLockBusyError || err instanceof MachineCredentialStoreUnwritableError) {
+      await revokeOrphan(options, exchange);
+    }
+    throw err;
+  }
 
   if (!outcome.ok) {
     // The derived family has no home now — revoke it best-effort so no orphan device row lingers.

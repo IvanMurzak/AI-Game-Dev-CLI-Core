@@ -4,7 +4,8 @@
 // Usage: node plugin-writer.mjs <storeDir> <refreshToken> <readyFile> <holdMs>
 //   acquire the lock → create <readyFile> → sleep <holdMs> → write the plugin family → release.
 // Holding the lock while the parent's conditional write waits for it proves the parent's check
-// and write run under ONE hold: the parent can only see the store after this write.
+// runs under the lock (a check made before acquiring it would miss this write); that the check
+// and the write share one hold is covered by the in-process tests in login-commit.test.ts.
 
 import * as fs from "node:fs";
 import { MachineCredentialLock, MachineCredentialStore } from "../../dist/index.js";

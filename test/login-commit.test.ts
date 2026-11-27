@@ -7,8 +7,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CREDENTIALS_FILE_NAME,
   CREDENTIALS_LOCK_FILE_NAME,
+  CredentialLockBusyError,
   MachineCredentialLock,
   MachineCredentialStore,
+  MachineCredentialStoreUnwritableError,
   commitAgentLogin,
   commitToolsOnlyLogin,
   derivePluginFamily,
@@ -783,6 +785,23 @@ describe("derivePluginFamily — conditional write (expectedPluginRefreshToken, 
     const store = freshStore(DEAD_STORE);
     const { result } = heal(store, scriptedExchange(EXCHANGE_OK), { requireExchangeSubject: true });
     expect(await result).toMatchObject({ status: "derived" });
+  });
+
+  it("a write hold that throws before writing (lock busy, store unwritable) revokes the minted family and rethrows", async () => {
+    const busy = freshStore(DEAD_STORE);
+    const busyLock = { withLock: async () => { throw new CredentialLockBusyError(busy.credentialsPath, 1); } } as unknown as MachineCredentialLock;
+    const lockBusy = heal(busy, scriptedExchange(EXCHANGE_OK), { lock: busyLock });
+    await expect(lockBusy.result).rejects.toBeInstanceOf(CredentialLockBusyError);
+    expect(lockBusy.revoked).toEqual(["plug-r"]);
+
+    const unwritable = freshStore(DEAD_STORE);
+    vi.spyOn(unwritable, "writeFamily").mockImplementation(() => {
+      throw new MachineCredentialStoreUnwritableError("encrypt failed");
+    });
+    const failed = heal(unwritable, scriptedExchange(EXCHANGE_OK));
+    await expect(failed.result).rejects.toBeInstanceOf(MachineCredentialStoreUnwritableError);
+    expect(failed.revoked).toEqual(["plug-r"]);
+    expect(unwritable.read()?.families?.plugin?.refreshToken).toBe("dead-r");
   });
 });
 
