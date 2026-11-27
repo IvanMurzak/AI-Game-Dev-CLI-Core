@@ -276,6 +276,7 @@ export type {
 export {
   commitAgentLogin,
   derivePluginFamily,
+  EXCHANGE_SUBJECT_MISMATCH,
   commitToolsOnlyLogin,
   signOutMachineWide,
   evaluateAccountSwitch,

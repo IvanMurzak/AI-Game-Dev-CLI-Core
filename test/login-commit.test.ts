@@ -12,6 +12,7 @@ import {
   commitAgentLogin,
   commitToolsOnlyLogin,
   derivePluginFamily,
+  EXCHANGE_SUBJECT_MISMATCH,
   evaluateAccountSwitch,
   identityCredentialCodec,
   revocationUrl,
@@ -672,6 +673,109 @@ describe("fix round 1 — B2: re-verification under the lock", () => {
     expect(result).toMatchObject({ status: "aborted", reason: "guard-premise-changed" });
     expect(store.read()?.subject).toBe("usr_C");
     expect(store.read()?.families?.plugin).toBeUndefined();
+  });
+});
+
+describe("derivePluginFamily — conditional write (expectedPluginRefreshToken, DEV-277)", () => {
+  const DEAD_STORE: MachineCredentials = {
+    version: 2,
+    subject: "usr_A",
+    serverTarget: "https://ai-game.dev/mcp",
+    families: {
+      agent: { accessToken: "agent-a", refreshToken: "agent-r", clientId: "app", scope: "mcp:agent" },
+      plugin: { accessToken: "dead-a", refreshToken: "dead-r", clientId: "app", scope: "mcp:plugin" },
+    },
+  };
+
+  function heal(store: MachineCredentialStore, exchange: TokenExchangeClient, extra: Partial<Parameters<typeof derivePluginFamily>[0]> = {}) {
+    const revoked: string[] = [];
+    const result = derivePluginFamily({
+      store,
+      exchangeClient: exchange,
+      clientId: "app",
+      agentAccessToken: "agent-a",
+      expectedSubject: "usr_A",
+      serverTarget: "https://ai-game.dev",
+      expectedPluginRefreshToken: "dead-r",
+      revokeToken: (token) => {
+        revoked.push(token);
+        return true;
+      },
+      onWarning: () => {},
+      ...extra,
+    });
+    return { result, revoked };
+  }
+
+  it("match: the store still holds the expected (revoked) plugin family → the derived one replaces it", async () => {
+    const store = freshStore(DEAD_STORE);
+    const { result, revoked } = heal(store, scriptedExchange(EXCHANGE_OK));
+    expect(await result).toMatchObject({ status: "derived" });
+    expect(store.read()?.families?.plugin?.refreshToken).toBe("plug-r");
+    expect(store.read()?.families?.agent?.refreshToken).toBe("agent-r");
+    expect(revoked).toEqual([]);
+  });
+
+  it("match on `null`: a store with no plugin family gets one", async () => {
+    const { plugin: _drop, ...families } = DEAD_STORE.families!;
+    const store = freshStore({ ...DEAD_STORE, families });
+    const { result } = heal(store, scriptedExchange(EXCHANGE_OK), { expectedPluginRefreshToken: null });
+    expect(await result).toMatchObject({ status: "derived" });
+    expect(store.read()?.families?.plugin?.refreshToken).toBe("plug-r");
+  });
+
+  it("mismatch: another tool committed a fresh plugin sign-in during the exchange → it survives, the minted family is revoked", async () => {
+    const store = freshStore(DEAD_STORE);
+    const exchange = scriptedExchange(() => {
+      store.writeFamily("plugin", { accessToken: "fresh-a", refreshToken: "fresh-r", clientId: "cli", scope: "mcp:plugin" });
+      return EXCHANGE_OK;
+    });
+    const { result, revoked } = heal(store, exchange);
+    expect(await result).toMatchObject({ status: "aborted", reason: "plugin-changed" });
+    expect(store.read()?.families?.plugin?.refreshToken).toBe("fresh-r");
+    expect(revoked).toEqual(["plug-r"]);
+  });
+
+  it.each<[string, (doc: MachineCredentials) => MachineCredentials, Partial<Parameters<typeof derivePluginFamily>[0]>]>([
+    ["a plugin family appeared where none was expected", (d) => d, { expectedPluginRefreshToken: null }],
+    ["the store names no account any more", ({ subject: _s, ...d }) => d, {}],
+    ["the store names another server", (d) => ({ ...d, serverTarget: "https://other.example" }), {}],
+    ["a legacy credential serves the plugin plane", (d) => ({ ...d, families: { ...d.families, legacy: { accessToken: "l-a", refreshToken: "dead-r" } } }), {}],
+  ])("mismatch: %s → aborted, store untouched", async (_name, mutate, extra) => {
+    const seeded = mutate(DEAD_STORE);
+    const store = freshStore(seeded);
+    const before = fs.readFileSync(store.credentialsPath, "utf-8");
+    const { result, revoked } = heal(store, scriptedExchange(EXCHANGE_OK), extra);
+    expect(await result).toMatchObject({ status: "aborted", reason: "plugin-changed" });
+    expect(fs.readFileSync(store.credentialsPath, "utf-8")).toBe(before);
+    expect(revoked).toEqual(["plug-r"]);
+  });
+
+  it("without the option the write stays unconditional (the login commit's behavior)", async () => {
+    const store = freshStore(DEAD_STORE);
+    const { result } = heal(store, scriptedExchange(() => {
+      store.writeFamily("plugin", { accessToken: "fresh-a", refreshToken: "fresh-r", clientId: "cli", scope: "mcp:plugin" });
+      return EXCHANGE_OK;
+    }), { expectedPluginRefreshToken: undefined });
+    expect(await result).toMatchObject({ status: "derived" });
+    expect(store.read()?.families?.plugin?.refreshToken).toBe("plug-r");
+  });
+
+  it.each([
+    ["another account", { ...EXCHANGE_OK, sub: "usr_B" }],
+    ["no account", { ...EXCHANGE_OK, sub: undefined }],
+  ])("requireExchangeSubject: a family minted for %s is revoked and never written", async (_name, minted) => {
+    const store = freshStore(DEAD_STORE);
+    const { result, revoked } = heal(store, scriptedExchange(minted as TokenExchangeResult), { requireExchangeSubject: true });
+    expect(await result).toEqual({ status: "exchange-failed", reason: EXCHANGE_SUBJECT_MISMATCH });
+    expect(store.read()?.families?.plugin?.refreshToken).toBe("dead-r");
+    expect(revoked).toEqual(["plug-r"]);
+  });
+
+  it("requireExchangeSubject: the expected account's family is written", async () => {
+    const store = freshStore(DEAD_STORE);
+    const { result } = heal(store, scriptedExchange(EXCHANGE_OK), { requireExchangeSubject: true });
+    expect(await result).toMatchObject({ status: "derived" });
   });
 });
 

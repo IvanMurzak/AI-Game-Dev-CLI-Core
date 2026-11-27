@@ -7,6 +7,21 @@ Versions are set at publish time by the `release.yml` workflow input (`gh workfl
 MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not auto-resolve
 `0.4.0` — adopt deliberately).
 
+## Unreleased
+
+### Added — conditional plugin-family write for a re-derivation (minor)
+
+- `derivePluginFamily` takes `expectedPluginRefreshToken` (`string | null`): a compare-and-swap on
+  the store's plugin plane. Under the same cross-process lock hold as the write, the store must
+  still hold that plugin refresh token (`null`: no plugin family), no `legacy` family, exactly
+  `expectedSubject`'s account and `serverTarget`'s server; otherwise nothing is written, the
+  result is `aborted`/`plugin-changed` and the minted family is revoked best effort. A surface that
+  re-derives a revoked plugin family no longer overwrites a fresh plugin sign-in another tool
+  committed during the exchange (DEV-277).
+- `requireExchangeSubject: true` refuses (revokes, never writes) a minted family whose `sub` is not
+  `expectedSubject`: `exchange-failed` with reason `EXCHANGE_SUBJECT_MISMATCH` (`"subject-mismatch"`).
+- Both are opt-in: without them `derivePluginFamily` and `commitAgentLogin` behave as before.
+
 ## 0.12.0 — 2026-11-14
 
 ### Fixed — a copied project never closes the original project's editor (minor: 0.12.0)
