@@ -7,7 +7,7 @@ Versions are set at publish time by the `release.yml` workflow input (`gh workfl
 MINOR component is the breaking-capable one (caret consumers on `^0.3.0` do not auto-resolve
 `0.4.0` — adopt deliberately).
 
-## Unreleased
+## 0.13.0 — 2026-11-27
 
 ### Added — conditional plugin-family write for a re-derivation (minor)
 
