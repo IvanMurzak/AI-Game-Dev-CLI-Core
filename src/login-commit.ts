@@ -540,12 +540,14 @@ export interface DerivePluginFamilyOptions {
    * Otherwise nothing is written: `aborted`/`plugin-changed`, and the just-minted family is
    * revoked best effort. Another tool's fresh plugin sign-in committed during the exchange is
    * therefore never overwritten. Omit (the default) for the login commit's unconditional write.
+   * A stored plugin family without a refresh token, or a `legacy` one, never matches.
    */
   expectedPluginRefreshToken?: string | null;
   /**
    * Refuse a minted family that is not `expectedSubject`'s: an exchange response whose `sub` is
    * absent or names another account is revoked best effort and nothing is written
-   * (`exchange-failed`/{@link EXCHANGE_SUBJECT_MISMATCH}). Requires `expectedSubject`.
+   * (`exchange-failed`/{@link EXCHANGE_SUBJECT_MISMATCH}). Requires `expectedSubject` (throws
+   * before the exchange without it).
    */
   requireExchangeSubject?: boolean;
   /** Injectable best-effort revoker for a derived family orphaned by an abort. */
@@ -608,6 +610,9 @@ function pluginPlaneUnchanged(doc: MachineCredentials, options: DerivePluginFami
 export async function derivePluginFamily(
   options: DerivePluginFamilyOptions,
 ): Promise<DerivePluginFamilyResult> {
+  if (options.requireExchangeSubject === true && options.expectedSubject === undefined) {
+    throw new Error("derivePluginFamily: requireExchangeSubject needs expectedSubject");
+  }
   const lock = options.lock ?? new MachineCredentialLock(options.store.baseDirectory);
   const exchange = await options.exchangeClient.exchange({
     subjectToken: options.agentAccessToken,
@@ -618,7 +623,7 @@ export async function derivePluginFamily(
   if (!exchange.ok) {
     return { status: "exchange-failed", reason: exchange.reason };
   }
-  if (options.requireExchangeSubject === true && (options.expectedSubject === undefined || exchange.sub !== options.expectedSubject)) {
+  if (options.requireExchangeSubject === true && exchange.sub !== options.expectedSubject) {
     await revokeOrphan(options, exchange);
     options.onWarning?.("Token exchange minted a plugin family for another account; it was revoked and not written.");
     return { status: "exchange-failed", reason: EXCHANGE_SUBJECT_MISMATCH };
@@ -683,7 +688,9 @@ export async function derivePluginFamily(
     // The derived family has no home now — revoke it best-effort so no orphan device row lingers.
     await revokeOrphan(options, exchange);
     options.onWarning?.(
-      `Plugin-family derivation aborted (${outcome.reason}): the machine's credential store changed between the commit holds.`,
+      outcome.reason === "plugin-changed"
+        ? "Plugin-family derivation aborted (plugin-changed): another sign-in replaced the machine's plugin credential while the exchange ran; it was kept."
+        : `Plugin-family derivation aborted (${outcome.reason}): the machine's credential store changed between the commit holds.`,
     );
     return {
       status: "aborted",

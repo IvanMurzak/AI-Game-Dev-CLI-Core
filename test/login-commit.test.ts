@@ -772,6 +772,13 @@ describe("derivePluginFamily — conditional write (expectedPluginRefreshToken, 
     expect(revoked).toEqual(["plug-r"]);
   });
 
+  it("requireExchangeSubject without expectedSubject is a caller error: thrown before any exchange", async () => {
+    const store = freshStore(DEAD_STORE);
+    const exchange = scriptedExchange(EXCHANGE_OK);
+    await expect(heal(store, exchange, { requireExchangeSubject: true, expectedSubject: undefined }).result).rejects.toThrow(/expectedSubject/);
+    expect(exchange.calls).toHaveLength(0);
+  });
+
   it("requireExchangeSubject: the expected account's family is written", async () => {
     const store = freshStore(DEAD_STORE);
     const { result } = heal(store, scriptedExchange(EXCHANGE_OK), { requireExchangeSubject: true });
